@@ -17,9 +17,15 @@ export {
   connectStdioUpstream,
   createMcpProxyServer,
   createMcpRequestHandlers,
+  serveStreamableHttpProxy,
   serveStdioProxy
 } from "./transport/mcp-sdk.js";
-export type { McpProxyRequestHandlers, StdioUpstream } from "./transport/mcp-sdk.js";
+export type {
+  McpProxyRequestHandlers,
+  StdioUpstream,
+  StreamableHttpProxy,
+  StreamableHttpProxyOptions
+} from "./transport/mcp-sdk.js";
 
 export async function main(): Promise<void> {
   process.stdout.write(

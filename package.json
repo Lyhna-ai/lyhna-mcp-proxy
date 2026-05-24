@@ -13,7 +13,9 @@
     "dev": "tsx src/index.ts",
     "start:upstream": "tsx tests/fixtures/reference-upstream-mcp-server.ts",
     "start:proxy": "tsx src/bin/local-proxy.ts",
+    "start:proxy:http": "tsx src/bin/http-proxy.ts",
     "inspect:proxy": "tsx src/bin/inspect-local-proxy.ts",
+    "inspect:proxy:http": "tsx src/bin/inspect-http-proxy.ts",
     "test": "vitest run"
   },
   "dependencies": {

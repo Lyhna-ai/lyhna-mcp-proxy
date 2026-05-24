@@ -77,6 +77,42 @@ $env:LYHNA_PROXY_STUB_OUTCOME='ESCALATED'
 npm.cmd run start:proxy
 ```
 
+## Streamable HTTP Mode
+
+Chione connects to remote URL-based MCP servers over Streamable HTTP. The proxy can run in that mode as a local URL server while still using the same bind gate and upstream forwarding path.
+
+HTTP mode defaults to:
+
+```text
+transport: mcp.client.streamable_http
+url: http://127.0.0.1:8765/mcp
+bind: stub:APPROVED
+upstream: @modelcontextprotocol/server-filesystem
+allowed filesystem root: C:\Users\Adam\lyhna-mcp-proxy
+```
+
+Start the HTTP proxy:
+
+```powershell
+npm.cmd run start:proxy:http
+```
+
+Chione should point at:
+
+```text
+url: "http://127.0.0.1:8765/mcp"
+transport: "mcp.client.streamable_http"
+```
+
+You can override the bind stub outcome for hold/fail-closed testing:
+
+```powershell
+$env:LYHNA_PROXY_STUB_OUTCOME='ESCALATED'
+npm.cmd run start:proxy:http
+```
+
+Do not set `LYHNA_PROXY_BIND_MODE=http` or any production bind flags during this transport proof. HTTP proxy mode is only proving URL connectivity; production bind remains a deliberate later cutover.
+
 ## Confirm It Mirrors Upstream Tools
 
 This command starts a temporary proxy process with stub `APPROVED`, connects as an MCP client, lists tools, prints the result, and exits:
@@ -90,4 +126,21 @@ Expected tool names:
 ```text
 echo
 read_count
+```
+
+Confirm Streamable HTTP mode against the real filesystem MCP server:
+
+```powershell
+npm.cmd run inspect:proxy:http
+```
+
+Expected real filesystem tool names include:
+
+```text
+read_file
+read_text_file
+list_directory
+directory_tree
+search_files
+list_allowed_directories
 ```
