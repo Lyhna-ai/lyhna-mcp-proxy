@@ -1,9 +1,9 @@
 import { loadProxyRuntimeConfig } from "../bind-client/configured.js";
 import { createProxyCore } from "../proxy-core.js";
-import { connectStdioUpstream, serveStdioProxy } from "../transport/mcp-sdk.js";
+import { connectUpstream, serveStdioProxy } from "../transport/mcp-sdk.js";
 
 const config = loadProxyRuntimeConfig();
-const upstream = await connectStdioUpstream(config.upstream);
+const upstream = await connectUpstream(config.upstream);
 const core = createProxyCore({
   upstream: upstream.client,
   bindClient: config.bindClient
@@ -14,7 +14,7 @@ const server = await serveStdioProxy(core, {
 });
 
 process.stderr.write(
-  `[lyhna-mcp-proxy] running with bind=${config.bindDescription}; upstream=${config.upstream.command} ${(config.upstream.args ?? []).join(" ")}\n`
+  `[lyhna-mcp-proxy] running with bind=${config.bindDescription}; upstream=${config.upstream.description}\n`
 );
 
 async function shutdown(): Promise<void> {

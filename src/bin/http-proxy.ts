@@ -2,10 +2,10 @@ import path from "node:path";
 
 import { loadProxyRuntimeConfig } from "../bind-client/configured.js";
 import { createProxyCore } from "../proxy-core.js";
-import { connectStdioUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
+import { connectUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
 
 const config = loadProxyRuntimeConfig(withHttpModeDefaults(process.env));
-const upstream = await connectStdioUpstream(config.upstream);
+const upstream = await connectUpstream(config.upstream);
 const core = createProxyCore({
   upstream: upstream.client,
   bindClient: config.bindClient
@@ -21,7 +21,7 @@ const proxy = await serveStreamableHttpProxy(core, {
 });
 
 process.stderr.write(
-  `[lyhna-mcp-proxy] streamable_http listening at ${proxy.url}; bind=${config.bindDescription}; upstream=${config.upstream.command} ${(config.upstream.args ?? []).join(" ")}\n`
+  `[lyhna-mcp-proxy] streamable_http listening at ${proxy.url}; bind=${config.bindDescription}; upstream=${config.upstream.description}\n`
 );
 
 async function shutdown(): Promise<void> {
@@ -41,6 +41,7 @@ function withHttpModeDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     ...env,
     LYHNA_PROXY_BIND_MODE: env.LYHNA_PROXY_BIND_MODE ?? "stub",
     LYHNA_PROXY_STUB_OUTCOME: env.LYHNA_PROXY_STUB_OUTCOME ?? "APPROVED",
+    LYHNA_PROXY_UPSTREAM_MODE: env.LYHNA_PROXY_UPSTREAM_MODE ?? "stdio",
     LYHNA_PROXY_UPSTREAM_COMMAND: env.LYHNA_PROXY_UPSTREAM_COMMAND ?? process.execPath,
     LYHNA_PROXY_UPSTREAM_ARGS_JSON:
       env.LYHNA_PROXY_UPSTREAM_ARGS_JSON ?? JSON.stringify(defaultFilesystemUpstreamArgs())

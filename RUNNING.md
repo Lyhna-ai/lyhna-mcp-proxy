@@ -113,6 +113,37 @@ npm.cmd run start:proxy:http
 
 Do not set `LYHNA_PROXY_BIND_MODE=http` or any production bind flags during this transport proof. HTTP proxy mode is only proving URL connectivity; production bind remains a deliberate later cutover.
 
+## Direct Remote Upstream Mode
+
+The proxy can now connect to an upstream MCP server over Streamable HTTP instead of spawning an stdio child process. This is the topology needed when the upstream is already published as a URL-based MCP server.
+
+Set:
+
+```powershell
+$env:LYHNA_PROXY_UPSTREAM_MODE='streamable_http'
+$env:LYHNA_PROXY_UPSTREAM_URL='https://example-mcp-server.test/mcp'
+```
+
+Optional explicit upstream headers:
+
+```powershell
+$env:LYHNA_PROXY_UPSTREAM_HEADERS_JSON='{"Authorization":"Bearer <token>"}'
+```
+
+Then start either proxy surface:
+
+```powershell
+npm.cmd run start:proxy
+```
+
+or
+
+```powershell
+npm.cmd run start:proxy:http
+```
+
+The bind gate still runs locally in front of that remote upstream. Only the upstream transport changes.
+
 ## Confirm It Mirrors Upstream Tools
 
 This command starts a temporary proxy process with stub `APPROVED`, connects as an MCP client, lists tools, prints the result, and exits:

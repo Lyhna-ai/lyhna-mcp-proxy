@@ -7,6 +7,7 @@ describe("proxy runtime bind configuration", () => {
 
     expect(config.bindMode).toBe("stub");
     expect(config.bindDescription).toBe("stub:REFUSED");
+    expect(config.upstream.transport).toBe("stdio");
     await expect(
       config.bindClient.bind({
         action_type: "echo",
@@ -60,5 +61,39 @@ describe("proxy runtime bind configuration", () => {
         process.cwd()
       )
     ).toThrow(/Refusing to start against production api\.lyhna\.com/);
+  });
+
+  it("uses a streamable_http upstream when LYHNA_PROXY_UPSTREAM_URL is provided", () => {
+    const config = loadProxyRuntimeConfig(
+      {
+        LYHNA_PROXY_UPSTREAM_URL: "https://mcp.example.test/mcp",
+        LYHNA_PROXY_UPSTREAM_HEADERS_JSON: JSON.stringify({
+          "Authorization": "Bearer token",
+          "X-Test": "value"
+        })
+      },
+      process.cwd()
+    );
+
+    expect(config.upstream).toEqual({
+      transport: "streamable_http",
+      description: "streamable_http:https://mcp.example.test/mcp",
+      url: "https://mcp.example.test/mcp",
+      headers: {
+        "Authorization": "Bearer token",
+        "X-Test": "value"
+      }
+    });
+  });
+
+  it("rejects unsupported upstream transport modes", () => {
+    expect(() =>
+      loadProxyRuntimeConfig(
+        {
+          LYHNA_PROXY_UPSTREAM_MODE: "sse"
+        },
+        process.cwd()
+      )
+    ).toThrow(/LYHNA_PROXY_UPSTREAM_MODE must be either 'stdio' or 'streamable_http'/);
   });
 });

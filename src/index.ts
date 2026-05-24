@@ -14,7 +14,9 @@ export { decideForward } from "./enforcement.js";
 export type { McpTool, McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 export { BindGateError, createProxyCore } from "./proxy-core.js";
 export {
+  connectStreamableHttpUpstream,
   connectStdioUpstream,
+  connectUpstream,
   createMcpProxyServer,
   createMcpRequestHandlers,
   serveStreamableHttpProxy,
@@ -22,18 +24,22 @@ export {
 } from "./transport/mcp-sdk.js";
 export type {
   McpProxyRequestHandlers,
+  StreamableHttpUpstream,
   StdioUpstream,
+  StdioUpstreamConfig,
+  StreamableHttpUpstreamConfig,
   StreamableHttpProxy,
-  StreamableHttpProxyOptions
+  StreamableHttpProxyOptions,
+  UpstreamConfig
 } from "./transport/mcp-sdk.js";
 
 export async function main(): Promise<void> {
   process.stdout.write(
     JSON.stringify(
       {
-        status: "scaffold",
+        status: "ready",
         message:
-          "Standalone Lyhna MCP proxy core initialized. Implement MCP transport and hosted bind client next."
+          "Standalone Lyhna MCP proxy core is ready with stdio and Streamable HTTP transport support."
       },
       null,
       2

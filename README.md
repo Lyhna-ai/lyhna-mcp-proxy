@@ -4,11 +4,17 @@ Standalone Lyhna MCP proxy.
 
 This project sits in front of upstream MCP servers, mirrors their tool surface, intercepts `tools/call`, routes the call through the existing hosted Lyhna `bind()` contract, and forwards upstream only when bind allows it.
 
+Supported topologies:
+
+- MCP client -> proxy over stdio -> upstream MCP over stdio
+- MCP client -> proxy over Streamable HTTP -> upstream MCP over stdio
+- MCP client -> proxy over stdio or Streamable HTTP -> upstream MCP over Streamable HTTP
+
 ## Status
 
-Baseline proxy and wrapper-family registry are built and tested.
+Baseline proxy, Streamable HTTP server mode, and multi-transport upstream support are built and tested.
 
-Current verification: 27 tests passing across 6 test files.
+Current verification: 31 tests passing across 7 test files.
 
 ## Goals
 
@@ -59,6 +65,7 @@ Baseline generic MCP proxy is implemented:
 - bind then forward
 - exact payload preservation
 - fail-closed enforcement
+- upstream transport support for both stdio and Streamable HTTP
 
 Wrapper-family registry is implemented:
 - Zapier: matches `execute_zapier_*_action`, reads stringified-JSON arguments, extracts only `app` and `action`, and resolves action types such as `zapier.google_drive.folder`

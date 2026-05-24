@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { loadProxyRuntimeConfig } from "../bind-client/configured.js";
 import { createProxyCore } from "../proxy-core.js";
-import { connectStdioUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
+import { connectUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
 
 const workspacePath = process.cwd();
 const filesystemServerPath = path.join(
@@ -19,11 +19,12 @@ const config = loadProxyRuntimeConfig({
   ...process.env,
   LYHNA_PROXY_BIND_MODE: "stub",
   LYHNA_PROXY_STUB_OUTCOME: "APPROVED",
+  LYHNA_PROXY_UPSTREAM_MODE: "stdio",
   LYHNA_PROXY_UPSTREAM_COMMAND: process.execPath,
   LYHNA_PROXY_UPSTREAM_ARGS_JSON: JSON.stringify([filesystemServerPath, workspacePath])
 });
 
-const upstream = await connectStdioUpstream(config.upstream);
+const upstream = await connectUpstream(config.upstream);
 const core = createProxyCore({
   upstream: upstream.client,
   bindClient: config.bindClient

@@ -2,6 +2,11 @@ import type { StdioServerParameters } from "@modelcontextprotocol/sdk/client/std
 import path from "node:path";
 
 import type { BindClient, BindOutcome, BindRequest, BindResponse } from "../bind.js";
+import type {
+  StdioUpstreamConfig,
+  StreamableHttpUpstreamConfig,
+  UpstreamConfig
+} from "../transport/mcp-sdk.js";
 
 export type BindMode = "stub" | "http";
 
@@ -9,7 +14,7 @@ export type ProxyRuntimeConfig = {
   bindMode: BindMode;
   bindClient: BindClient;
   bindDescription: string;
-  upstream: StdioServerParameters;
+  upstream: UpstreamConfig;
 };
 
 const DEFAULT_STUB_OUTCOME: BindOutcome = "REFUSED";
@@ -88,18 +93,39 @@ function createHttpBindClient(options: { bindUrl: string; apiKey: string }): Bin
   };
 }
 
-function loadUpstreamConfig(env: NodeJS.ProcessEnv, cwd: string): StdioServerParameters {
+function loadUpstreamConfig(env: NodeJS.ProcessEnv, cwd: string): UpstreamConfig {
+  const upstreamMode = parseUpstreamMode(env);
+
+  if (upstreamMode === "streamable_http") {
+    const url = requireEnv(env, "LYHNA_PROXY_UPSTREAM_URL");
+    return {
+      transport: "streamable_http",
+      description: `streamable_http:${redactBindUrl(url)}`,
+      url,
+      headers: env.LYHNA_PROXY_UPSTREAM_HEADERS_JSON
+        ? parseJsonStringRecord(
+            env.LYHNA_PROXY_UPSTREAM_HEADERS_JSON,
+            "LYHNA_PROXY_UPSTREAM_HEADERS_JSON"
+          )
+        : undefined
+    } satisfies StreamableHttpUpstreamConfig;
+  }
+
   const command = env.LYHNA_PROXY_UPSTREAM_COMMAND ?? process.execPath;
   const args = env.LYHNA_PROXY_UPSTREAM_ARGS_JSON
     ? parseJsonStringArray(env.LYHNA_PROXY_UPSTREAM_ARGS_JSON, "LYHNA_PROXY_UPSTREAM_ARGS_JSON")
     : defaultReferenceUpstreamArgs(cwd);
 
   return {
-    command,
-    args,
-    cwd,
-    stderr: "pipe"
-  };
+    transport: "stdio",
+    description: `stdio:${command} ${args.join(" ")}`.trim(),
+    serverParams: {
+      command,
+      args,
+      cwd,
+      stderr: "pipe"
+    }
+  } satisfies StdioUpstreamConfig;
 }
 
 function defaultReferenceUpstreamArgs(cwd: string): string[] {
@@ -117,6 +143,20 @@ function parseBindMode(value: string | undefined): BindMode {
     return value;
   }
   throw new Error("LYHNA_PROXY_BIND_MODE must be either 'stub' or 'http'.");
+}
+
+function parseUpstreamMode(env: NodeJS.ProcessEnv): UpstreamConfig["transport"] {
+  const value = env.LYHNA_PROXY_UPSTREAM_MODE;
+
+  if (!value) {
+    return env.LYHNA_PROXY_UPSTREAM_URL ? "streamable_http" : "stdio";
+  }
+
+  if (value === "stdio" || value === "streamable_http") {
+    return value;
+  }
+
+  throw new Error("LYHNA_PROXY_UPSTREAM_MODE must be either 'stdio' or 'streamable_http'.");
 }
 
 function parseStubOutcome(value: string | undefined): BindOutcome {
@@ -158,6 +198,20 @@ function parseJsonStringArray(raw: string, name: string): string[] {
     throw new Error(`${name} must be a JSON string array.`);
   }
   return parsed;
+}
+
+function parseJsonStringRecord(raw: string, name: string): Record<string, string> {
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object with string values.`);
+  }
+
+  const entries = Object.entries(parsed);
+  if (entries.some((entry) => typeof entry[1] !== "string")) {
+    throw new Error(`${name} must be a JSON object with string values.`);
+  }
+
+  return Object.fromEntries(entries);
 }
 
 function isBindResponse(value: unknown): value is BindResponse {

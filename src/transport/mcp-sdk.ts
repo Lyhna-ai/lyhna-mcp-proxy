@@ -3,6 +3,7 @@ import {
   StdioClientTransport,
   type StdioServerParameters
 } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -28,6 +29,26 @@ export type StdioUpstream = {
   client: UpstreamMcpClient;
   close(): Promise<void>;
 };
+
+export type StreamableHttpUpstream = {
+  client: UpstreamMcpClient;
+  close(): Promise<void>;
+};
+
+export type StdioUpstreamConfig = {
+  transport: "stdio";
+  description: string;
+  serverParams: StdioServerParameters;
+};
+
+export type StreamableHttpUpstreamConfig = {
+  transport: "streamable_http";
+  description: string;
+  url: string;
+  headers?: Record<string, string>;
+};
+
+export type UpstreamConfig = StdioUpstreamConfig | StreamableHttpUpstreamConfig;
 
 export type StreamableHttpProxyOptions = {
   host?: string;
@@ -218,6 +239,55 @@ export async function connectStdioUpstream(
       await client.close();
     }
   };
+}
+
+export async function connectStreamableHttpUpstream(
+  url: string,
+  options: {
+    headers?: Record<string, string>;
+    clientInfo?: Implementation;
+  } = {}
+): Promise<StreamableHttpUpstream> {
+  const client = new Client(options.clientInfo ?? DEFAULT_UPSTREAM_CLIENT_INFO);
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    requestInit: options.headers ? { headers: options.headers } : undefined
+  });
+
+  await client.connect(transport);
+
+  return {
+    client: {
+      async listTools() {
+        const result = await client.listTools();
+        return result.tools;
+      },
+
+      async callTool(call) {
+        return client.callTool({
+          name: call.toolName,
+          arguments: call.arguments as Record<string, unknown>
+        });
+      }
+    },
+
+    async close() {
+      await client.close();
+    }
+  };
+}
+
+export async function connectUpstream(
+  config: UpstreamConfig,
+  clientInfo: Implementation = DEFAULT_UPSTREAM_CLIENT_INFO
+): Promise<StdioUpstream | StreamableHttpUpstream> {
+  if (config.transport === "stdio") {
+    return connectStdioUpstream(config.serverParams, clientInfo);
+  }
+
+  return connectStreamableHttpUpstream(config.url, {
+    headers: config.headers,
+    clientInfo
+  });
 }
 
 function toJson(value: Record<string, unknown>): Json {
