@@ -11,6 +11,9 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "dev": "tsx src/index.ts",
+    "start:upstream": "tsx tests/fixtures/reference-upstream-mcp-server.ts",
+    "start:proxy": "tsx src/bin/local-proxy.ts",
+    "inspect:proxy": "tsx src/bin/inspect-local-proxy.ts",
     "test": "vitest run"
   },
   "dependencies": {

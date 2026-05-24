@@ -8,7 +8,7 @@ This project sits in front of upstream MCP servers, mirrors their tool surface, 
 
 Baseline proxy and wrapper-family registry are built and tested.
 
-Current verification: 23 tests passing across 5 test files.
+Current verification: 27 tests passing across 6 test files.
 
 ## Goals
 
@@ -49,6 +49,7 @@ Flow:
 - `src/` — proxy, bind client, classifiers, types
 - `tests/` — unit and integration tests
 - `AGENTS.md` — permanent repo orientation and hard invariants
+- `RUNNING.md` — local standing-process startup instructions and bind safety rules
 
 ## First Build Target
 
