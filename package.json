@@ -1,7 +1,6 @@
 {
-  "name": "lyhna-mcp-proxy",
+  "name": "@lyhna/mcp",
   "version": "0.1.0",
-  "private": true,
   "description": "Standalone Lyhna MCP proxy that intercepts MCP tools/call and routes through hosted bind().",
   "type": "module",
   "engines": {
