@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import path from "node:path";
 
 import { loadProxyRuntimeConfig } from "../bind-client/configured.js";

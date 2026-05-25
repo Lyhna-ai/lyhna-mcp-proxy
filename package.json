@@ -1,13 +1,23 @@
 {
   "name": "@lyhna/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone Lyhna MCP proxy that intercepts MCP tools/call and routes through hosted bind().",
   "type": "module",
+  "bin": {
+    "lyhna-mcp": "./dist/src/bin/http-proxy.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "RUNNING.md",
+    "AGENTS.md"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "start:upstream": "tsx tests/fixtures/reference-upstream-mcp-server.ts",
