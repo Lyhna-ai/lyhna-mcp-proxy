@@ -10,7 +10,8 @@
     "dist/src",
     "README.md",
     "RUNNING.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "docs"
   ],
   "engines": {
     "node": ">=20"

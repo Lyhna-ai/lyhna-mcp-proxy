@@ -1,12 +1,17 @@
 import type { BindClient, BindRequest, BindResponse } from "./bind.js";
 import { buildBindRequest } from "./bind.js";
 import { decideForward, type ForwardDecision } from "./enforcement.js";
+import type { LoopSession } from "./loop.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 
 export type ProxyCoreOptions = {
   upstream: UpstreamMcpClient;
   bindClient: BindClient;
   buildRequest?: (call: McpToolCall) => BindRequest;
+  // Optional loop-context threading. When present, every tools/call bind is stamped
+  // with `constraints.loop` and the receipt chain advances under the session mutex.
+  // When absent, the proxy behaves exactly as the baseline bind gate.
+  loopSession?: LoopSession;
 };
 
 export class BindGateError extends Error {
@@ -39,7 +44,11 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       let bindResponse: BindResponse;
 
       try {
-        bindResponse = await options.bindClient.bind(bindRequest);
+        bindResponse = options.loopSession
+          ? await options.loopSession.bindToolCall(bindRequest, (request) =>
+              options.bindClient.bind(request)
+            )
+          : await options.bindClient.bind(bindRequest);
       } catch (error) {
         throw new BindGateError(
           "FAIL_CLOSED",
