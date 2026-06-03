@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import type { BindClient, BindRequest, BindResponse } from "../src/index.js";
 import {
   buildLoopCloseRequest,
   closeLoopWithRetry,
+  createLoopContext,
   createProxyCore,
+  deriveGoalHash,
   loadLoopContextFromEnv,
   LoopSession,
   mergeLoopConstraint,
@@ -14,7 +17,7 @@ import {
   type UpstreamMcpClient
 } from "../src/index.js";
 
-const CONTEXT = { loop_id: "loop_abc", goal_hash: "goal_123" };
+const CONTEXT = createLoopContext({ loop_id: "loop_abc", goal: "ship the adapter" });
 
 function baseRequest(overrides: Partial<BindRequest> = {}): BindRequest {
   return {
@@ -53,9 +56,11 @@ describe("stripAuthorityTier", () => {
 });
 
 describe("mergeLoopConstraint", () => {
-  it("stamps constraints.loop additively and preserves server-appended fields", () => {
+  it("layers constraints.loop as a distinct key over sibling constraints (canonical)", () => {
+    // Server-appended fields ride as SIBLINGS of `loop` (e.g. resolved_by); the loop
+    // layer owns the `loop` key exactly and neither clobbers the other.
     const request = baseRequest({
-      constraints: { server_field: "keep", loop: { server_loop_field: "keep" } }
+      constraints: { resolved_by: "keep", original_escalation: "keep" }
     });
 
     const merged = mergeLoopConstraint(request, {
@@ -65,9 +70,9 @@ describe("mergeLoopConstraint", () => {
     });
 
     expect(merged.constraints).toEqual({
-      server_field: "keep",
+      resolved_by: "keep",
+      original_escalation: "keep",
       loop: {
-        server_loop_field: "keep",
         loop_id: "loop_abc",
         prior_receipt_id: null,
         goal_hash: "goal_123"
@@ -94,8 +99,28 @@ describe("mergeLoopConstraint", () => {
   });
 });
 
+describe("deriveGoalHash", () => {
+  it("is sha256(utf8(goal)) hex with no normalization or trimming", () => {
+    const goal = "  Ship the adapter 🚀  ";
+    const expected = createHash("sha256").update(goal, "utf8").digest("hex");
+
+    expect(deriveGoalHash(goal)).toBe(expected);
+    // No trim: the trimmed goal hashes to a different digest and must not collide.
+    expect(deriveGoalHash(goal)).not.toBe(deriveGoalHash(goal.trim()));
+  });
+
+  it("createLoopContext derives goal_hash from the raw goal", () => {
+    const context = createLoopContext({ loop_id: "loop_x", goal: "do the thing" });
+    expect(context).toEqual({
+      loop_id: "loop_x",
+      goal: "do the thing",
+      goal_hash: deriveGoalHash("do the thing")
+    });
+  });
+});
+
 describe("buildLoopCloseRequest", () => {
-  it("carries constraints.loop_close with the terminal field set", () => {
+  it("matches the canonical loop_close shape", () => {
     const request = buildLoopCloseRequest(CONTEXT, {
       action_count: 3,
       prior_receipt_id: "receipt_3",
@@ -103,16 +128,44 @@ describe("buildLoopCloseRequest", () => {
       termination_reason: "SIGTERM"
     });
 
-    expect(request.action_type).toBe("lyhna.loop.close");
-    expect(request.intent).toBe("lyhna:loop_close");
+    // 2: action_type is exactly "loop_close"
+    expect(request.action_type).toBe("loop_close");
+    // 3: action_payload is exactly { loop_id, action_count } — not the full summary
+    expect(request.action_payload).toEqual({ loop_id: "loop_abc", action_count: 3 });
+    // 4: intent defaults to the goal; intent_version is "loop_v1"
+    expect(request.intent).toBe(CONTEXT.goal);
+    expect(request.intent_version).toBe("loop_v1");
+    // 5: constraints carries BOTH loop and loop_close, goal_hash present in both
+    expect(request.constraints?.loop).toEqual({
+      loop_id: "loop_abc",
+      prior_receipt_id: "receipt_3",
+      goal_hash: CONTEXT.goal_hash
+    });
     expect(request.constraints?.loop_close).toEqual({
       loop_id: "loop_abc",
-      goal_hash: "goal_123",
-      action_count: 3,
       outcome: "COMPLETED",
+      termination_reason: "SIGTERM",
+      action_count: 3,
       prior_receipt_id: "receipt_3",
-      termination_reason: "SIGTERM"
+      goal_hash: CONTEXT.goal_hash
     });
+    expect((request.constraints?.loop as { goal_hash: string }).goal_hash).toBe(
+      (request.constraints?.loop_close as { goal_hash: string }).goal_hash
+    );
+  });
+
+  it("allows deliberate intent / intent_version overrides", () => {
+    const request = buildLoopCloseRequest(CONTEXT, {
+      action_count: 0,
+      prior_receipt_id: null,
+      outcome: "COMPLETED",
+      termination_reason: "SIGTERM",
+      intent: "proof-run-label",
+      intent_version: "custom_v9"
+    });
+
+    expect(request.intent).toBe("proof-run-label");
+    expect(request.intent_version).toBe("custom_v9");
   });
 });
 
@@ -256,7 +309,9 @@ describe("verifyLoopChain (sealed vs unsealed)", () => {
       { receipt_id: "r1", loop: { loop_id: "L", prior_receipt_id: null, goal_hash: "g" } },
       { receipt_id: "r2", loop: { loop_id: "L", prior_receipt_id: "r1", goal_hash: "g" } },
       {
+        // Canonical terminal link carries BOTH loop and loop_close.
         receipt_id: "r_close",
+        loop: { loop_id: "L", prior_receipt_id: "r2", goal_hash: "g" },
         loop_close: {
           loop_id: "L",
           goal_hash: "g",
@@ -334,16 +389,20 @@ describe("loadLoopContextFromEnv", () => {
     expect(loadLoopContextFromEnv({})).toBeUndefined();
   });
 
-  it("requires both loop_id and goal_hash together", () => {
+  it("requires both loop_id and goal together", () => {
     expect(() => loadLoopContextFromEnv({ LYHNA_PROXY_LOOP_ID: "loop_x" })).toThrow(
-      /both LYHNA_PROXY_LOOP_ID and LYHNA_PROXY_GOAL_HASH/i
+      /both LYHNA_PROXY_LOOP_ID and LYHNA_PROXY_GOAL/i
     );
   });
 
-  it("reads a full loop context", () => {
+  it("reads a loop context and derives goal_hash from the raw goal", () => {
     expect(
-      loadLoopContextFromEnv({ LYHNA_PROXY_LOOP_ID: "loop_x", LYHNA_PROXY_GOAL_HASH: "goal_y" })
-    ).toEqual({ loop_id: "loop_x", goal_hash: "goal_y" });
+      loadLoopContextFromEnv({ LYHNA_PROXY_LOOP_ID: "loop_x", LYHNA_PROXY_GOAL: "do the thing" })
+    ).toEqual({
+      loop_id: "loop_x",
+      goal: "do the thing",
+      goal_hash: deriveGoalHash("do the thing")
+    });
   });
 });
 
@@ -386,8 +445,8 @@ describe("createProxyCore with a loop session", () => {
     await proxy.callTool({ toolName: "repo.search", arguments: args2 });
 
     expect(boundLoops).toEqual([
-      { loop_id: "loop_abc", prior_receipt_id: null, goal_hash: "goal_123" },
-      { loop_id: "loop_abc", prior_receipt_id: "receipt_1", goal_hash: "goal_123" }
+      { loop_id: "loop_abc", prior_receipt_id: null, goal_hash: CONTEXT.goal_hash },
+      { loop_id: "loop_abc", prior_receipt_id: "receipt_1", goal_hash: CONTEXT.goal_hash }
     ]);
     // Invariant 2: forwarded arguments are the exact originals, untouched by stamping.
     expect((upstream.calls[0] as { arguments: unknown }).arguments).toBe(args1);

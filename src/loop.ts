@@ -10,16 +10,24 @@
 // concurrent tools/call cannot fork it. The agent operates inside the loop; the
 // PROXY boundary closes the loop on controlled shutdown; Lyhna signs the proof.
 //
-// NOTE: lyhna-bind/src/loop.ts itself was not reachable from this build session, so
-// the field names and chaining semantics below follow the contract specified for the
-// adapter. They are the canonical loop spine fields (loop_id, prior_receipt_id,
-// goal_hash) and must stay byte-compatible with the lyhna-bind producer.
+// Reconciled against the canonical @lyhna/bind loop chain (loop.ts v0.3.9):
+//   - goal_hash = sha256(utf8(goal)) hex, no normalization/trim — derived here via
+//     node:crypto (byte-equivalent to the canonical's @noble/hashes computeGoalHash).
+//   - in-loop bind: constraints.loop = { loop_id, prior_receipt_id, goal_hash }, layered
+//     additively over caller constraints as a distinct key.
+//   - loop_close bind: action_type "loop_close"; action_payload { loop_id, action_count };
+//     intent defaults to the goal, intent_version "loop_v1"; constraints carries BOTH
+//     loop and loop_close (goal_hash in both).
+// These spine fields must stay byte-compatible with the lyhna-bind producer.
+
+import { createHash } from "node:crypto";
 
 import type { BindRequest, BindResponse } from "./bind.js";
 
 /** Immutable loop identity injected at proxy start (via env). */
 export type LoopContext = {
   loop_id: string;
+  goal: string;
   goal_hash: string;
 };
 
@@ -45,6 +53,11 @@ export type LoopCloseFields = {
   prior_receipt_id: string | null;
   outcome: string;
   termination_reason: string;
+  // intent / intent_version default to the loop protocol markers (goal / "loop_v1")
+  // but may be overridden, exactly as in the canonical close(). They do not affect tier
+  // resolution, which keys on action_type ("loop_close").
+  intent?: string;
+  intent_version?: string;
 };
 
 export type LoopBindFn = (request: BindRequest) => Promise<BindResponse>;
@@ -53,9 +66,27 @@ export type LoopCloseResult =
   | { sealed: true; receipt: BindResponse }
   | { sealed: false; error: unknown };
 
-const LOOP_CLOSE_ACTION_TYPE = "lyhna.loop.close";
-const LOOP_CLOSE_INTENT = "lyhna:loop_close";
-const LOOP_INTENT_VERSION = "1.0";
+const LOOP_CLOSE_ACTION_TYPE = "loop_close";
+const LOOP_INTENT_VERSION = "loop_v1";
+
+/**
+ * goal_hash is sha256(utf8(goal)) hex-encoded, with NO normalization or trimming —
+ * byte-equivalent to the canonical @lyhna/bind computeGoalHash. It is carried (and
+ * signed) inside every link's constraints.loop so verifiers can confirm a chain
+ * shares one goal.
+ */
+export function deriveGoalHash(goal: string): string {
+  return createHash("sha256").update(goal, "utf8").digest("hex");
+}
+
+/** Build a loop context from the raw goal, deriving goal_hash canonically. */
+export function createLoopContext(input: { loop_id: string; goal: string }): LoopContext {
+  return {
+    loop_id: input.loop_id,
+    goal: input.goal,
+    goal_hash: deriveGoalHash(input.goal)
+  };
+}
 
 /**
  * Remove any caller-supplied `authority_tier` from a bind request (top level and
@@ -87,9 +118,11 @@ export function stripAuthorityTier(request: BindRequest): BindRequest {
 export function mergeLoopConstraint(request: BindRequest, loop: LoopConstraint): BindRequest {
   const stripped = stripAuthorityTier(request);
   const constraints = isRecord(stripped.constraints) ? { ...stripped.constraints } : {};
-  const existingLoop = isRecord(constraints.loop) ? constraints.loop : {};
 
-  constraints.loop = { ...existingLoop, ...loop };
+  // `loop` is a distinct key layered ON TOP of caller constraints (canonical
+  // v0.3.9): it owns exactly the three linkage fields and cannot clobber — nor be
+  // clobbered by — server-appended sibling keys (resolved_by / original_escalation).
+  constraints.loop = loop;
 
   return { ...stripped, constraints };
 }
@@ -99,24 +132,32 @@ export function buildLoopCloseRequest(
   context: LoopContext,
   fields: LoopCloseFields
 ): BindRequest {
+  // The terminal carries BOTH the chain link (so it resolves to the last in-loop
+  // receipt) and the terminal summary — matching canonical close() exactly.
+  const loop: LoopConstraint = {
+    loop_id: context.loop_id,
+    prior_receipt_id: fields.prior_receipt_id,
+    goal_hash: context.goal_hash
+  };
+
   const loopClose: LoopCloseConstraint = {
     loop_id: context.loop_id,
-    goal_hash: context.goal_hash,
-    action_count: fields.action_count,
     outcome: fields.outcome,
+    termination_reason: fields.termination_reason,
+    action_count: fields.action_count,
     prior_receipt_id: fields.prior_receipt_id,
-    termination_reason: fields.termination_reason
+    goal_hash: context.goal_hash
   };
 
   return {
     action_type: LOOP_CLOSE_ACTION_TYPE,
     action_payload: {
       loop_id: context.loop_id,
-      goal_hash: context.goal_hash
+      action_count: fields.action_count
     },
-    intent: LOOP_CLOSE_INTENT,
-    intent_version: LOOP_INTENT_VERSION,
-    constraints: { loop_close: loopClose }
+    intent: fields.intent ?? context.goal,
+    intent_version: fields.intent_version ?? LOOP_INTENT_VERSION,
+    constraints: { loop, loop_close: loopClose }
   };
 }
 
@@ -190,13 +231,18 @@ export class LoopSession {
    * close receipt and marks the loop sealed. Throws if the bind fails (so callers
    * can retry within the grace window); the loop stays unsealed until it succeeds.
    */
-  close(bind: LoopBindFn, fields: { outcome: string; termination_reason: string }): Promise<LoopCloseResult> {
+  close(
+    bind: LoopBindFn,
+    fields: { outcome: string; termination_reason: string; intent?: string; intent_version?: string }
+  ): Promise<LoopCloseResult> {
     return this.runExclusive(async () => {
       const request = buildLoopCloseRequest(this.context, {
         action_count: this.actionCountValue,
         prior_receipt_id: this.priorReceiptIdValue,
         outcome: fields.outcome,
-        termination_reason: fields.termination_reason
+        termination_reason: fields.termination_reason,
+        intent: fields.intent,
+        intent_version: fields.intent_version
       });
 
       const response = await bind(request);
@@ -270,11 +316,14 @@ export type LoopChainVerification =
  * action_count that disagrees with the number of in-loop links.
  */
 export function verifyLoopChain(links: readonly LoopChainLink[]): LoopChainVerification {
-  const inLoop = links.filter((link): link is LoopChainLink & { loop: LoopConstraint } =>
-    isRecord(link.loop)
-  );
   const terminals = links.filter(
     (link): link is LoopChainLink & { loop_close: LoopCloseConstraint } => isRecord(link.loop_close)
+  );
+  // The terminal close link carries BOTH loop and loop_close (canonical v0.3.9), so a
+  // link bearing loop_close is the terminal — never counted as an in-loop action link.
+  const inLoop = links.filter(
+    (link): link is LoopChainLink & { loop: LoopConstraint } =>
+      isRecord(link.loop) && !isRecord(link.loop_close)
   );
 
   if (terminals.length === 0) {
@@ -319,6 +368,15 @@ export function verifyLoopChain(links: readonly LoopChainLink[]): LoopChainVerif
     };
   }
 
+  // The terminal also carries its own constraints.loop link; it must seal the same prior.
+  const terminalLoop = terminals[0]!.loop;
+  if (isRecord(terminalLoop) && (terminalLoop.prior_receipt_id ?? null) !== expectedPrior) {
+    return {
+      valid: false,
+      reason: "terminal constraints.loop prior_receipt_id does not seal the last in-loop link"
+    };
+  }
+
   if (terminal.action_count !== inLoop.length) {
     return {
       valid: false,
@@ -341,19 +399,23 @@ export type LoopCloseTuning = {
  */
 export function loadLoopContextFromEnv(env: NodeJS.ProcessEnv = process.env): LoopContext | undefined {
   const loop_id = env.LYHNA_PROXY_LOOP_ID?.trim();
-  const goal_hash = env.LYHNA_PROXY_GOAL_HASH?.trim();
+  // The raw goal is the load-bearing input: goal_hash is derived from it (sha256,
+  // no trim/normalization), matching the canonical. The goal value itself is never
+  // trimmed — only checked for presence.
+  const goal = env.LYHNA_PROXY_GOAL;
+  const hasGoal = goal !== undefined && goal.length > 0;
 
-  if (!loop_id && !goal_hash) {
+  if (!loop_id && !hasGoal) {
     return undefined;
   }
 
-  if (!loop_id || !goal_hash) {
+  if (!loop_id || !hasGoal) {
     throw new Error(
-      "Loop-context threading requires both LYHNA_PROXY_LOOP_ID and LYHNA_PROXY_GOAL_HASH."
+      "Loop-context threading requires both LYHNA_PROXY_LOOP_ID and LYHNA_PROXY_GOAL."
     );
   }
 
-  return { loop_id, goal_hash };
+  return createLoopContext({ loop_id, goal });
 }
 
 /** Grace-window tuning for the shutdown close POST. SIGTERM is the only trigger. */

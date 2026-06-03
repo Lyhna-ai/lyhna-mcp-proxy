@@ -151,11 +151,13 @@ Loop identity is injected via the **start environment** (never from agent reques
 
 ```text
 LYHNA_PROXY_LOOP_ID=<loop id for this run>
-LYHNA_PROXY_GOAL_HASH=<goal hash for this run>
+LYHNA_PROXY_GOAL=<raw goal string for this run>
 ```
 
 Both must be set together, or startup refuses. When unset, the proxy runs as the plain
-bind gate (no loop threading).
+bind gate (no loop threading). `goal_hash` is derived from the raw goal as
+`sha256(utf8(goal))` hex (no trimming/normalization), matching the canonical
+`@lyhna/bind` loop chain; it is carried in `constraints.loop` on every link.
 
 While the loop is active, every `tools/call` bind is stamped with
 `constraints.loop { loop_id, prior_receipt_id, goal_hash }` and the receipt chain

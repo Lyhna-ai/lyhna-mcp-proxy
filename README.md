@@ -16,7 +16,7 @@ Baseline proxy, Streamable HTTP server mode, multi-transport upstream support, a
 loop-context adapter (loop-bound chained receipts with proxy-controlled close) are built
 and tested.
 
-Current verification: 53 tests passing across 8 test files.
+Current verification: 56 tests passing across 8 test files.
 
 ## Goals
 
@@ -87,8 +87,9 @@ test of it; the adapter is designed to outlive that test.
 Governing line: **the agent operates inside the loop; the PROXY boundary closes the loop
 on controlled shutdown (SIGTERM); Lyhna signs the proof.**
 
-When a loop is configured (`LYHNA_PROXY_LOOP_ID` + `LYHNA_PROXY_GOAL_HASH`, injected via
-the start environment):
+When a loop is configured (`LYHNA_PROXY_LOOP_ID` + `LYHNA_PROXY_GOAL`, injected via the
+start environment; the proxy derives `goal_hash = sha256(utf8(goal))` hex, matching the
+canonical `@lyhna/bind` loop chain):
 
 1. **Loop-context threading.** Every intercepted `tools/call` bind is stamped with
    `constraints.loop { loop_id, prior_receipt_id, goal_hash }`, merged additively over

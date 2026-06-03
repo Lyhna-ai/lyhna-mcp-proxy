@@ -16,6 +16,8 @@ export { BindGateError, createProxyCore } from "./proxy-core.js";
 export {
   buildLoopCloseRequest,
   closeLoopWithRetry,
+  createLoopContext,
+  deriveGoalHash,
   loadLoopCloseTuning,
   loadLoopContextFromEnv,
   LoopSession,

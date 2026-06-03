@@ -21,7 +21,7 @@ close**. Concretely the agent must not be able to:
 
 - send `SIGTERM` / `SIGKILL` to the proxy process (forging or pre-empting the close, or
   killing the proxy before it can seal the chain);
-- inspect or overwrite the loop identity (`LYHNA_PROXY_LOOP_ID`, `LYHNA_PROXY_GOAL_HASH`)
+- inspect or overwrite the loop identity (`LYHNA_PROXY_LOOP_ID`, `LYHNA_PROXY_GOAL`)
   or the bind credentials the proxy uses;
 - share a process / signal domain with the proxy such that crashing the agent also
   tears down the proxy before `shutdown()` runs.
@@ -47,9 +47,9 @@ runtime cannot signal or kill**. Recommended posture:
    controlled-shutdown signal that seals the loop. Loop teardown is therefore an
    infrastructure action, not an in-band agent action.
 4. **Injected, not negotiated, loop identity.** `LYHNA_PROXY_LOOP_ID` and
-   `LYHNA_PROXY_GOAL_HASH` are injected into the proxy's start environment by the
-   supervisor. They are never read from agent-supplied request data, and the agent
-   never sees the bind credentials (`LYHNA_PROXY_BIND_API_KEY`).
+   `LYHNA_PROXY_GOAL` (from which `goal_hash` is derived) are injected into the proxy's
+   start environment by the supervisor. They are never read from agent-supplied request
+   data, and the agent never sees the bind credentials (`LYHNA_PROXY_BIND_API_KEY`).
 5. **Bind egress, not agent egress.** The proxy's path to `bind()` must be reachable
    from the proxy's network identity independent of the agent, so the agent cannot
    block the close POST by manipulating its own egress.
