@@ -144,6 +144,42 @@ npm.cmd run start:proxy:http
 
 The bind gate still runs locally in front of that remote upstream. Only the upstream transport changes.
 
+## Loop-Context Mode
+
+The proxy can thread a Lyhna loop through every bind and seal it on controlled shutdown.
+Loop identity is injected via the **start environment** (never from agent request data):
+
+```text
+LYHNA_PROXY_LOOP_ID=<loop id for this run>
+LYHNA_PROXY_GOAL=<raw goal string for this run>
+```
+
+Both must be set together, or startup refuses. When unset, the proxy runs as the plain
+bind gate (no loop threading). `goal_hash` is derived from the raw goal as
+`sha256(utf8(goal))` hex (no trimming/normalization), matching the canonical
+`@lyhna/bind` loop chain; it is carried in `constraints.loop` on every link.
+
+While the loop is active, every `tools/call` bind is stamped with
+`constraints.loop { loop_id, prior_receipt_id, goal_hash }` and the receipt chain
+advances per call. On `SIGTERM`, the proxy emits a terminal `loop_close` bind
+(`constraints.loop_close { … }`) **before** tearing down the upstream/bind transport.
+`SIGTERM` is the only close trigger; `SIGINT` (Ctrl-C) does not seal the chain.
+
+Optional grace-window tuning for the close POST:
+
+```text
+LYHNA_PROXY_LOOP_CLOSE_GRACE_MS=5000   # total retry budget for the close POST
+LYHNA_PROXY_LOOP_CLOSE_RETRY_MS=250    # delay between retries
+```
+
+If the close POST ultimately fails within the grace window, the chain is left
+**unsealed** on purpose; `verifyLoopChain` detects that an in-loop chain has no terminal
+`loop_close`.
+
+> Production deployments must run the proxy under an identity / PID namespace the agent
+> cannot signal or kill, so the `SIGTERM` close stays proxy-controlled. See
+> `docs/PRODUCTION-ISOLATION.md`.
+
 ## Confirm It Mirrors Upstream Tools
 
 This command starts a temporary proxy process with stub `APPROVED`, connects as an MCP client, lists tools, prints the result, and exits:

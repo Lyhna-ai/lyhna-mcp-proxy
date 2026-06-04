@@ -14,6 +14,29 @@ export { decideForward } from "./enforcement.js";
 export type { McpTool, McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 export { BindGateError, createProxyCore } from "./proxy-core.js";
 export {
+  buildLoopCloseRequest,
+  closeLoopWithRetry,
+  createLoopContext,
+  deriveGoalHash,
+  loadLoopCloseTuning,
+  loadLoopContextFromEnv,
+  LoopSession,
+  mergeLoopConstraint,
+  stripAuthorityTier,
+  verifyLoopChain
+} from "./loop.js";
+export type {
+  LoopBindFn,
+  LoopChainLink,
+  LoopChainVerification,
+  LoopCloseConstraint,
+  LoopCloseFields,
+  LoopCloseResult,
+  LoopCloseTuning,
+  LoopConstraint,
+  LoopContext
+} from "./loop.js";
+export {
   connectStreamableHttpUpstream,
   connectStdioUpstream,
   connectUpstream,

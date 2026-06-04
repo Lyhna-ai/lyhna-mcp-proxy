@@ -6,6 +6,12 @@ export type BindRequest = {
   action_payload: Record<string, unknown>;
   intent: string;
   intent_version: string;
+  // Optional, additive constraints envelope. The locked hosted contract is the
+  // strict four-field shape above; `buildBindRequest` never sets this. Loop-context
+  // threading (see loop.ts) stamps `constraints.loop` / `constraints.loop_close`
+  // additively when a loop is configured. The caller must NOT supply `authority_tier`
+  // here or at the top level; the server resolves authority and the adapter strips it.
+  constraints?: Record<string, unknown>;
 };
 
 export type BindOutcome = "APPROVED" | "ESCALATED" | "REFUSED";
