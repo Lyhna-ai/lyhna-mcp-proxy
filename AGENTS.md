@@ -65,7 +65,16 @@ APPROVED means forward. ESCALATED means hold and await human resolution — do n
 
 ## Contract Verification
 
-The `@lyhna/bind` request shape used in this repo must be verified against the actual hosted contract before the real bind client is built. The locked contract is strict four-field: `action_type`, `action_payload`, `intent`, `intent_version`. The caller must NOT supply `authority_tier` — the server resolves it. Any `action_payload` sub-shape or optional `metadata` field in the scaffold is a placeholder and must be confirmed against the real package, not assumed.
+The `@lyhna/bind` request shape used in this repo must be verified against the actual hosted contract before the real bind client is built. The base contract is four-field: `action_type`, `action_payload`, `intent`, `intent_version`. The caller must NOT supply `authority_tier` — the server resolves it. Any `action_payload` sub-shape or optional `metadata` field in the scaffold is a placeholder and must be confirmed against the real package, not assumed.
+
+### Verified extension: `constraints` (loop chain)
+
+`constraints` is a fifth, **server-signed** field on `bind()`, verified against the canonical `@lyhna/bind` loop chain (`lyhna-bind/src/loop.ts` v0.3.9). In the canonical, `closeLoop` rides `bind()` directly — there is no new endpoint or mint — and the loop linkage "rides inside `constraints` (a canonical, signed field)". The enforcement core resolves the loop action and signs the receipt as it does any other bind. Sending `constraints` to the hosted endpoint is therefore in-contract, not an unverified extra.
+
+Scope and safety:
+- `constraints` is **additive and conditional**: the proxy adds it only when a loop is configured (`LYHNA_PROXY_LOOP_ID` + `LYHNA_PROXY_GOAL`). With no loop configured, `buildBindRequest` still emits exactly the four base fields, so non-loop bind traffic is unchanged.
+- The loop layer owns the `constraints.loop` / `constraints.loop_close` keys as distinct keys layered over caller constraints; it never clobbers server-appended sibling keys (`resolved_by`, `original_escalation`).
+- `authority_tier` is still stripped (top level and inside `constraints`) — the server resolves authority.
 
 ## Constraint Handling
 

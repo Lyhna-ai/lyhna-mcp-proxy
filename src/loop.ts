@@ -342,6 +342,7 @@ export function verifyLoopChain(links: readonly LoopChainLink[]): LoopChainVerif
 
   const terminal = terminals[0]!.loop_close;
   const loopId = terminal.loop_id;
+  const goalHash = terminal.goal_hash;
 
   if (!isRecord(links[links.length - 1]?.loop_close)) {
     return { valid: false, reason: "loop_close is not the terminal (last) link in the chain" };
@@ -351,6 +352,11 @@ export function verifyLoopChain(links: readonly LoopChainLink[]): LoopChainVerif
   for (const link of inLoop) {
     if (link.loop.loop_id !== loopId) {
       return { valid: false, reason: `loop_id mismatch on in-loop link ${link.receipt_id}` };
+    }
+    // The loop stamp exists to prove every link shares one goal: reject any link whose
+    // goal_hash diverges, even if its loop_id and prior chain are otherwise continuous.
+    if (link.loop.goal_hash !== goalHash) {
+      return { valid: false, reason: `goal_hash mismatch on in-loop link ${link.receipt_id}` };
     }
     if ((link.loop.prior_receipt_id ?? null) !== expectedPrior) {
       return {
@@ -368,13 +374,22 @@ export function verifyLoopChain(links: readonly LoopChainLink[]): LoopChainVerif
     };
   }
 
-  // The terminal also carries its own constraints.loop link; it must seal the same prior.
+  // The terminal also carries its own constraints.loop link; it must seal the same prior
+  // and share the same goal_hash.
   const terminalLoop = terminals[0]!.loop;
-  if (isRecord(terminalLoop) && (terminalLoop.prior_receipt_id ?? null) !== expectedPrior) {
-    return {
-      valid: false,
-      reason: "terminal constraints.loop prior_receipt_id does not seal the last in-loop link"
-    };
+  if (isRecord(terminalLoop)) {
+    if ((terminalLoop.prior_receipt_id ?? null) !== expectedPrior) {
+      return {
+        valid: false,
+        reason: "terminal constraints.loop prior_receipt_id does not seal the last in-loop link"
+      };
+    }
+    if (terminalLoop.goal_hash !== goalHash) {
+      return {
+        valid: false,
+        reason: "terminal constraints.loop goal_hash does not match loop_close goal_hash"
+      };
+    }
   }
 
   if (terminal.action_count !== inLoop.length) {

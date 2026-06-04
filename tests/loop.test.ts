@@ -365,6 +365,21 @@ describe("verifyLoopChain (sealed vs unsealed)", () => {
     expect(verifyLoopChain(chain)).toMatchObject({ valid: false });
   });
 
+  it("rejects a link spliced in from a different goal (goal_hash mismatch)", () => {
+    // Same loop_id and a continuous prior chain, but one link carries a different goal.
+    const chain = sealedChain();
+    (chain[1].loop as { goal_hash: string }).goal_hash = "different-goal";
+    const result = verifyLoopChain(chain);
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/goal_hash mismatch/);
+  });
+
+  it("rejects a terminal whose own loop link goal_hash diverges", () => {
+    const chain = sealedChain();
+    (chain[2].loop as { goal_hash: string }).goal_hash = "different-goal";
+    expect(verifyLoopChain(chain)).toMatchObject({ valid: false });
+  });
+
   it("rejects a loop_close that does not seal the last in-loop link", () => {
     const chain = sealedChain();
     (chain[2].loop_close as { prior_receipt_id: string }).prior_receipt_id = "WRONG";

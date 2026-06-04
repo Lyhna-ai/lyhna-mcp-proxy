@@ -16,7 +16,7 @@ Baseline proxy, Streamable HTTP server mode, multi-transport upstream support, a
 loop-context adapter (loop-bound chained receipts with proxy-controlled close) are built
 and tested.
 
-Current verification: 56 tests passing across 8 test files.
+Current verification: 58 tests passing across 8 test files.
 
 ## Goals
 
