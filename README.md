@@ -12,11 +12,12 @@ Supported topologies:
 
 ## Status
 
-Baseline proxy, Streamable HTTP server mode, multi-transport upstream support, and the
-loop-context adapter (loop-bound chained receipts with proxy-controlled close) are built
-and tested.
+Baseline proxy, Streamable HTTP server mode, multi-transport upstream support, the
+loop-context adapter (loop-bound chained receipts with proxy-controlled close), and the
+standing multi-session service (session registry + supervisor-only control channel) are
+built and tested.
 
-Current verification: 58 tests passing across 8 test files.
+Current verification: 69 tests passing across 10 test files.
 
 ## Goals
 
@@ -117,3 +118,31 @@ canonical `@lyhna/bind` loop chain):
    open for it; Chione's throwaway env is not required to satisfy it.
 
 When no loop is configured, the proxy behaves exactly as the baseline bind gate.
+
+## Standing Service (multi-session)
+
+The per-task topology above runs one loop per process, sealed on `SIGTERM`. The **standing
+service** generalizes that to one long-lived proxy serving many concurrent sessions, each
+with its own independent receipt chain. It is additive and composes the same
+`LoopSession` spine — the bind contract, `prior_receipt_id` advance, and `verifyLoopChain`
+are unchanged.
+
+Two topologically distinct surfaces:
+
+1. **Agent path — session-scoped MCP transport.** The supervisor hands each agent only a
+   per-session URL: `http://<host>:<port>/mcp/<session_id>`. Every `tools/call` on that URL
+   routes through the `LoopSession` the supervisor opened for `<session_id>`
+   (`src/transport/standing-http.ts`). The agent can list and call tools; it has **no**
+   open/close verb. A call for a session with no open loop fails closed.
+2. **Control path — supervisor-only channel.** A separate listener
+   (`src/control-channel.ts`) — a unix-domain socket created owner-only (`0o600`), or a
+   loopback TCP fallback — emits `open` / `close` / `status`. This is the **only** surface
+   that opens or seals a loop. `loop_close` still rides `bind()` via `constraints.loop_close`
+   exactly as in the per-task path.
+
+**Self-attestation guard (non-negotiable):** the control path sits on the supervisor side
+of the UID / PID-namespace boundary and is never reachable on the agent's MCP path. If the
+governed agent could close its own loop, "the proxy closes the loop" collapses back into
+"the agent closes the loop." The agent is never the proxy's spawner — it holds only a URL —
+which is what makes the Phase 5b kill-guard achievable. See
+[`docs/PRODUCTION-ISOLATION.md`](docs/PRODUCTION-ISOLATION.md).

@@ -76,6 +76,29 @@ The adapter is written so this isolation is a drop-in, not a rewrite:
   shared UID, shared PID namespace, or shared lifecycle with the agent, so dropping it
   behind a namespace boundary requires no code change — only deployment configuration.
 
+## Standing service: the control channel inherits this isolation
+
+The standing service (one proxy, many sessions) replaces the per-process `SIGTERM` close
+with a supervisor-only **control channel** (`src/control-channel.ts`) that emits
+`open` / `close` per session. That channel is the standing-mode equivalent of the
+`SIGTERM` trigger, and it inherits **exactly** the isolation described above:
+
+- It is a **separate listener** from the agent-facing MCP transport — a unix-domain socket
+  created owner-only (`0o600`) so a different-UID agent cannot `connect(2)` to it, or a
+  loopback TCP fallback for platforms without unix sockets. The agent's MCP path
+  (`/mcp/<session_id>`) has no open/close verb and never reaches it.
+- It must run under the **supervisor identity**, on the supervisor side of the UID /
+  PID-namespace boundary. The governed agent must not be able to speak `close` on it. If it
+  could, the agent would close its own loop and the proof collapses — the same
+  self-attestation failure the `SIGTERM` rules exist to prevent.
+- `close` and the `SIGTERM` shutdown sweep are both supervisor actions. Loop teardown stays
+  an infrastructure action, never an in-band agent action.
+
+The deployable shape is therefore a standing HTTP service the supervisor starts (the agent
+is never its spawner; it holds only a per-session URL), with the control channel bound to a
+supervisor-owned socket. Under that posture the proxy can be dropped behind the UID /
+PID-namespace boundary with no code change — only deployment configuration.
+
 ## What Chione's throwaway env does and does not need
 
 For the first live test it is acceptable to run the proxy in the same environment as the

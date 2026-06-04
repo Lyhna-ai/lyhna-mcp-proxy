@@ -180,6 +180,51 @@ If the close POST ultimately fails within the grace window, the chain is left
 > cannot signal or kill, so the `SIGTERM` close stays proxy-controlled. See
 > `docs/PRODUCTION-ISOLATION.md`.
 
+## Standing Service Mode (multi-session)
+
+The HTTP proxy enters **standing mode** when a control-channel address is configured. One
+process then serves many concurrent sessions, each routed by a session id in the URL path.
+Loops are opened and closed ONLY through the supervisor control channel — never by the
+agent.
+
+Start it with a supervisor-only unix-domain control socket (preferred):
+
+```text
+LYHNA_PROXY_CONTROL_SOCKET=/run/lyhna/control.sock   # owner-only (0600) unix socket
+LYHNA_PROXY_HTTP_PORT=8765                            # agent-facing MCP port
+```
+
+Or a loopback TCP control port (weaker isolation; any same-host process can reach it):
+
+```text
+LYHNA_PROXY_CONTROL_PORT=8790
+LYHNA_PROXY_CONTROL_HOST=127.0.0.1
+```
+
+The agent is handed only a per-session URL:
+
+```text
+http://127.0.0.1:8765/mcp/<session_id>
+```
+
+The supervisor drives the control channel with newline-delimited JSON, one command per
+line:
+
+```text
+{"cmd":"open","session_id":"s1","loop_id":"loop_s1","goal":"<raw goal>"}
+{"cmd":"status"}
+{"cmd":"close","session_id":"s1","outcome":"COMPLETED","reason":"task_done"}
+```
+
+`open` must precede the agent's first `tools/call`; a call for a session with no open loop
+fails closed. `close` seals the chain (terminal `loop_close`) and removes the session.
+`SIGTERM` is a supervisor signal and seals any still-open loops on shutdown; `SIGINT` does
+not seal.
+
+> The control channel inherits the SIGTERM isolation requirement: it must be reachable
+> only by the supervisor identity, never by the governed agent. See
+> `docs/PRODUCTION-ISOLATION.md`.
+
 ## Confirm It Mirrors Upstream Tools
 
 This command starts a temporary proxy process with stub `APPROVED`, connects as an MCP client, lists tools, prints the result, and exits:

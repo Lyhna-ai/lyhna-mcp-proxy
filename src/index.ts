@@ -45,6 +45,20 @@ export {
   serveStreamableHttpProxy,
   serveStdioProxy
 } from "./transport/mcp-sdk.js";
+export { serveStandingHttpProxy } from "./transport/standing-http.js";
+export type { StandingHttpProxy, StandingHttpProxyOptions } from "./transport/standing-http.js";
+export { LoopSessionRegistry } from "./session-registry.js";
+export type {
+  CloseLoopInput,
+  OpenLoopInput,
+  SessionSummary
+} from "./session-registry.js";
+export { serveControlChannel } from "./control-channel.js";
+export type {
+  ControlChannelHandle,
+  ControlChannelLogger,
+  ControlChannelOptions
+} from "./control-channel.js";
 export type {
   McpProxyRequestHandlers,
   StreamableHttpUpstream,

@@ -1,0 +1,165 @@
+import { describe, expect, it } from "vitest";
+
+import type { BindRequest, BindResponse, LoopChainLink } from "../src/index.js";
+import { LoopSessionRegistry, verifyLoopChain } from "../src/index.js";
+
+type BindRecord = { request: BindRequest; response: BindResponse };
+
+// A synthetic bind that records every (request, response) and mints unique receipt ids,
+// so a chain can be reconstructed COLD from emitted receipts alone — exactly what an
+// independent verifier sees. No live bind, no hosted contract.
+function recordingBind(): { bind: (r: BindRequest) => Promise<BindResponse>; records: BindRecord[] } {
+  let n = 0;
+  const records: BindRecord[] = [];
+  return {
+    records,
+    bind: async (request) => {
+      n += 1;
+      const response: BindResponse = {
+        outcome: "APPROVED",
+        receipt_id: `rcpt_${n}`,
+        signature: `sig_${n}`
+      };
+      records.push({ request, response });
+      return response;
+    }
+  };
+}
+
+function toolCallRequest(query: string): BindRequest {
+  return {
+    action_type: "repo.search",
+    action_payload: { tool_name: "repo.search", arguments: { query } },
+    intent: "mcp:repo.search",
+    intent_version: "1.0"
+  };
+}
+
+// Cold reconstruction: from the flat record of binds, pull the links belonging to one
+// loop_id (in chain order) and shape them the way the canonical verifier expects.
+function reconstructLinks(records: BindRecord[], loopId: string): LoopChainLink[] {
+  return records
+    .filter(({ request }) => {
+      const loop = request.constraints?.loop as { loop_id?: string } | undefined;
+      const close = request.constraints?.loop_close as { loop_id?: string } | undefined;
+      return loop?.loop_id === loopId || close?.loop_id === loopId;
+    })
+    .map(({ request, response }) => ({
+      receipt_id: response.receipt_id,
+      loop: (request.constraints?.loop as LoopChainLink["loop"]) ?? null,
+      loop_close: (request.constraints?.loop_close as LoopChainLink["loop_close"]) ?? null
+    }));
+}
+
+const TUNING = { graceMs: 200, retryDelayMs: 5 };
+
+describe("LoopSessionRegistry lifecycle", () => {
+  it("opens a loop, advances its chain, seals it, and the sealed chain verifies COLD", async () => {
+    const { bind, records } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+
+    const session = registry.openLoop({ session_id: "s1", loop_id: "loop_s1", goal: "ship it" });
+    expect(registry.size).toBe(1);
+
+    await session.bindToolCall(toolCallRequest("a"), bind);
+    await session.bindToolCall(toolCallRequest("b"), bind);
+    await session.bindToolCall(toolCallRequest("c"), bind);
+    expect(session.actionCount).toBe(3);
+
+    const result = await registry.closeLoop({ session_id: "s1", outcome: "COMPLETED", reason: "task_done" });
+    expect(result.sealed).toBe(true);
+    // Sealed sessions are removed so any later agent call fails closed.
+    expect(registry.get("s1")).toBeUndefined();
+    expect(registry.size).toBe(0);
+
+    const cold = verifyLoopChain(reconstructLinks(records, "loop_s1"));
+    expect(cold).toEqual({ valid: true, sealed: true, loop_id: "loop_s1", action_count: 3 });
+  });
+
+  it("runs multiple concurrent sessions with fully independent chains (no cross-contamination)", async () => {
+    const { bind, records } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+
+    const a = registry.openLoop({ session_id: "A", loop_id: "loop_A", goal: "goal A" });
+    const b = registry.openLoop({ session_id: "B", loop_id: "loop_B", goal: "goal B" });
+    const c = registry.openLoop({ session_id: "C", loop_id: "loop_C", goal: "goal C" });
+    expect(registry.size).toBe(3);
+
+    // Interleave calls across all three sessions concurrently.
+    await Promise.all([
+      a.bindToolCall(toolCallRequest("a1"), bind),
+      b.bindToolCall(toolCallRequest("b1"), bind),
+      c.bindToolCall(toolCallRequest("c1"), bind),
+      a.bindToolCall(toolCallRequest("a2"), bind),
+      b.bindToolCall(toolCallRequest("b2"), bind)
+    ]);
+
+    await registry.closeLoop({ session_id: "A", outcome: "COMPLETED", reason: "done" });
+    await registry.closeLoop({ session_id: "B", outcome: "COMPLETED", reason: "done" });
+    await registry.closeLoop({ session_id: "C", outcome: "COMPLETED", reason: "done" });
+
+    // Each chain verifies cold on its own, with its own action count.
+    expect(verifyLoopChain(reconstructLinks(records, "loop_A"))).toMatchObject({
+      valid: true,
+      sealed: true,
+      action_count: 2
+    });
+    expect(verifyLoopChain(reconstructLinks(records, "loop_B"))).toMatchObject({
+      valid: true,
+      sealed: true,
+      action_count: 2
+    });
+    expect(verifyLoopChain(reconstructLinks(records, "loop_C"))).toMatchObject({
+      valid: true,
+      sealed: true,
+      action_count: 1
+    });
+
+    // No prior_receipt_id from one loop ever references another loop's receipts.
+    const aReceipts = new Set(reconstructLinks(records, "loop_A").map((l) => l.receipt_id));
+    for (const link of reconstructLinks(records, "loop_B")) {
+      const prior = link.loop?.prior_receipt_id ?? link.loop_close?.prior_receipt_id ?? null;
+      if (prior !== null) {
+        expect(aReceipts.has(prior)).toBe(false);
+      }
+    }
+  });
+
+  it("refuses to open a duplicate session (fail closed, no silent orphaning)", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    registry.openLoop({ session_id: "dup", loop_id: "loop_dup", goal: "g" });
+    expect(() => registry.openLoop({ session_id: "dup", loop_id: "loop_dup2", goal: "g2" })).toThrow(
+      /already open/
+    );
+  });
+
+  it("rejects open with missing identity fields", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    expect(() => registry.openLoop({ session_id: "", loop_id: "l", goal: "g" })).toThrow(/session_id/);
+    expect(() => registry.openLoop({ session_id: "s", loop_id: "", goal: "g" })).toThrow(/loop_id/);
+    expect(() => registry.openLoop({ session_id: "s", loop_id: "l", goal: "" })).toThrow(/goal/);
+  });
+
+  it("throws when closing an unknown session", async () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    await expect(
+      registry.closeLoop({ session_id: "nope", outcome: "COMPLETED", reason: "x" })
+    ).rejects.toThrow(/No open loop/);
+  });
+
+  it("closeAll seals every open loop", async () => {
+    const { bind, records } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    registry.openLoop({ session_id: "x", loop_id: "loop_x", goal: "gx" });
+    registry.openLoop({ session_id: "y", loop_id: "loop_y", goal: "gy" });
+
+    const results = await registry.closeAll("SIGTERM");
+    expect([...results.values()].every((r) => r.sealed)).toBe(true);
+    expect(registry.size).toBe(0);
+    expect(verifyLoopChain(reconstructLinks(records, "loop_x"))).toMatchObject({ valid: true, sealed: true });
+    expect(verifyLoopChain(reconstructLinks(records, "loop_y"))).toMatchObject({ valid: true, sealed: true });
+  });
+});
