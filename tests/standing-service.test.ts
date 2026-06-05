@@ -1,4 +1,5 @@
 import { connect as netConnect } from "node:net";
+import { request as httpRequest } from "node:http";
 import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -247,6 +248,36 @@ describe("standing service: registry + supervisor control channel", () => {
       const info = await stat(socketPath);
       expect(info.mode & 0o077).toBe(0); // no group/other permission bits
     }
+  });
+
+  it("fails closed with a JSON 404 for a malformed session encoding, without disrupting the proxy", async () => {
+    const { socketPath } = await start();
+
+    // An invalid percent-encoding in the agent URL path must not reject the async
+    // listener — it returns a fail-closed 404 JSON error.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          method: "POST",
+          host: standing!.host,
+          port: standing!.port,
+          path: `${standing!.path}/%E0%A4%A`,
+          headers: { "content-type": "application/json", accept: "application/json" }
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        }
+      );
+      req.on("error", reject);
+      req.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    });
+    expect(status).toBe(404);
+
+    // The proxy is still alive: a normal session flow works afterward.
+    await sendControl(socketPath, { cmd: "open", session_id: "alive", loop_id: "loop_alive", goal: "g" });
+    const agent = await connectAgent("alive");
+    await expect(agent.callTool({ toolName: "echo", arguments: { message: "still up" } })).resolves.toBeDefined();
   });
 
   it("rejects malformed control commands without affecting the registry", async () => {

@@ -190,7 +190,12 @@ function failClosedCore(upstream: UpstreamMcpClient, sessionId: string): Upstrea
 /**
  * Extract the session_id from `<mcpPath>/<session_id>`. Returns undefined when the path
  * is not under mcpPath, or is exactly mcpPath with no session segment, or carries extra
- * segments after the session id.
+ * segments after the session id, or carries a malformed percent-encoding.
+ *
+ * The session id arrives in the agent URL, so this must never throw: a malformed
+ * encoding (e.g. `/mcp/%E0%A4%A`) would otherwise reject the async listener before the
+ * request `try` block and surface as an unhandled rejection. Treat it as an unknown path
+ * and fail closed (the caller returns a 404 JSON error).
  */
 function extractSessionId(pathname: string, mcpPath: string): string | undefined {
   if (!pathname.startsWith(`${mcpPath}/`)) {
@@ -200,7 +205,11 @@ function extractSessionId(pathname: string, mcpPath: string): string | undefined
   if (remainder.length === 0 || remainder.includes("/")) {
     return undefined;
   }
-  return decodeURIComponent(remainder);
+  try {
+    return decodeURIComponent(remainder);
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizePath(path: string): string {

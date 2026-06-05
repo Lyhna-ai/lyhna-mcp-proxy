@@ -142,6 +142,61 @@ describe("LoopSessionRegistry lifecycle", () => {
     expect(() => registry.openLoop({ session_id: "s", loop_id: "l", goal: "" })).toThrow(/goal/);
   });
 
+  it("coalesces concurrent closes for one session into a single terminal loop_close", async () => {
+    const { bind, records } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    const session = registry.openLoop({ session_id: "race", loop_id: "loop_race", goal: "g" });
+    await session.bindToolCall(toolCallRequest("a"), bind);
+
+    // Two overlapping closes (e.g. a supervisor retry sending two `close` lines).
+    const [r1, r2] = await Promise.all([
+      registry.closeLoop({ session_id: "race", outcome: "COMPLETED", reason: "first" }),
+      registry.closeLoop({ session_id: "race", outcome: "COMPLETED", reason: "second" })
+    ]);
+
+    expect(r1.sealed).toBe(true);
+    expect(r2.sealed).toBe(true);
+    // Both coalesced onto the SAME close — identical terminal receipt.
+    if (r1.sealed && r2.sealed) {
+      expect(r1.receipt.receipt_id).toBe(r2.receipt.receipt_id);
+    }
+
+    // Exactly one terminal close bind was emitted.
+    const closeBinds = records.filter(({ request }) => request.action_type === "loop_close");
+    expect(closeBinds).toHaveLength(1);
+    expect(registry.size).toBe(0);
+
+    // The reconstructed chain has a single terminal and verifies cold.
+    expect(verifyLoopChain(reconstructLinks(records, "loop_race"))).toEqual({
+      valid: true,
+      sealed: true,
+      loop_id: "loop_race",
+      action_count: 1
+    });
+  });
+
+  it("coalesces a control close racing the closeAll sweep into a single terminal", async () => {
+    const { bind, records } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    const session = registry.openLoop({ session_id: "sweep", loop_id: "loop_sweep", goal: "g" });
+    await session.bindToolCall(toolCallRequest("a"), bind);
+
+    // A direct control close racing the SIGTERM sweep over the same session.
+    await Promise.all([
+      registry.closeLoop({ session_id: "sweep", outcome: "COMPLETED", reason: "control" }),
+      registry.closeAll("SIGTERM")
+    ]);
+
+    const closeBinds = records.filter(({ request }) => request.action_type === "loop_close");
+    expect(closeBinds).toHaveLength(1);
+    expect(registry.size).toBe(0);
+    expect(verifyLoopChain(reconstructLinks(records, "loop_sweep"))).toMatchObject({
+      valid: true,
+      sealed: true,
+      action_count: 1
+    });
+  });
+
   it("throws when closing an unknown session", async () => {
     const { bind } = recordingBind();
     const registry = new LoopSessionRegistry(bind, TUNING);

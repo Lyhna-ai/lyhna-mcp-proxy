@@ -54,6 +54,9 @@ export type SessionSummary = {
  */
 export class LoopSessionRegistry {
   private readonly sessions = new Map<string, LoopSession>();
+  // In-flight close per session_id. Overlapping closes coalesce onto the same promise
+  // so only ONE terminal loop_close is ever emitted (see closeLoop).
+  private readonly closing = new Map<string, Promise<LoopCloseResult>>();
 
   constructor(
     private readonly bind: LoopBindFn,
@@ -126,23 +129,47 @@ export class LoopSessionRegistry {
    * observe and retry.
    */
   async closeLoop(input: CloseLoopInput): Promise<LoopCloseResult> {
+    // Coalesce overlapping closes for the same session so exactly ONE terminal
+    // loop_close is ever emitted. Two close paths can race — a supervisor retry sending
+    // two `close` lines, or a control `close` racing the SIGTERM closeAll sweep — and
+    // both could read the same LoopSession before the first deletes it. Without this
+    // guard both would await closeLoopWithRetry and emit a second terminal close, which
+    // invalidates the chain (verifyLoopChain rejects multiple terminals). The claim is
+    // registered synchronously before the first await, so a concurrent caller observes it
+    // and returns the same in-flight result instead of starting a second close.
+    const inflight = this.closing.get(input.session_id);
+    if (inflight) {
+      return inflight;
+    }
+
     const session = this.sessions.get(input.session_id);
     if (!session) {
       throw new Error(`No open loop for session: ${input.session_id}`);
     }
 
-    const result = await closeLoopWithRetry(session, this.bind, {
-      outcome: input.outcome,
-      termination_reason: input.reason,
-      graceMs: this.tuning.graceMs,
-      retryDelayMs: this.tuning.retryDelayMs
-    });
+    const task = (async () => {
+      const result = await closeLoopWithRetry(session, this.bind, {
+        outcome: input.outcome,
+        termination_reason: input.reason,
+        graceMs: this.tuning.graceMs,
+        retryDelayMs: this.tuning.retryDelayMs
+      });
 
-    if (result.sealed) {
-      this.sessions.delete(input.session_id);
+      // A sealed result removes the session so later agent tools/call fail closed. An
+      // unsealed result is left in place (detectably unsealed) so the supervisor can retry.
+      if (result.sealed) {
+        this.sessions.delete(input.session_id);
+      }
+
+      return result;
+    })();
+
+    this.closing.set(input.session_id, task);
+    try {
+      return await task;
+    } finally {
+      this.closing.delete(input.session_id);
     }
-
-    return result;
   }
 
   /**
