@@ -1,16 +1,19 @@
 name: ci
 
-# Honesty regression guard: every push (any branch) and every PR to master runs the full
-# suite + typecheck + build, then BOTH cold-verify legs against the REAL standalone
-# lyhna-verify (cloned read-only — never vendored, never modified). A regression that
-# breaks Leg 2's full-green cold-verify, or makes Leg 1 leak / require shape adaptation,
-# turns this red. All material is public (pinned key, public verifier, static signed
-# corpus) — no secrets.
+# Honesty regression guard: every push (any branch) and every pull request (ANY base
+# branch) runs the full suite + typecheck + build, then BOTH cold-verify legs against the
+# REAL standalone lyhna-verify (cloned read-only — never vendored, never modified). A
+# regression that breaks Leg 2's full-green cold-verify, or makes Leg 1 leak / require
+# shape adaptation, turns this red. All material is public (pinned key, public verifier,
+# static signed corpus) — no secrets.
+#
+# The pull_request trigger is intentionally UNFILTERED by base branch: coupling the PR gate
+# to a branch-name string (e.g. `branches: [master]`) would silently stop matching if the
+# default branch were ever renamed, dropping the PR-gate leg.
 
 on:
   push:
   pull_request:
-    branches: [master]
 
 jobs:
   verify:
