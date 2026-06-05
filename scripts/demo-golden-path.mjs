@@ -260,16 +260,19 @@ async function main() {
   if (!existsSync(EXPORT_CLI)) {
     throw new Error(`export CLI not found at ${EXPORT_CLI} — run \`npm run build\` first.`);
   }
-  const work = mkdtempSync(join(tmpdir(), "lyhna-demo-"));
+  // `scratch` holds throwaway material (the lyhna-verify clone) and is cleaned up. The
+  // exported bundle is the DELIVERABLE — write it OUTSIDE scratch to a stable path so the
+  // developer can actually inspect and share it after the command exits.
+  const scratch = mkdtempSync(join(tmpdir(), "lyhna-demo-"));
+  const outDir = join(tmpdir(), "lyhna-loop-proof-bundle");
   try {
     log("=== Lyhna Loop Proof Adapter for MCP — local golden-path demo ===\n");
     log("start adapter -> open -> route synthetic call -> supervisor close -> dump -> export -> verify cold\n");
 
-    const outDir = join(work, "loop-proof-bundle");
     const produced = await produceGoldenPathBundle({ outDir, exportCli: EXPORT_CLI, log });
 
     log("\nCold-verifying the exported bundle with the real, standalone lyhna-verify...");
-    const verifyDir = resolveVerifyDir(work, log);
+    const verifyDir = resolveVerifyDir(scratch, log);
     const { json } = runVerifier(verifyDir, produced.receiptsPath);
     const verdict = assertSyntheticColdVerify(json);
 
@@ -281,7 +284,7 @@ async function main() {
     }
     log(`  ✓ DEMO cold-verify: ${verdict.detail}`);
     log("");
-    log(`Bundle written to: ${outDir}`);
+    log(`Bundle written to: ${outDir}  (preserved after exit — inspect or share these)`);
     log(`  receipts.json    — the verifier input (bare receipt array)`);
     log(`  bundle.json      — additive envelope (trust root, scheme, digest, advisory verdict)`);
     log(`  graph-node.json  — Authority Context Graph node`);
@@ -290,7 +293,7 @@ async function main() {
     log("This demo is SYNTHETIC and UNSIGNED on purpose: structural truth holds, crypto is");
     log("absent. Full-green signed proof comes from the static signed corpus (CI Leg 2).");
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
