@@ -162,28 +162,53 @@ export function assertExternalScope(receipts: ProofReceipt[]): void {
   });
 }
 
-// Fields that can carry the plaintext goal (the invariant is goal_hash ONLY). `intent`
-// is included because the loop_close bind defaults its `intent` to the raw goal
-// (buildLoopCloseRequest), and a free-text `goal` field is an explicit leak. The
-// structured `intent_version` marker is NOT goal-bearing and is unaffected.
-const PLAINTEXT_GOAL_FIELDS = ["goal", "intent"] as const;
+// Keys that carry the plaintext goal (the invariant is goal_hash ONLY). `intent` is
+// included because the loop_close bind defaults its `intent` to the raw goal
+// (buildLoopCloseRequest), and a free-text `goal` is an explicit leak. The structured
+// derivatives `goal_hash` / `intent_version` are NOT goal-bearing and are not matched.
+const PLAINTEXT_GOAL_KEYS = new Set(["goal", "intent"]);
 
 /**
- * Content-blind enforcement. A buyer-facing bundle carries `goal_hash` only — never the
- * plaintext goal. If any receipt carries a goal-bearing field, fail closed (reject the
- * export) rather than writing `receipts.json` with the sensitive field intact. We cannot
- * strip it (that would invalidate the signature), so rejection is the correct posture.
+ * Content-blind enforcement — the content counterpart to external-scope identity
+ * enforcement (tenant_hash, never tenant_id). A buyer-facing bundle carries `goal_hash`
+ * only; the plaintext goal must never appear. The check is DEEP (a goal-bearing key
+ * ANYWHERE in the receipt is a leak, not just at the top level), so nested plaintext
+ * cannot slip through. We cannot strip a leaking field (it would invalidate the
+ * signature), so the correct posture is to fail closed: reject the export, never writing
+ * receipts.json.
+ *
+ * External-scope receipts are content-blind BY CONSTRUCTION (lyhna-core reduces the goal
+ * to goal_hash); this guard is the fail-closed FLOOR that refuses anything that isn't.
  */
 export function assertContentBlind(receipts: ProofReceipt[]): void {
   receipts.forEach((r, i) => {
-    for (const field of PLAINTEXT_GOAL_FIELDS) {
-      if (Object.prototype.hasOwnProperty.call(r, field)) {
-        throw new Error(
-          `Receipt ${describe(r, i)} carries plaintext "${field}"; a content-blind bundle carries goal_hash only (fail closed).`
-        );
-      }
+    const leak = findPlaintextGoalKey(r);
+    if (leak) {
+      throw new Error(
+        `Receipt ${describe(r, i)} carries plaintext at "${leak}"; a content-blind bundle carries goal_hash only (fail closed).`
+      );
     }
   });
+}
+
+/** Deep scan for a goal-bearing key anywhere in a receipt; returns its path, or null. */
+function findPlaintextGoalKey(value: unknown, path = ""): string | null {
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const hit = findPlaintextGoalKey(value[i], `${path}[${i}]`);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      const here = path ? `${path}.${key}` : key;
+      if (PLAINTEXT_GOAL_KEYS.has(key)) return here;
+      const hit = findPlaintextGoalKey(child, here);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 /**

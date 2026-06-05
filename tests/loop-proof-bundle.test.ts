@@ -163,6 +163,16 @@ describe("content-blind enforcement (goal_hash only, never plaintext goal)", () 
     (receipts[0] as Record<string, unknown>).intent_version = "loop_v1";
     expect(() => assertContentBlind(receipts)).not.toThrow();
   });
+
+  it("rejects a NESTED plaintext goal/intent anywhere in the receipt (deep scan)", () => {
+    const receipts = externalReceipts();
+    // A plaintext goal buried below the top level must still fail closed.
+    (receipts[0] as Record<string, unknown>).action_payload = {
+      meta: { intent: "buried plaintext goal" }
+    };
+    expect(() => assertContentBlind(receipts)).toThrow(/action_payload\.meta\.intent/);
+    expect(() => buildLoopProofBundle({ receipts, source_env: "test" })).toThrow(/content-blind/);
+  });
 });
 
 describe("source-byte preservation (provenance)", () => {
