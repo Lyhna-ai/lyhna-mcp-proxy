@@ -1,0 +1,162 @@
+import { describe, expect, it } from "vitest";
+
+import type { ProofReceipt } from "../src/index.js";
+import {
+  assertExternalScope,
+  buildLoopProofBundle,
+  deriveKeyId,
+  pinTrustRoot,
+  serializeReceipts,
+  sha256Hex
+} from "../src/index.js";
+
+const PUBKEY = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+const GOAL_HASH = "065aa7a244632b1aac7dcfa8254ce0b6b3bae66001d8b884b900afa790c14136";
+const LOOP_ID = "loop-synthetic-1";
+
+// Synthetic EXTERNAL-scope receipts (tenant_hash, never tenant_id). No real signatures —
+// the structural shape is what matters here; crypto fail-by-absence is expected when these
+// reach the real verifier and is NOT a defect.
+function externalReceipts(): ProofReceipt[] {
+  return [
+    {
+      version: "LYHNA_RECEIPT_V2",
+      receipt_id: "lrv2_synth_0001",
+      public_key: PUBKEY,
+      tenant_hash: "55b966349a28aaaa",
+      action_type: "echo",
+      outcome: "APPROVED",
+      signature: "c3R1Yg==",
+      constraints: { loop: { loop_id: LOOP_ID, prior_receipt_id: null, goal_hash: GOAL_HASH } }
+    },
+    {
+      version: "LYHNA_RECEIPT_V2",
+      receipt_id: "lrv2_synth_0002",
+      public_key: PUBKEY,
+      tenant_hash: "55b966349a28aaaa",
+      action_type: "loop_close",
+      outcome: "APPROVED",
+      signature: "c3R1Yg==",
+      constraints: {
+        loop: { loop_id: LOOP_ID, prior_receipt_id: "lrv2_synth_0001", goal_hash: GOAL_HASH },
+        loop_close: {
+          loop_id: LOOP_ID,
+          goal_hash: GOAL_HASH,
+          action_count: 1,
+          outcome: "COMPLETED",
+          prior_receipt_id: "lrv2_synth_0001",
+          termination_reason: "task_done"
+        }
+      }
+    }
+  ];
+}
+
+describe("buildLoopProofBundle (side-car shape)", () => {
+  it("keeps the bare receipt array as the loadable side-car, byte-identical to input", () => {
+    const receipts = externalReceipts();
+    const built = buildLoopProofBundle({ receipts, source_env: "test" });
+
+    expect(built.bundle.format).toBe("side-car");
+    expect(built.bundle.receipts_file).toBe("receipts.json");
+    // The verifier input is the bare array, unchanged — zero shape adaptation.
+    expect(built.receipts_json).toBe(serializeReceipts(receipts));
+    expect(JSON.parse(built.receipts_json)).toEqual(receipts);
+  });
+
+  it("derives the loop summary (sealed, action_count, goal_hash) from the chain", () => {
+    const built = buildLoopProofBundle({ receipts: externalReceipts(), source_env: "test" });
+    expect(built.bundle.loop).toEqual({
+      loop_id: LOOP_ID,
+      goal_hash: GOAL_HASH,
+      action_count: 1,
+      sealed: true,
+      receipt_count: 2
+    });
+  });
+
+  it("pins exactly one trust root with a deterministic key_id", () => {
+    const built = buildLoopProofBundle({ receipts: externalReceipts(), source_env: "test" });
+    expect(built.bundle.trust_root.ed25519_public_key).toBe(PUBKEY);
+    expect(built.bundle.trust_root.key_id).toBe(deriveKeyId(PUBKEY));
+    expect(built.bundle.trust_root.key_id).toMatch(/^ed25519:[0-9a-f]{16}$/);
+  });
+
+  it("computes a content digest over the exact receipts.json bytes", () => {
+    const built = buildLoopProofBundle({ receipts: externalReceipts(), source_env: "test" });
+    expect(built.bundle.export.content_digest).toEqual({
+      algorithm: "sha256",
+      value: sha256Hex(built.receipts_json),
+      over: "receipts.json"
+    });
+  });
+
+  it("embeds the verifier verdict marked ADVISORY", () => {
+    const fakeVerdict = { mode: "chain", chains: [{ status: "VERIFIED" }] };
+    const built = buildLoopProofBundle({
+      receipts: externalReceipts(),
+      source_env: "test",
+      advisory_verdict: fakeVerdict
+    });
+    expect(built.bundle.verdict.advisory).toBe(true);
+    expect(built.bundle.verdict.verifier.name).toBe("lyhna-verify");
+    expect(built.bundle.verdict.result).toEqual(fakeVerdict);
+  });
+
+  it("is content-blind: carries goal_hash, never a plaintext goal", () => {
+    const built = buildLoopProofBundle({ receipts: externalReceipts(), source_env: "test" });
+    const text = JSON.stringify(built.bundle) + built.graph_node_markdown;
+    expect(built.bundle.loop.goal_hash).toBe(GOAL_HASH);
+    expect(text).not.toMatch(/"goal"\s*:/);
+  });
+
+  it("emits an Authority Context Graph node (JSON + Markdown) for the loop", () => {
+    const built = buildLoopProofBundle({ receipts: externalReceipts(), source_env: "prod-ish" });
+    expect(built.graph_node).toMatchObject({
+      id: `acg:loop:external:${LOOP_ID}`,
+      type: "loop_proof",
+      loop_id: LOOP_ID,
+      goal_hash: GOAL_HASH,
+      action_count: 1,
+      sealed: true,
+      scope: "external",
+      receipt_count: 2
+    });
+    expect(built.graph_node_markdown).toContain(`acg:loop:external:${LOOP_ID}`);
+    expect(built.graph_node_markdown).toContain("SEALED");
+    expect(built.graph_node_markdown).toContain(GOAL_HASH);
+  });
+});
+
+describe("external-scope enforcement (never leak internal tenant_id)", () => {
+  it("rejects a receipt carrying internal tenant_id", () => {
+    const receipts = externalReceipts();
+    (receipts[0] as Record<string, unknown>).tenant_id = "tenant_secret";
+    expect(() => assertExternalScope(receipts)).toThrow(/tenant_id/);
+    expect(() => buildLoopProofBundle({ receipts, source_env: "test" })).toThrow(/tenant_id/);
+  });
+
+  it("rejects a receipt missing tenant_hash", () => {
+    const receipts = externalReceipts();
+    delete (receipts[0] as Record<string, unknown>).tenant_hash;
+    expect(() => assertExternalScope(receipts)).toThrow(/tenant_hash/);
+  });
+});
+
+describe("trust-root pinning", () => {
+  it("rejects a chain spanning more than one signing key", () => {
+    const receipts = externalReceipts();
+    (receipts[1] as Record<string, unknown>).public_key = "ff".repeat(32);
+    expect(() => pinTrustRoot(receipts)).toThrow(/distinct signing keys/);
+  });
+});
+
+describe("unsealed detection", () => {
+  it("reports sealed=false when the terminal loop_close is absent", () => {
+    const receipts = externalReceipts().slice(0, 1); // head only, no close
+    const built = buildLoopProofBundle({ receipts, source_env: "test" });
+    expect(built.bundle.loop.sealed).toBe(false);
+    expect(built.graph_node.sealed).toBe(false);
+    expect(built.graph_node_markdown).toContain("UNSEALED");
+  });
+});
