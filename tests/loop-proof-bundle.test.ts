@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProofReceipt } from "../src/index.js";
 import {
+  assertContentBlind,
   assertExternalScope,
   buildLoopProofBundle,
   deriveKeyId,
@@ -140,6 +141,54 @@ describe("external-scope enforcement (never leak internal tenant_id)", () => {
     const receipts = externalReceipts();
     delete (receipts[0] as Record<string, unknown>).tenant_hash;
     expect(() => assertExternalScope(receipts)).toThrow(/tenant_hash/);
+  });
+});
+
+describe("content-blind enforcement (goal_hash only, never plaintext goal)", () => {
+  it("rejects a receipt carrying a plaintext intent (loop_close defaults intent to the goal)", () => {
+    const receipts = externalReceipts();
+    (receipts[1] as Record<string, unknown>).intent = "ship the whole secret roadmap";
+    expect(() => assertContentBlind(receipts)).toThrow(/content-blind/);
+    expect(() => buildLoopProofBundle({ receipts, source_env: "test" })).toThrow(/intent/);
+  });
+
+  it("rejects a receipt carrying an explicit plaintext goal field", () => {
+    const receipts = externalReceipts();
+    (receipts[0] as Record<string, unknown>).goal = "secret goal text";
+    expect(() => buildLoopProofBundle({ receipts, source_env: "test" })).toThrow(/goal/);
+  });
+
+  it("permits the structured intent_version marker (not goal-bearing)", () => {
+    const receipts = externalReceipts();
+    (receipts[0] as Record<string, unknown>).intent_version = "loop_v1";
+    expect(() => assertContentBlind(receipts)).not.toThrow();
+  });
+});
+
+describe("source-byte preservation (provenance)", () => {
+  it("preserves verbatim source bytes as receipts.json and digests them", () => {
+    const receipts = externalReceipts();
+    // Compact source formatting, NOT JSON.stringify(...,2).
+    const compact = JSON.stringify(receipts);
+    const built = buildLoopProofBundle({ receipts, receipts_text: compact, source_env: "test" });
+
+    expect(built.receipts_json).toBe(compact);
+    expect(built.receipts_json).not.toBe(serializeReceipts(receipts)); // proves it wasn't re-normalized
+    expect(built.bundle.export.content_digest.value).toBe(sha256Hex(compact));
+  });
+
+  it("rejects receipts_text that does not parse to the provided receipts (provenance guard)", () => {
+    const receipts = externalReceipts();
+    const mismatched = JSON.stringify([{ tampered: true }]);
+    expect(() =>
+      buildLoopProofBundle({ receipts, receipts_text: mismatched, source_env: "test" })
+    ).toThrow(/provenance guard/);
+  });
+
+  it("falls back to canonical serialization when no source text is provided", () => {
+    const receipts = externalReceipts();
+    const built = buildLoopProofBundle({ receipts, source_env: "test" });
+    expect(built.receipts_json).toBe(serializeReceipts(receipts));
   });
 });
 

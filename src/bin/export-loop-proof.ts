@@ -51,7 +51,10 @@ function main(): void {
     process.exit(1);
   }
 
-  const receipts = JSON.parse(readFileSync(args.receiptsPath, "utf8")) as ProofReceipt[];
+  // Read the source bytes once and carry them through verbatim, so the exported
+  // receipts.json is byte-identical to the source artifact (provenance preserved).
+  const receipts_text = readFileSync(args.receiptsPath, "utf8");
+  const receipts = JSON.parse(receipts_text) as ProofReceipt[];
   if (!Array.isArray(receipts)) {
     throw new Error("Input must be a JSON array of receipts (the side-car shape).");
   }
@@ -61,6 +64,7 @@ function main(): void {
 
   const built = buildLoopProofBundle({
     receipts,
+    receipts_text,
     source_env: args.sourceEnv,
     exported_at: args.exportedAt,
     advisory_verdict

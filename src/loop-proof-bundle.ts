@@ -108,6 +108,13 @@ export type BuildLoopProofBundleInput = {
   exported_at?: string;
   /** The standalone verifier's `--json` output for `receipts.json`, if already run. */
   advisory_verdict?: unknown;
+  /**
+   * The exact source bytes of the receipt array. When provided, they are preserved
+   * VERBATIM as `receipts.json` (digested and written byte-for-byte), so the exported
+   * side-car is byte-identical to the signed source artifact. Must parse to `receipts`.
+   * When omitted, the canonical `serializeReceipts(receipts)` form is used.
+   */
+  receipts_text?: string;
 };
 
 export type BuiltLoopProofBundle = {
@@ -151,6 +158,30 @@ export function assertExternalScope(receipts: ProofReceipt[]): void {
     }
     if (typeof r.tenant_hash !== "string" || r.tenant_hash.length === 0) {
       throw new Error(`Receipt ${describe(r, i)} is missing external-scope tenant_hash.`);
+    }
+  });
+}
+
+// Fields that can carry the plaintext goal (the invariant is goal_hash ONLY). `intent`
+// is included because the loop_close bind defaults its `intent` to the raw goal
+// (buildLoopCloseRequest), and a free-text `goal` field is an explicit leak. The
+// structured `intent_version` marker is NOT goal-bearing and is unaffected.
+const PLAINTEXT_GOAL_FIELDS = ["goal", "intent"] as const;
+
+/**
+ * Content-blind enforcement. A buyer-facing bundle carries `goal_hash` only — never the
+ * plaintext goal. If any receipt carries a goal-bearing field, fail closed (reject the
+ * export) rather than writing `receipts.json` with the sensitive field intact. We cannot
+ * strip it (that would invalidate the signature), so rejection is the correct posture.
+ */
+export function assertContentBlind(receipts: ProofReceipt[]): void {
+  receipts.forEach((r, i) => {
+    for (const field of PLAINTEXT_GOAL_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(r, field)) {
+        throw new Error(
+          `Receipt ${describe(r, i)} carries plaintext "${field}"; a content-blind bundle carries goal_hash only (fail closed).`
+        );
+      }
     }
   });
 }
@@ -218,9 +249,10 @@ export function deriveLoopSummary(receipts: ProofReceipt[]): LoopSummary {
 
 export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoopProofBundle {
   assertExternalScope(input.receipts);
+  assertContentBlind(input.receipts);
   const trust_root = pinTrustRoot(input.receipts);
   const loop = deriveLoopSummary(input.receipts);
-  const receipts_json = serializeReceipts(input.receipts);
+  const receipts_json = resolveReceiptsJson(input);
   const exported_at = input.exported_at ?? new Date().toISOString();
 
   const content_digest: ContentDigest = {
@@ -310,6 +342,29 @@ export function renderGraphNodeMarkdown(node: AuthorityContextGraphNode): string
 }
 
 // --- internal helpers --------------------------------------------------------
+
+/**
+ * Resolve the exact bytes written to `receipts.json` and digested. When the caller
+ * supplies the original source text, preserve it VERBATIM (byte-identical provenance) —
+ * guarding that it actually parses to the validated receipts. Otherwise use the canonical
+ * serialization. Signatures verify either way (the verifier canonicalizes), but only the
+ * verbatim path keeps `receipts.json` byte-identical to the signed source artifact.
+ */
+function resolveReceiptsJson(input: BuildLoopProofBundleInput): string {
+  if (input.receipts_text === undefined) {
+    return serializeReceipts(input.receipts);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.receipts_text);
+  } catch (error) {
+    throw new Error(`receipts_text is not valid JSON: ${(error as Error).message}`);
+  }
+  if (JSON.stringify(parsed) !== JSON.stringify(input.receipts)) {
+    throw new Error("receipts_text does not parse to the provided receipts (provenance guard).");
+  }
+  return input.receipts_text;
+}
 
 function toLinks(receipts: ProofReceipt[]): LoopChainLink[] {
   return receipts.map((r, i) => {

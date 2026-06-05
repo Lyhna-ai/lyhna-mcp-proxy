@@ -60,6 +60,7 @@ export type {
   ControlChannelOptions
 } from "./control-channel.js";
 export {
+  assertContentBlind,
   assertExternalScope,
   buildGraphNode,
   buildLoopProofBundle,
