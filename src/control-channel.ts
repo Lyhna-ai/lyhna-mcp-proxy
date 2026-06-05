@@ -117,6 +117,14 @@ function handleConnection(
 ): void {
   socket.setEncoding("utf8");
   let buffer = "";
+  // Serialize commands PER CONNECTION: a newline-delimited line protocol must process
+  // commands in the order received, each completing before the next starts. Without this,
+  // a fast read pipelined right after a slow command races it — e.g. `dump` (a synchronous
+  // recorder read) sent right after `close` (which awaits bind) could resolve FIRST and
+  // return the pre-close, UNSEALED chain, so the exported proof would miss the terminal
+  // loop_close despite the supervisor issuing close -> dump in order. Serialization is
+  // per-socket only; distinct supervisor connections still run concurrently.
+  let queue: Promise<void> = Promise.resolve();
 
   socket.on("data", (chunk: string) => {
     buffer += chunk;
@@ -125,10 +133,14 @@ function handleConnection(
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
-        void dispatchLine(line, registry, receiptSource, log).then((response) => {
+        queue = queue.then(async () => {
+          const response = await dispatchLine(line, registry, receiptSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
+        }).catch(() => {
+          // One command's failure must not stall the queue. dispatchLine resolves its own
+          // errors into a response; this guards only an unexpected write failure.
         });
       }
       newlineIndex = buffer.indexOf("\n");

@@ -54,6 +54,35 @@ function sendControl(socketPath: string, command: Record<string, unknown>): Prom
   });
 }
 
+// Send multiple commands pipelined on ONE connection and collect responses in order.
+function sendControlPipelined(
+  socketPath: string,
+  commands: Record<string, unknown>[]
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(socketPath);
+    const responses: Record<string, unknown>[] = [];
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(commands.map((c) => JSON.stringify(c)).join("\n") + "\n"));
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      let i = buffer.indexOf("\n");
+      while (i !== -1) {
+        responses.push(JSON.parse(buffer.slice(0, i)) as Record<string, unknown>);
+        buffer = buffer.slice(i + 1);
+        if (responses.length === commands.length) {
+          socket.end();
+          resolve(responses);
+          return;
+        }
+        i = buffer.indexOf("\n");
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
 describe("golden-path demo: open -> route -> supervisor close -> dump -> bundle", () => {
   let standing: StandingHttpProxy | undefined;
   let control: ControlChannelHandle | undefined;
@@ -131,6 +160,33 @@ describe("golden-path demo: open -> route -> supervisor close -> dump -> bundle"
     // Session is removed after close, but dump is keyed by loop_id and still resolves.
     const dumped = await sendControl(socketPath, { cmd: "dump", loop_id: "loop-2" });
     expect(dumped).toMatchObject({ ok: true, count: 2 });
+  });
+
+  it("close -> dump pipelined on ONE connection returns the SEALED chain (commands serialized in order)", async () => {
+    const { socketPath } = await start(true);
+    const LOOP = "loop-pipe";
+    await sendControl(socketPath, { cmd: "open", session_id: "sp", loop_id: LOOP, goal: "g" });
+    const agent = await connectAgent("sp");
+    for (let i = 0; i < 2; i += 1) await agent.callTool({ toolName: "echo", arguments: { message: `m${i}` } });
+
+    // close and dump pipelined back-to-back on a single connection: dump (a fast recorder
+    // read) must not race ahead of the in-flight close, or it would return the unsealed
+    // chain. Serialization guarantees dump sees the terminal loop_close.
+    const [closed, dumped] = await sendControlPipelined(socketPath, [
+      { cmd: "close", session_id: "sp", outcome: "COMPLETED", reason: "done" },
+      { cmd: "dump", loop_id: LOOP }
+    ]);
+    expect(closed).toMatchObject({ ok: true, sealed: true });
+    expect(dumped).toMatchObject({ ok: true, count: 3 }); // 2 in-loop + terminal close
+
+    const receipts = dumped.receipts as ProofReceipt[];
+    expect(receipts.some((r) => r.constraints?.loop_close)).toBe(true); // terminal present
+    const links = receipts.map((r) => ({
+      receipt_id: String(r.receipt_id),
+      loop: (r.constraints?.loop as never) ?? null,
+      loop_close: (r.constraints?.loop_close as never) ?? null
+    }));
+    expect(verifyLoopChain(links)).toMatchObject({ valid: true, sealed: true, loop_id: LOOP, action_count: 2 });
   });
 
   it("dump fails closed when no receipt source is wired to the control channel", async () => {
