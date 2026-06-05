@@ -1,0 +1,46 @@
+name: ci
+
+# Honesty regression guard: every push (any branch) and every PR to master runs the full
+# suite + typecheck + build, then BOTH cold-verify legs against the REAL standalone
+# lyhna-verify (cloned read-only — never vendored, never modified). A regression that
+# breaks Leg 2's full-green cold-verify, or makes Leg 1 leak / require shape adaptation,
+# turns this red. All material is public (pinned key, public verifier, static signed
+# corpus) — no secrets.
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (full suite)
+        run: npm test
+
+      - name: Clone lyhna-verify (read-only, never modified)
+        run: git clone --depth 1 https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify "${RUNNER_TEMP}/lyhna-verify"
+
+      - name: Cold-verify legs (Leg 1 structural, Leg 2 real-signed full-green)
+        env:
+          LYHNA_VERIFY_DIR: ${{ runner.temp }}/lyhna-verify
+        run: npm run verify:legs
