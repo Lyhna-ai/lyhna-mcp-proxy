@@ -31,6 +31,7 @@
 import { createServer, type Server as NetServer, type Socket } from "node:net";
 import { chmod, unlink } from "node:fs/promises";
 
+import type { ReceiptSource } from "./receipt-recorder.js";
 import type { LoopSessionRegistry } from "./session-registry.js";
 
 export type ControlChannelLogger = (line: string) => void;
@@ -40,6 +41,11 @@ export type ControlChannelOptions =
       transport: "unix";
       socketPath: string;
       registry: LoopSessionRegistry;
+      /**
+       * Optional read-only receipt source backing the supervisor `dump` verb. When
+       * omitted, `dump` is unavailable (fails closed). Never on the agent path.
+       */
+      receiptSource?: ReceiptSource;
       logger?: ControlChannelLogger;
     }
   | {
@@ -47,6 +53,7 @@ export type ControlChannelOptions =
       host?: string;
       port?: number;
       registry: LoopSessionRegistry;
+      receiptSource?: ReceiptSource;
       logger?: ControlChannelLogger;
     };
 
@@ -66,7 +73,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, log);
+    handleConnection(socket, options.registry, options.receiptSource, log);
   });
 
   if (options.transport === "unix") {
@@ -105,10 +112,19 @@ export async function serveControlChannel(
 function handleConnection(
   socket: Socket,
   registry: LoopSessionRegistry,
+  receiptSource: ReceiptSource | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
   let buffer = "";
+  // Serialize commands PER CONNECTION: a newline-delimited line protocol must process
+  // commands in the order received, each completing before the next starts. Without this,
+  // a fast read pipelined right after a slow command races it — e.g. `dump` (a synchronous
+  // recorder read) sent right after `close` (which awaits bind) could resolve FIRST and
+  // return the pre-close, UNSEALED chain, so the exported proof would miss the terminal
+  // loop_close despite the supervisor issuing close -> dump in order. Serialization is
+  // per-socket only; distinct supervisor connections still run concurrently.
+  let queue: Promise<void> = Promise.resolve();
 
   socket.on("data", (chunk: string) => {
     buffer += chunk;
@@ -117,10 +133,14 @@ function handleConnection(
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
-        void dispatchLine(line, registry, log).then((response) => {
+        queue = queue.then(async () => {
+          const response = await dispatchLine(line, registry, receiptSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
+        }).catch(() => {
+          // One command's failure must not stall the queue. dispatchLine resolves its own
+          // errors into a response; this guards only an unexpected write failure.
         });
       }
       newlineIndex = buffer.indexOf("\n");
@@ -135,6 +155,7 @@ function handleConnection(
 async function dispatchLine(
   line: string,
   registry: LoopSessionRegistry,
+  receiptSource: ReceiptSource | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;
@@ -180,6 +201,20 @@ async function dispatchLine(
       case "status": {
         const sessions = registry.summaries();
         return { ok: true, count: sessions.length, sessions };
+      }
+
+      case "dump": {
+        // Read-only: hand back the receipts recorded for a loop so the supervisor can
+        // package them into a LoopProofBundle. Supervisor-only by construction — this
+        // verb lives on the control channel, which the agent's MCP path never reaches.
+        // Keyed by loop_id (not session_id) so it survives the post-close session removal:
+        // the supervisor opened the loop and already knows its loop_id.
+        if (!receiptSource) {
+          return { ok: false, error: "Receipt dump is not enabled on this control channel." };
+        }
+        const loop_id = requireString(command, "loop_id");
+        const receipts = receiptSource.receiptsForLoop(loop_id);
+        return { ok: true, loop_id, count: receipts.length, receipts };
       }
 
       default:

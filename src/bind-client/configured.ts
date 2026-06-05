@@ -7,8 +7,9 @@ import type {
   StreamableHttpUpstreamConfig,
   UpstreamConfig
 } from "../transport/mcp-sdk.js";
+import { createSyntheticDemoBindClient } from "./synthetic-demo.js";
 
-export type BindMode = "stub" | "http";
+export type BindMode = "stub" | "http" | "demo";
 
 export type ProxyRuntimeConfig = {
   bindMode: BindMode;
@@ -47,6 +48,18 @@ export function loadProxyRuntimeConfig(
       bindMode,
       bindClient: createStubBindClient(outcome),
       bindDescription: `stub:${outcome}`,
+      upstream
+    };
+  }
+
+  if (bindMode === "demo") {
+    // Synthetic, offline, UNSIGNED full-shaped receipts for the local golden-path demo.
+    // Honest by construction: receipts carry an obvious stub signature and cold-verify as
+    // structural-pass + crypto-fail-by-absence (never green). Never reaches the network.
+    return {
+      bindMode,
+      bindClient: createSyntheticDemoBindClient(),
+      bindDescription: "demo:synthetic-unsigned",
       upstream
     };
   }
@@ -139,10 +152,10 @@ function parseBindMode(value: string | undefined): BindMode {
   if (!value) {
     return "stub";
   }
-  if (value === "stub" || value === "http") {
+  if (value === "stub" || value === "http" || value === "demo") {
     return value;
   }
-  throw new Error("LYHNA_PROXY_BIND_MODE must be either 'stub' or 'http'.");
+  throw new Error("LYHNA_PROXY_BIND_MODE must be 'stub', 'http', or 'demo'.");
 }
 
 function parseUpstreamMode(env: NodeJS.ProcessEnv): UpstreamConfig["transport"] {

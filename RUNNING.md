@@ -1,5 +1,13 @@
 # Running The Local Proxy
 
+> **Fastest path:** `npm install && npm run demo` runs the entire adapter golden path
+> (start → open → route synthetic call → supervisor close → dump → export → verify cold)
+> with nothing live. See the [README quick start](README.md#quick-start--run-the-whole-golden-path-locally).
+
+> **Shell note:** the commands below use PowerShell syntax (`npm.cmd`, `$env:NAME='value'`).
+> On macOS/Linux use `npm run …` and prefix env vars inline, e.g.
+> `LYHNA_PROXY_STUB_OUTCOME=APPROVED npm run start:proxy`.
+
 ## Safety Rule
 
 The standing proxy defaults to a stub bind client. It must not call production `api.lyhna.com` or use a production tenant during local deployment shakeout.
@@ -214,10 +222,19 @@ line:
 {"cmd":"open","session_id":"s1","loop_id":"loop_s1","goal":"<raw goal>"}
 {"cmd":"status"}
 {"cmd":"close","session_id":"s1","outcome":"COMPLETED","reason":"task_done"}
+{"cmd":"dump","loop_id":"loop_s1"}
 ```
 
 `open` must precede the agent's first `tools/call`; a call for a session with no open loop
 fails closed. `close` seals the chain (terminal `loop_close`) and removes the session.
+`dump` (read-only, keyed by `loop_id` so it survives the post-close session removal)
+returns the loop's recorded receipt chain — write that array to `receipts.json` and package
+it with `export-loop-proof`. `dump` never opens, closes, or mutates a loop, and is reachable
+only on this supervisor channel.
+
+To run the standing service with the offline synthetic demo bind (unsigned, structural-only
+receipts — never live-signed), set `LYHNA_PROXY_BIND_MODE=demo`. Real signed receipts
+require the guarded `http` bind mode (see [Bind Modes](#bind-modes)).
 `SIGTERM` is a supervisor signal and seals any still-open loops on shutdown; `SIGINT` does
 not seal.
 

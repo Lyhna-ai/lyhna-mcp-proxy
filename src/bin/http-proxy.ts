@@ -10,6 +10,7 @@ import {
   LoopSession
 } from "../loop.js";
 import { createProxyCore } from "../proxy-core.js";
+import { createReceiptRecorder, type ReceiptSource } from "../receipt-recorder.js";
 import { LoopSessionRegistry } from "../session-registry.js";
 import { connectUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
 import { serveStandingHttpProxy } from "../transport/standing-http.js";
@@ -29,11 +30,19 @@ if (isStandingMode(process.env)) {
 // a loop. SIGTERM is a supervisor signal and seals any still-open loops on shutdown.
 async function runStandingService(): Promise<void> {
   const upstream = await connectUpstream(config.upstream);
-  const registry = new LoopSessionRegistry((request) => config.bindClient.bind(request), closeTuning);
+
+  // Observe-only recorder: capture every receipt bind() returns (real signed receipts in
+  // http mode; synthetic unsigned ones in demo mode) so the supervisor `dump` verb can
+  // hand back a loop's sealed chain for packaging. It wraps the ONE bind client shared by
+  // both the in-loop path (proxy core) and the close path (registry), so the full chain —
+  // in-loop links plus terminal loop_close — is captured in order.
+  const recorder = createReceiptRecorder();
+  const recordingBind = recorder.wrap(config.bindClient);
+  const registry = new LoopSessionRegistry((request) => recordingBind.bind(request), closeTuning);
 
   const standing = await serveStandingHttpProxy({
     upstream: upstream.client,
-    bindClient: config.bindClient,
+    bindClient: recordingBind,
     registry,
     host: process.env.LYHNA_PROXY_HTTP_HOST ?? "127.0.0.1",
     port: parsePort(process.env.LYHNA_PROXY_HTTP_PORT),
@@ -41,7 +50,7 @@ async function runStandingService(): Promise<void> {
     serverInfo: { name: "lyhna-mcp-proxy-standing", version: "0.1.0" }
   });
 
-  const control = await startControlChannel(registry);
+  const control = await startControlChannel(registry, recorder);
 
   process.stderr.write(
     `[lyhna-mcp-proxy] STANDING service: mcp=${standing.url}/<session_id>; ` +
@@ -142,12 +151,15 @@ function isStandingMode(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
-function startControlChannel(registry: LoopSessionRegistry): Promise<ControlChannelHandle> {
+function startControlChannel(
+  registry: LoopSessionRegistry,
+  receiptSource: ReceiptSource
+): Promise<ControlChannelHandle> {
   const socketPath = process.env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   const logger = (line: string) => process.stderr.write(`${line}\n`);
 
   if (socketPath) {
-    return serveControlChannel({ transport: "unix", socketPath, registry, logger });
+    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, logger });
   }
 
   return serveControlChannel({
@@ -155,6 +167,7 @@ function startControlChannel(registry: LoopSessionRegistry): Promise<ControlChan
     host: process.env.LYHNA_PROXY_CONTROL_HOST ?? "127.0.0.1",
     port: parsePort(process.env.LYHNA_PROXY_CONTROL_PORT),
     registry,
+    receiptSource,
     logger
   });
 }

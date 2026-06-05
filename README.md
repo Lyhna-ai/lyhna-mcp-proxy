@@ -1,6 +1,59 @@
-# lyhna-mcp-proxy
+# Lyhna Loop Proof Adapter for MCP
 
-Standalone Lyhna MCP proxy.
+Point an agent runtime through Lyhna, run a loop, close it from the supervisor boundary,
+export a proof bundle and graph node — and verify it cold.
+
+This is the runtime adapter that places Lyhna in an MCP agent's execution path. The agent
+talks MCP to the adapter exactly as it would to any upstream; the adapter routes each
+`tools/call` through Lyhna's hosted `bind()` contract and forwards only when bind allows.
+What the buyer receives is not the proxy itself — it is the **exported proof object**: a
+portable, independently verifiable record that a loop ran and closed under authority.
+
+> Permission grants access once. Lyhna attests authority every time.
+
+**Two topologically distinct surfaces** (this separation is the whole point):
+
+- **Agent path** — the agent holds only a per-session MCP URL (`/mcp/<session_id>`). It can
+  list and call tools. It has **no** verb to open, close, or read a loop.
+- **Supervisor control path** — a separate, owner-only channel that opens loops, closes them
+  (sealing the proof), and dumps the sealed chain for export. The agent never reaches it. If
+  the agent could close its own loop, "the proxy closes the loop" would collapse into "the
+  agent closes the loop" — so the boundary is enforced by construction, not convention.
+
+## Quick start — run the whole golden path locally
+
+From a **repo checkout** (the demo is a development quick-start, not part of the published
+package — `npm run demo` is supported only from a source clone, never from an installed
+tarball):
+
+```bash
+git clone https://github.com/Lyhna-ai/lyhna-mcp-proxy
+cd lyhna-mcp-proxy
+npm install
+npm run demo
+```
+
+`npm run demo` runs the complete adapter flow against the real product surfaces, with
+nothing live: **start adapter → open loop → route a synthetic MCP call → supervisor closes
+the loop → dump the sealed chain → export the LoopProofBundle → verify it cold** with the
+standalone [`lyhna-verify`](https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify). It builds
+`dist` on demand if missing from a checkout; from an installed package `npm run demo` is
+unsupported and fails with Node's native module-not-found error (the demo script is not
+published) — installed packages use the `lyhna-mcp` bin and the exported LoopProofBundle.
+
+The demo is deliberately **synthetic and unsigned**: the receipts carry an obvious stub
+signature, so the cold verify shows a **structural pass with crypto fail-by-absence**
+(`all_receipts_verified:false`). That is the honest synthetic outcome — full-green *signed*
+proof comes from the static signed corpus, guarded in CI. The demo never uses Chione,
+Hermes, a live bind, or a production tenant.
+
+To start the real standing adapter (it enters standing mode when a control channel is
+configured), see [Standing Service Mode](#standing-service-mode-multi-session) and
+[`RUNNING.md`](RUNNING.md).
+
+---
+
+## How it works (internals)
 
 This project sits in front of upstream MCP servers, mirrors their tool surface, intercepts `tools/call`, routes the call through the existing hosted Lyhna `bind()` contract, and forwards upstream only when bind allows it.
 
@@ -17,7 +70,9 @@ loop-context adapter (loop-bound chained receipts with proxy-controlled close), 
 standing multi-session service (session registry + supervisor-only control channel), and
 the buyer-facing **LoopProofBundle** export are built and tested.
 
-Current verification: 83 tests passing across 11 test files.
+Current verification: 108 tests passing across 14 test files, plus the CI honesty guard
+(typecheck, build, full suite, and cold-verify Leg 0 / Leg 1 / Leg 2 against the real
+standalone `lyhna-verify`).
 
 ## Goals
 
@@ -136,9 +191,18 @@ Two topologically distinct surfaces:
    open/close verb. A call for a session with no open loop fails closed.
 2. **Control path — supervisor-only channel.** A separate listener
    (`src/control-channel.ts`) — a unix-domain socket created owner-only (`0o600`), or a
-   loopback TCP fallback — emits `open` / `close` / `status`. This is the **only** surface
-   that opens or seals a loop. `loop_close` still rides `bind()` via `constraints.loop_close`
-   exactly as in the per-task path.
+   loopback TCP fallback — emits `open` / `close` / `status` / `dump`. This is the **only**
+   surface that opens or seals a loop. `loop_close` still rides `bind()` via
+   `constraints.loop_close` exactly as in the per-task path. `dump` (keyed by `loop_id`) is
+   read-only: it returns the loop's recorded receipt chain so the supervisor can package it
+   — it never opens, closes, or mutates anything, and the agent path never reaches it.
+
+**Receipt recording (the producer for export).** The standing service wraps its single
+bind client in an **observe-only** receipt recorder (`src/receipt-recorder.ts`): every
+receipt `bind()` returns — real signed receipts in `http` mode, synthetic unsigned ones in
+`demo` mode — is captured in order, keyed by `loop_id`, and never mutated. After the
+supervisor closes a loop, `dump` hands back that sealed chain, which is exactly the
+`receipts.json` the export consumes. The proxy *proves*; the supervisor *packages*.
 
 **Self-attestation guard (non-negotiable):** the control path sits on the supervisor side
 of the UID / PID-namespace boundary and is never reachable on the agent's MCP path. If the

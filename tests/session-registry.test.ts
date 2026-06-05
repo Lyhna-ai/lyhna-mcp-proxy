@@ -134,6 +134,26 @@ describe("LoopSessionRegistry lifecycle", () => {
     );
   });
 
+  it("rejects reusing a loop_id — concurrently and after close — so recorded chains can't merge", async () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING);
+    registry.openLoop({ session_id: "s1", loop_id: "loop_shared", goal: "g" });
+
+    // A second, distinct session may NOT reuse an active loop_id (would interleave in the
+    // recorder's single loop_id bucket).
+    expect(() => registry.openLoop({ session_id: "s2", loop_id: "loop_shared", goal: "g" })).toThrow(
+      /loop_id|already used/i
+    );
+
+    // And not after close either: the recorder retains receipts past close, so a reused
+    // loop_id would append a new chain onto the old bucket. loop_id is single-use per process.
+    await registry.closeLoop({ session_id: "s1", outcome: "COMPLETED", reason: "done" });
+    expect(registry.size).toBe(0);
+    expect(() => registry.openLoop({ session_id: "s3", loop_id: "loop_shared", goal: "g" })).toThrow(
+      /loop_id|already used/i
+    );
+  });
+
   it("rejects open with missing identity fields", () => {
     const { bind } = recordingBind();
     const registry = new LoopSessionRegistry(bind, TUNING);
