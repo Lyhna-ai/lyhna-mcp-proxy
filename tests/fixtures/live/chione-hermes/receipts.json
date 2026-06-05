@@ -1,0 +1,270 @@
+[
+  {
+    "receipt_id": "lrv2_1780699783740_7725445d",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "inspect_runtime_config",
+    "action_hash": "8a2a4a783a687779b91bb1cd5b4e67472bc6ff69b979905c7d2aa2e59a85880e",
+    "intent_version": "1.0",
+    "authority_tier": "tier_0",
+    "effective_policy": "auto_approve",
+    "tier_source": "canonical_default",
+    "action_origin": "runtime_mapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": null,
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "85444477fa2537e739c9b01edc47249d6541f9d79e92038be5bf996924e473a3",
+    "nonce": "33ddfcd0-c6e4-4c8e-b1ea-226ebb19efdd",
+    "expires_at": "2026-06-05T22:54:43.740Z",
+    "timestamp": "2026-06-05T22:49:43.740Z",
+    "canonical_hash": "7207235a62706a89f3c50494d55362ca1b260e7c19f948f58b5b8c13aa2ca94a",
+    "signature": "JbbflszukR7GbsGy33BOjgTGymfARX9R86UYA3q2K2/SfFVBSxLczj2MasfthX86APZ0ZKAw1TIuEUONYhkNCQ==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699786301_d67c6154",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "inspect_runtime_config",
+    "action_hash": "d0aa67daad8b6677813656a92bd324f78aedb42d536739f67213d8ec2316a4ff",
+    "intent_version": "1.0",
+    "authority_tier": "tier_0",
+    "effective_policy": "auto_approve",
+    "tier_source": "canonical_default",
+    "action_origin": "runtime_mapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699783740_7725445d",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "85444477fa2537e739c9b01edc47249d6541f9d79e92038be5bf996924e473a3",
+    "nonce": "83a1cc11-078a-4c30-8765-3642021eb882",
+    "expires_at": "2026-06-05T22:54:46.301Z",
+    "timestamp": "2026-06-05T22:49:46.301Z",
+    "canonical_hash": "0cb784a706a7360ca0db1c3c85e6a9117efec7b29b4e32b47fc4ebaf6f606ab2",
+    "signature": "0sO8S+n6L1tHn03TqsVtG2UTzs2LAvuIq/+UpSDftpq7A/AwmXw3UPONN8X6Us+BfW15yUeNL4GdyZK/9CkBCA==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699788277_20cf27de",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "inspect_runtime_config",
+    "action_hash": "7527421e4599e20a08d559cf62a4fb1756c23ca4bfef437c824c1b988e283040",
+    "intent_version": "1.0",
+    "authority_tier": "tier_0",
+    "effective_policy": "auto_approve",
+    "tier_source": "canonical_default",
+    "action_origin": "runtime_mapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699786301_d67c6154",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "85444477fa2537e739c9b01edc47249d6541f9d79e92038be5bf996924e473a3",
+    "nonce": "39a15989-3649-4b8d-b25a-ee9c0e0185b2",
+    "expires_at": "2026-06-05T22:54:48.277Z",
+    "timestamp": "2026-06-05T22:49:48.277Z",
+    "canonical_hash": "53f929d1af7760533afcdd29ae8488299bf3be0f5092dd943671ab84d008918f",
+    "signature": "UwDNCZMZfHeAHMyOot1L3rDpAqlGM/oPxdnXkeXRkctzLjb7ogNJllZpgi+H33MeoyLVA2DHDZtPddJl2WNFBQ==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699790334_3a5c9272",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "inspect_runtime_config",
+    "action_hash": "1ec22e750749da8245dfb26b1db6260c60a765bd2df9dbbf31aaaf79bed5d967",
+    "intent_version": "1.0",
+    "authority_tier": "tier_0",
+    "effective_policy": "auto_approve",
+    "tier_source": "canonical_default",
+    "action_origin": "runtime_mapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699788277_20cf27de",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "85444477fa2537e739c9b01edc47249d6541f9d79e92038be5bf996924e473a3",
+    "nonce": "21204805-7e85-46d7-92db-8b1a6cf8aeab",
+    "expires_at": "2026-06-05T22:54:50.334Z",
+    "timestamp": "2026-06-05T22:49:50.334Z",
+    "canonical_hash": "138ff675a9e9139049b468cea1b42bdecdfa88245634893bb83b4d3e4eb58db8",
+    "signature": "vP+t8vyL/9h0DegkXvHHpwDgq9A96a0I2hwVxVL9qYUSeL5H9nx9YoZp+yYW5tByTnCGjKmHdoSF/S4WDnR9Cw==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699793394_ff321362",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "inspect_runtime_config",
+    "action_hash": "d68e64de4c67d16f1bfa5ec99ed266175179fc4ddba0e9fc42a6667f3a2da68e",
+    "intent_version": "1.0",
+    "authority_tier": "tier_0",
+    "effective_policy": "auto_approve",
+    "tier_source": "canonical_default",
+    "action_origin": "runtime_mapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699790334_3a5c9272",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "85444477fa2537e739c9b01edc47249d6541f9d79e92038be5bf996924e473a3",
+    "nonce": "caa06b4d-260a-4452-9f9f-0729cb4b7a7b",
+    "expires_at": "2026-06-05T22:54:53.394Z",
+    "timestamp": "2026-06-05T22:49:53.394Z",
+    "canonical_hash": "17e079e71336de44a754ab66c6938211b2e18cfa00a2960d14b4d9fcc596c32f",
+    "signature": "EnXSNkcVyIGwKs3dtGDZEAdEoNXbt7IUog7tjmU4bPgwG2BzKX3vFcAMIEJ+XRLaa/7CmUCUjmmPT/gbbSTLAw==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699796991_1a87df2f",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "execute_zapier_read_action",
+    "action_hash": "dc2b7e0f14e25c9cfaae4bdb0a40b855db23b13e1fdc43d689f65716a658aa1e",
+    "intent_version": "1.0",
+    "authority_tier": "tier_1",
+    "effective_policy": "standard_review",
+    "tier_source": "unclassified_escalated",
+    "action_origin": "unmapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699793394_ff321362",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      },
+      "resolved_by": "lrv2_1780699687652_1e75c2af",
+      "original_escalation": "lrv2_1780699650053_f2e367d7"
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "badbb35f1acd0cf0bf5762bfc79964f3bb1cacbea763fb45745eb85dcd024d2b",
+    "nonce": "08a5f3d9-7f29-4202-9b82-004412e55f34",
+    "expires_at": "2026-06-05T22:54:56.991Z",
+    "timestamp": "2026-06-05T22:49:56.991Z",
+    "canonical_hash": "bb041658a9df8115de52f09642fc3fb3a56e597ed3ec261f0a989ba2e3b33431",
+    "signature": "2elCrlnQWACN2ZKFcY6qIBnKPjPDHbPO8I2ULdogjr5YnDmF0Em+jTLrTcD/0xk11Iw0KPOcU9XBKbBZb9u7CQ==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699811227_77067332",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "execute_zapier_read_action",
+    "action_hash": "711fee37bba37daaf01c5ffecbc858267ff8ad246d5f0082ce38d4cf6ca30c92",
+    "intent_version": "1.0",
+    "authority_tier": "tier_1",
+    "effective_policy": "standard_review",
+    "tier_source": "unclassified_escalated",
+    "action_origin": "unmapped",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699796991_1a87df2f",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      },
+      "resolved_by": "lrv2_1780699687652_1e75c2af",
+      "original_escalation": "lrv2_1780699650053_f2e367d7"
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "badbb35f1acd0cf0bf5762bfc79964f3bb1cacbea763fb45745eb85dcd024d2b",
+    "nonce": "6bc3ee91-8548-4499-b1d2-71d1f08e5a3f",
+    "expires_at": "2026-06-05T22:55:11.227Z",
+    "timestamp": "2026-06-05T22:50:11.227Z",
+    "canonical_hash": "ba1d494d70e6a91ff731ea299164fe5f9be242fef3fbbed8334c98388a2e879a",
+    "signature": "orCKg6whgHdrthPT4ijE6m0OK+B7bo+bYevSLZwjvGwqsQ2Gdl+zrhbGri2Bq3yKVMrMN1hx1w1JoQ9iXn7sBA==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  },
+  {
+    "receipt_id": "lrv2_1780699832928_32cf2bfc",
+    "version": "LYHNA_RECEIPT_V2",
+    "environment": "dev",
+    "tenant_hash": "55b966349a28323480c24981cc91cd1847f9403a6ff089a2e8bc12fcd70412d0",
+    "action_type": "loop_close",
+    "action_hash": "9601641b820c517d5057833d59eb495831889dcc2ac16cecdd82da6bed8177f7",
+    "intent_version": "loop_v1",
+    "authority_tier": "tier_2",
+    "effective_policy": "standard_review",
+    "tier_source": "tenant_extension",
+    "action_origin": "direct",
+    "registry_version": "v1",
+    "outcome": "APPROVED",
+    "reason": null,
+    "escalate_to": null,
+    "constraints": {
+      "loop": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "prior_receipt_id": "lrv2_1780699811227_77067332",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      },
+      "loop_close": {
+        "loop_id": "b37284a2-7d58-46e7-93e5-53c066618e5c",
+        "outcome": "COMPLETED",
+        "termination_reason": "explicit_supervisor_close",
+        "action_count": 7,
+        "prior_receipt_id": "lrv2_1780699811227_77067332",
+        "goal_hash": "8b3e92a659dc7420a19e944167cb6df22fc950bdbdc4c8ad15386deefe07e64d"
+      }
+    },
+    "constraint_vector_hash": "e61b9f584dbe27741cef6e9ee440831d7d94470c0871b0871541f0308916efea",
+    "ssp_bucket_key": "8357fc5637ab0021982eb17deb1bdfd58166f4c43c1f49950e434eadcb0498f5",
+    "nonce": "85c8b37f-0a9c-44a6-9e31-4c66a2b657fb",
+    "expires_at": "2026-06-05T22:55:32.928Z",
+    "timestamp": "2026-06-05T22:50:32.928Z",
+    "canonical_hash": "418a8ea043c1defc23d0b7a278d9bcc745c8e61d2fc20e16336da630b32d1a10",
+    "signature": "uz7KLNrh4LgBpMg5mftp+iIioGZ9sBqurStHQ59A0X6RVyGQSTMwtFb2TgVPq2TITHUgAtd9Mm/kHJm+FoxVBg==",
+    "public_key": "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2"
+  }
+]
