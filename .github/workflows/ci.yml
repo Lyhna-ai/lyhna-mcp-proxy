@@ -9,11 +9,14 @@ name: ci
 #
 # The pull_request trigger is intentionally UNFILTERED by base branch: coupling the PR gate
 # to a branch-name string (e.g. `branches: [master]`) would silently stop matching if the
-# default branch were ever renamed, dropping the PR-gate leg.
+# default branch were ever renamed, dropping the PR-gate leg. `edited` is included so a PR
+# RETARGETED to a new base (which fires `edited`, not `synchronize`) re-runs verify against
+# the new merge result — the default types omit `edited`, leaving that gap.
 
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 jobs:
   verify:
