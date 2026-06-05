@@ -4,6 +4,7 @@ import type { ProofReceipt } from "../src/index.js";
 import {
   assertContentBlind,
   assertExternalScope,
+  assertNoDuplicateKeys,
   buildLoopProofBundle,
   deriveKeyId,
   pinTrustRoot,
@@ -199,6 +200,52 @@ describe("source-byte preservation (provenance)", () => {
     const receipts = externalReceipts();
     const built = buildLoopProofBundle({ receipts, source_env: "test" });
     expect(built.receipts_json).toBe(serializeReceipts(receipts));
+  });
+
+  it("refuses verbatim source bytes that hide plaintext in a discarded duplicate-key branch", () => {
+    // An early duplicate `constraints` carries the plaintext goal; JSON.parse keeps the
+    // LAST (clean) one, so the parsed object is content-blind — but the raw bytes leak.
+    const head = externalReceipts()[0] as Record<string, unknown>;
+    const leakyText =
+      "[{" +
+      `"receipt_id":${JSON.stringify(head.receipt_id)},` +
+      `"public_key":${JSON.stringify(head.public_key)},` +
+      `"tenant_hash":${JSON.stringify(head.tenant_hash)},` +
+      `"action_type":"echo",` +
+      `"constraints":{"leak":{"goal":"SECRET PLAINTEXT GOAL"}},` + // dropped by parse
+      `"constraints":${JSON.stringify(head.constraints)}` + // kept (clean)
+      "}]";
+    const receipts = JSON.parse(leakyText) as typeof head[];
+    // Sanity: the parsed object is clean (the attack hides from parsed-object checks).
+    expect(JSON.stringify(receipts)).not.toContain("SECRET");
+    // But the raw bytes are refused fail-closed.
+    expect(() =>
+      buildLoopProofBundle({ receipts, receipts_text: leakyText, source_env: "test" })
+    ).toThrow(/duplicate JSON key/);
+  });
+});
+
+describe("assertNoDuplicateKeys", () => {
+  it("accepts well-formed JSON without duplicate keys (compact and pretty)", () => {
+    expect(() => assertNoDuplicateKeys(JSON.stringify(externalReceipts()))).not.toThrow();
+    expect(() => assertNoDuplicateKeys(JSON.stringify(externalReceipts(), null, 2))).not.toThrow();
+  });
+
+  it("rejects a duplicate key at the top level of an object", () => {
+    expect(() => assertNoDuplicateKeys('{"a":1,"a":2}')).toThrow(/duplicate JSON key "a"/);
+  });
+
+  it("rejects a duplicate key nested inside an array of objects", () => {
+    expect(() => assertNoDuplicateKeys('[{"x":{"k":1}},{"y":1,"y":2}]')).toThrow(/duplicate JSON key "y"/);
+  });
+
+  it("does not confuse string values (incl. braces/quotes) for keys", () => {
+    expect(() => assertNoDuplicateKeys('{"a":"{\\"a\\": shadow}","b":"a"}')).not.toThrow();
+  });
+
+  it("allows the same key name in sibling/independent objects", () => {
+    expect(() => assertNoDuplicateKeys('[{"k":1},{"k":2}]')).not.toThrow();
+    expect(() => assertNoDuplicateKeys('{"a":{"k":1},"b":{"k":2}}')).not.toThrow();
   });
 });
 

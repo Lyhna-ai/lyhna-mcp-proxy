@@ -62,6 +62,7 @@ export type {
 export {
   assertContentBlind,
   assertExternalScope,
+  assertNoDuplicateKeys,
   buildGraphNode,
   buildLoopProofBundle,
   deriveKeyId,

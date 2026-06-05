@@ -388,7 +388,70 @@ function resolveReceiptsJson(input: BuildLoopProofBundleInput): string {
   if (JSON.stringify(parsed) !== JSON.stringify(input.receipts)) {
     throw new Error("receipts_text does not parse to the provided receipts (provenance guard).");
   }
+  // Soundness of verbatim preservation: validation runs on the PARSED object, but we write
+  // the RAW bytes. JSON.parse keeps only the last of duplicate keys, so a discarded
+  // duplicate branch (e.g. an early `constraints` carrying plaintext goal/intent, followed
+  // by a clean one) is invisible to assertExternalScope/assertContentBlind yet survives in
+  // the bytes. Reject any duplicate key so the written bytes contain nothing the validators
+  // did not see. (Whitespace/number-format differences carry no content and are allowed.)
+  assertNoDuplicateKeys(input.receipts_text);
   return input.receipts_text;
+}
+
+/**
+ * Reject JSON text that contains a duplicate key within any object. The input is already
+ * known to be valid JSON (parsed above); this scan tracks the key set per object scope and
+ * throws on the first repeat. Duplicate keys are the only way the written bytes can carry
+ * content the parsed-object validators never saw, so a duplicate is a fail-closed reject.
+ */
+export function assertNoDuplicateKeys(text: string): void {
+  type Frame = { object: boolean; keys: Set<string>; expectKey: boolean };
+  const stack: Frame[] = [];
+  let i = 0;
+  const n = text.length;
+
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      const start = i;
+      i += 1;
+      while (i < n) {
+        if (text[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (text[i] === '"') {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      const top = stack[stack.length - 1];
+      if (top?.object && top.expectKey) {
+        const key = JSON.parse(text.slice(start, i)) as string;
+        if (top.keys.has(key)) {
+          throw new Error(
+            `receipts_text contains a duplicate JSON key "${key}"; refusing (a discarded duplicate branch could carry hidden plaintext).`
+          );
+        }
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      continue;
+    }
+    if (ch === "{") {
+      stack.push({ object: true, keys: new Set(), expectKey: true });
+    } else if (ch === "[") {
+      stack.push({ object: false, keys: new Set(), expectKey: false });
+    } else if (ch === "}" || ch === "]") {
+      stack.pop();
+    } else if (ch === ",") {
+      const top = stack[stack.length - 1];
+      if (top?.object) top.expectKey = true;
+    }
+    // ':' , whitespace, numbers, and literals carry no key; skip.
+    i += 1;
+  }
 }
 
 function toLinks(receipts: ProofReceipt[]): LoopChainLink[] {
