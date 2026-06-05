@@ -73,14 +73,30 @@ export async function produceGoldenPathBundle({ outDir, exportCli = EXPORT_CLI, 
     port: 0,
     path: "/mcp"
   });
+  // Control transport: an owner-only unix-domain socket where supported. On Windows a
+  // filesystem `.sock` path is invalid for node:net (it requires a named pipe), so fall
+  // back to the loopback TCP control listener the channel already provides. Either way the
+  // listener stays supervisor-side and topologically distinct from the agent's MCP path.
+  const onWindows = process.platform === "win32";
   const socketPath = join(tmpdir(), `lyhna-demo-control-${process.pid}-${Date.now()}.sock`);
-  const control = await serveControlChannel({ transport: "unix", socketPath, registry, receiptSource: recorder });
+  const control = await serveControlChannel(
+    onWindows
+      ? { transport: "tcp", host: "127.0.0.1", port: 0, registry, receiptSource: recorder }
+      : { transport: "unix", socketPath, registry, receiptSource: recorder }
+  );
+  // A factory the supervisor uses to open one control connection per command.
+  const connectControl = onWindows
+    ? () => {
+        const i = control.address.lastIndexOf(":");
+        return netConnect(Number(control.address.slice(i + 1)), control.address.slice(0, i));
+      }
+    : () => netConnect(socketPath);
 
-  log(`  adapter up: agent MCP=${standing.url}/<session_id>  control(unix)=${socketPath}`);
+  log(`  adapter up: agent MCP=${standing.url}/<session_id>  control(${control.transport})=${control.address}`);
 
   try {
     // 1) SUPERVISOR opens the loop on the control channel (the agent cannot).
-    const opened = await sendControl(socketPath, { cmd: "open", session_id: SESSION_ID, loop_id: LOOP_ID, goal: GOAL });
+    const opened = await sendControl(connectControl, { cmd: "open", session_id: SESSION_ID, loop_id: LOOP_ID, goal: GOAL });
     if (!opened.ok) throw new Error(`open failed: ${JSON.stringify(opened)}`);
     log(`  [supervisor] open  session=${SESSION_ID} loop=${LOOP_ID}`);
 
@@ -97,12 +113,12 @@ export async function produceGoldenPathBundle({ outDir, exportCli = EXPORT_CLI, 
     log(`  [agent] routed ${CALLS} synthetic tools/call over the session URL`);
 
     // 3) SUPERVISOR closes the loop — seals the terminal loop_close.
-    const closed = await sendControl(socketPath, { cmd: "close", session_id: SESSION_ID, outcome: "COMPLETED", reason: "demo_done" });
+    const closed = await sendControl(connectControl, { cmd: "close", session_id: SESSION_ID, outcome: "COMPLETED", reason: "demo_done" });
     if (!closed.ok || closed.sealed !== true) throw new Error(`supervisor close did not seal: ${JSON.stringify(closed)}`);
     log(`  [supervisor] close session=${SESSION_ID} sealed=true receipt=${closed.receipt_id}`);
 
     // 4) SUPERVISOR dumps the sealed chain (read-only control verb; agent can't reach it).
-    const dumped = await sendControl(socketPath, { cmd: "dump", loop_id: LOOP_ID });
+    const dumped = await sendControl(connectControl, { cmd: "dump", loop_id: LOOP_ID });
     if (!dumped.ok || !Array.isArray(dumped.receipts)) throw new Error(`dump failed: ${JSON.stringify(dumped)}`);
     log(`  [supervisor] dump  loop=${LOOP_ID} receipts=${dumped.count}`);
 
@@ -187,10 +203,11 @@ function syntheticUpstream() {
   };
 }
 
-// Supervisor control client: one connection per command, newline-delimited JSON.
-function sendControl(socketPath, command) {
+// Supervisor control client: one connection per command, newline-delimited JSON. `connect`
+// is a factory returning a fresh socket (unix path or loopback TCP, per platform).
+function sendControl(connect, command) {
   return new Promise((resolve, reject) => {
-    const socket = netConnect(socketPath);
+    const socket = connect();
     let buffer = "";
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(JSON.stringify(command) + "\n"));
