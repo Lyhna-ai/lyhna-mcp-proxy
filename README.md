@@ -22,7 +22,13 @@ portable, independently verifiable record that a loop ran and closed under autho
 
 ## Quick start — run the whole golden path locally
 
+From a **repo checkout** (the demo is a development quick-start, not part of the published
+package — `npm run demo` is supported only from a source clone, never from an installed
+tarball):
+
 ```bash
+git clone https://github.com/Lyhna-ai/lyhna-mcp-proxy
+cd lyhna-mcp-proxy
 npm install
 npm run demo
 ```
@@ -30,7 +36,8 @@ npm run demo
 `npm run demo` runs the complete adapter flow against the real product surfaces, with
 nothing live: **start adapter → open loop → route a synthetic MCP call → supervisor closes
 the loop → dump the sealed chain → export the LoopProofBundle → verify it cold** with the
-standalone [`lyhna-verify`](https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify).
+standalone [`lyhna-verify`](https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify). It builds
+`dist` on demand if missing; from a non-checkout it fails fast with a clear message.
 
 The demo is deliberately **synthetic and unsigned**: the receipts carry an obvious stub
 signature, so the cold verify shows a **structural pass with crypto fail-by-absence**

@@ -29,7 +29,32 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DIST_INDEX = join(ROOT, "dist", "src", "index.js");
 const EXPORT_CLI = join(ROOT, "dist", "src", "bin", "export-loop-proof.js");
+const TSCONFIG = join(ROOT, "tsconfig.json");
+const SRC_ENTRY = join(ROOT, "src", "index.ts");
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 const VERIFY_REPO = "https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify";
+
+// The golden-path demo is a REPO-CHECKOUT quick-start, not a published-package feature
+// (it is intentionally omitted from the package `files` manifest, along with the TS
+// sources). Ensure a built dist is present: build it only if dist is missing AND the
+// sources are present; if neither dist nor sources exist (e.g. run from a packed install),
+// fail clearly and intentionally rather than with an opaque tsc/module error.
+function ensureDist(log) {
+  if (existsSync(DIST_INDEX) && existsSync(EXPORT_CLI)) {
+    return;
+  }
+  if (!(existsSync(TSCONFIG) && existsSync(SRC_ENTRY))) {
+    throw new Error(
+      "The golden-path demo is only supported from a source checkout. " +
+        "Clone the repo, run npm install, then npm run demo."
+    );
+  }
+  log("dist not found — building from source (tsc -p tsconfig.json)...");
+  execFileSync(process.execPath, [TSC, "-p", TSCONFIG], { stdio: "inherit" });
+  if (!(existsSync(DIST_INDEX) && existsSync(EXPORT_CLI))) {
+    throw new Error("Build did not produce dist; run `npm run build` and retry.");
+  }
+}
 
 const SESSION_ID = "demo-session-1";
 const LOOP_ID = "loop-demo-golden-path";
@@ -257,9 +282,7 @@ function runVerifier(verifyDir, receiptsPath) {
 
 async function main() {
   const log = (s) => process.stdout.write(s + "\n");
-  if (!existsSync(EXPORT_CLI)) {
-    throw new Error(`export CLI not found at ${EXPORT_CLI} — run \`npm run build\` first.`);
-  }
+  ensureDist(log);
   // `scratch` holds throwaway material (the lyhna-verify clone) and is cleaned up. The
   // exported bundle is the DELIVERABLE — write it OUTSIDE scratch to a stable path so the
   // developer can actually inspect and share it after the command exits.
