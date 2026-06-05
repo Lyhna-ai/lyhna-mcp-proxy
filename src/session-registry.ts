@@ -57,6 +57,13 @@ export class LoopSessionRegistry {
   // In-flight close per session_id. Overlapping closes coalesce onto the same promise
   // so only ONE terminal loop_close is ever emitted (see closeLoop).
   private readonly closing = new Map<string, Promise<LoopCloseResult>>();
+  // Every loop_id opened in this process (active AND already-closed). A loop_id identifies
+  // exactly one loop instance (canonical: a unique minted id). The receipt recorder keys
+  // captured receipts by loop_id, and it retains them past close so the supervisor can dump
+  // a sealed chain — so reusing a loop_id (concurrently OR after close) would merge two
+  // distinct chains into one bucket and corrupt the exported proof. Reject reuse at open
+  // time so one loop_id maps to one chain, ever.
+  private readonly seenLoopIds = new Set<string>();
 
   constructor(
     private readonly bind: LoopBindFn,
@@ -82,11 +89,17 @@ export class LoopSessionRegistry {
     if (this.sessions.has(sessionId)) {
       throw new Error(`Loop session already open: ${sessionId}`);
     }
+    if (this.seenLoopIds.has(input.loop_id)) {
+      throw new Error(
+        `Loop id already used: ${input.loop_id}. A loop_id identifies exactly one loop; reusing it would merge distinct chains in the recorded dump.`
+      );
+    }
 
     const session = new LoopSession(
       createLoopContext({ loop_id: input.loop_id, goal: input.goal })
     );
     this.sessions.set(sessionId, session);
+    this.seenLoopIds.add(input.loop_id);
     return session;
   }
 
