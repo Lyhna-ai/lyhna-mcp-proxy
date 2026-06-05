@@ -37,7 +37,9 @@ npm run demo
 nothing live: **start adapter → open loop → route a synthetic MCP call → supervisor closes
 the loop → dump the sealed chain → export the LoopProofBundle → verify it cold** with the
 standalone [`lyhna-verify`](https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify). It builds
-`dist` on demand if missing; from a non-checkout it fails fast with a clear message.
+`dist` on demand if missing from a checkout; from an installed package `npm run demo` is
+unsupported and fails with Node's native module-not-found error (the demo script is not
+published) — installed packages use the `lyhna-mcp` bin and the exported LoopProofBundle.
 
 The demo is deliberately **synthetic and unsigned**: the receipts carry an obvious stub
 signature, so the cold verify shows a **structural pass with crypto fail-by-absence**
