@@ -59,6 +59,30 @@ export type {
   ControlChannelLogger,
   ControlChannelOptions
 } from "./control-channel.js";
+export {
+  assertContentBlind,
+  assertExternalScope,
+  assertNoDuplicateKeys,
+  buildGraphNode,
+  buildLoopProofBundle,
+  deriveKeyId,
+  deriveLoopSummary,
+  pinTrustRoot,
+  renderGraphNodeMarkdown,
+  serializeReceipts,
+  sha256Hex
+} from "./loop-proof-bundle.js";
+export type {
+  AdvisoryVerdict,
+  AuthorityContextGraphNode,
+  BuildLoopProofBundleInput,
+  BuiltLoopProofBundle,
+  ContentDigest,
+  LoopProofBundle,
+  LoopSummary,
+  ProofReceipt,
+  TrustRoot
+} from "./loop-proof-bundle.js";
 export type {
   McpProxyRequestHandlers,
   StreamableHttpUpstream,

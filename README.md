@@ -13,11 +13,11 @@ Supported topologies:
 ## Status
 
 Baseline proxy, Streamable HTTP server mode, multi-transport upstream support, the
-loop-context adapter (loop-bound chained receipts with proxy-controlled close), and the
-standing multi-session service (session registry + supervisor-only control channel) are
-built and tested.
+loop-context adapter (loop-bound chained receipts with proxy-controlled close), the
+standing multi-session service (session registry + supervisor-only control channel), and
+the buyer-facing **LoopProofBundle** export are built and tested.
 
-Current verification: 69 tests passing across 10 test files.
+Current verification: 83 tests passing across 11 test files.
 
 ## Goals
 
@@ -146,3 +146,32 @@ governed agent could close its own loop, "the proxy closes the loop" collapses b
 "the agent closes the loop." The agent is never the proxy's spawner — it holds only a URL —
 which is what makes the Phase 5b kill-guard achievable. See
 [`docs/PRODUCTION-ISOLATION.md`](docs/PRODUCTION-ISOLATION.md).
+
+## Loop Proof Bundle (buyer-facing export)
+
+`LoopProofBundle` (`src/loop-proof-bundle.ts`, CLI `src/bin/export-loop-proof.ts`) packages
+a **sealed** loop receipt array into a portable, buyer-facing object that verifies
+independently offline. It is **additive packaging only** — it never changes the receipt
+shape, the proxy core, the `LoopSession` spine, the `bind()` contract, or `lyhna-core`.
+
+**Side-car shape (the load-bearing choice):** the bare receipt array stays the loadable
+top-level object (`receipts.json`), with the envelope alongside it (`bundle.json`). The
+standalone, trust-no-one [`lyhna-verify`](https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify)
+consumes `receipts.json` **unchanged** — `lyhna-verify --chain receipts.json` — with zero
+verifier-side work.
+
+The export writes four side-car files:
+
+- `receipts.json` — the bare receipt array, byte-identical to input (the verifier input).
+- `bundle.json` — the additive envelope: **trust-root pin** (`ed25519_public_key` +
+  `key_id`), scheme/receipt version, export metadata (`exported_at`, `source_env`,
+  `content_digest` = sha256 over `receipts.json`), and an **advisory** verdict (the
+  verifier's own `--json` output, marked advisory — re-run to trust).
+- `graph-node.json` / `graph-node.md` — the Authority Context Graph node (`id`, `loop_id`,
+  `goal_hash`, `action_count`, sealed verdict, `scope`, trust root).
+
+Buyer-facing invariants: **external scope only** (carries `tenant_hash`, never the internal
+`tenant_id`; enforced fail-closed) and **content-blind** (`goal_hash` only, never the
+plaintext goal). A real signed external loop chain packaged this way verifies full-green
+cold under `lyhna-verify` (all signatures valid, sealed, exit 0) — the export does not
+perturb an already-green chain.
