@@ -1,7 +1,15 @@
 // Repeatable cold-verify legs for the LoopProofBundle honesty surface.
 //
-// Runs BOTH legs against the REAL standalone lyhna-verify (cloned READ-ONLY; never
+// Runs ALL legs against the REAL standalone lyhna-verify (cloned READ-ONLY; never
 // vendored, never modified). Encodes the load-bearing exit semantics precisely:
+//
+//   Leg 0 (synthetic demo PRODUCER, end-to-end): drives the real adapter golden path
+//     (open -> route synthetic call -> supervisor close -> dump -> export) via
+//     produceGoldenPathBundle, then cold-verifies the EXPORTED receipts.json. Asserts BOTH
+//     directions: structural invariants must all pass AND all_receipts_verified MUST be
+//     false. A synthetic chain that ever verified as signed reds the build (synthetic
+//     masquerading as signed); a structural failure reds the build. This locks the honesty
+//     boundary onto the actual shipped product path, not just hand-built fixtures.
 //
 //   Leg 1 (synthetic, structural): the bundle's side-car receipts.json must be consumed
 //     by lyhna-verify with ZERO shape adaptation; structural invariants (sealed,
@@ -30,6 +38,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { produceGoldenPathBundle, assertSyntheticColdVerify } from "./demo-golden-path.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const EXPORT_CLI = join(ROOT, "dist", "src", "bin", "export-loop-proof.js");
@@ -95,6 +105,28 @@ function exportBundle(receiptsPath, outDir, extraArgs = []) {
     [EXPORT_CLI, receiptsPath, "--out", outDir, "--source-env", "ci-verify-legs", ...extraArgs],
     { stdio: "pipe" }
   );
+}
+
+// ---- Leg 0: synthetic demo PRODUCER, end-to-end -----------------------------
+
+async function leg0(verifyDir) {
+  log("\n=== Leg 0 (synthetic demo PRODUCER end-to-end; structural pass REQUIRED + must NOT verify as signed) ===");
+  const outDir = join(work, "bundle-demo");
+  let produced;
+  try {
+    produced = await produceGoldenPathBundle({ outDir, exportCli: EXPORT_CLI, log: (s) => log(s) });
+  } catch (e) {
+    fail("Leg 0", `demo producer failed end-to-end: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  // Cold-verify the EXPORTED side-car with the real verifier (zero shape adaptation).
+  const { json } = runVerifier(verifyDir, join(outDir, "receipts.json"));
+  const verdict = assertSyntheticColdVerify(json);
+  if (!verdict.ok) {
+    fail("Leg 0", verdict.detail);
+    return;
+  }
+  ok("Leg 0", `demo producer (open->call x${produced.actionCount}->close->dump->export) cold-verified: ${verdict.detail}`);
 }
 
 // ---- Leg 1: synthetic, structural -------------------------------------------
@@ -234,6 +266,7 @@ function leg2(verifyDir) {
 try {
   ensureBuilt();
   const verifyDir = resolveVerifyDir();
+  await leg0(verifyDir);
   leg1(verifyDir);
   leg2(verifyDir);
 } catch (e) {
@@ -243,5 +276,11 @@ try {
   rmSync(work, { recursive: true, force: true });
 }
 
-log(`\n${failed ? "VERIFY LEGS: FAILED" : "VERIFY LEGS: PASSED (Leg 1 structural+fail-by-absence, Leg 2 full-green cold)"}`);
+log(
+  `\n${
+    failed
+      ? "VERIFY LEGS: FAILED"
+      : "VERIFY LEGS: PASSED (Leg 0 demo-producer structural+must-not-verify, Leg 1 structural+fail-by-absence, Leg 2 full-green cold)"
+  }`
+);
 process.exit(failed ? 1 : 0);

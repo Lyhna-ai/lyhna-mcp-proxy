@@ -1,6 +1,10 @@
 export type { Json, JsonObject } from "./json.js";
 export type { BindClient, BindOutcome, BindReceipt, BindRequest, BindResponse } from "./bind.js";
 export { buildBindRequest } from "./bind.js";
+export { createSyntheticDemoBindClient } from "./bind-client/synthetic-demo.js";
+export type { SyntheticDemoBindOptions } from "./bind-client/synthetic-demo.js";
+export { createReceiptRecorder } from "./receipt-recorder.js";
+export type { ReceiptRecorder, ReceiptSource, RecordedReceipt } from "./receipt-recorder.js";
 export {
   resolveWrapperFamilyActionType,
   WRAPPER_FAMILY_DESCRIPTORS
