@@ -174,6 +174,10 @@ export class LoopSession {
   private priorReceiptIdValue: string | null = null;
   private actionCountValue = 0;
   private closedFlag = false;
+  // The terminal result, cached once the loop seals. A second close() returns THIS verbatim
+  // (see close()) instead of binding a duplicate terminal — additive defense-in-depth that
+  // makes "seal exactly once" local to the session, not solely a registry property.
+  private sealedResult: (LoopCloseResult & { sealed: true }) | null = null;
   private tail: Promise<void> = Promise.resolve();
 
   constructor(context: LoopContext) {
@@ -236,6 +240,18 @@ export class LoopSession {
     fields: { outcome: string; termination_reason: string; intent?: string; intent_version?: string }
   ): Promise<LoopCloseResult> {
     return this.runExclusive(async () => {
+      // Idempotent guard (additive, first-writer-wins). A loop seals exactly once. If an
+      // already-sealed session is closed a SECOND time — e.g. a direct close racing one that
+      // bypassed the registry's coalesce/delete — short-circuit: return the existing sealed
+      // result verbatim. Do not rebuild the request, do not re-bind, do not emit a second
+      // terminal receipt (which would fork the chain — verifyLoopChain rejects two terminals).
+      // The guard runs under the same mutex as the seal, so a queued second close observes the
+      // cached result deterministically. A FAILED close that never set closedFlag is unaffected:
+      // closeLoopWithRetry still retries it within the grace window.
+      if (this.closedFlag && this.sealedResult) {
+        return this.sealedResult;
+      }
+
       const request = buildLoopCloseRequest(this.context, {
         action_count: this.actionCountValue,
         prior_receipt_id: this.priorReceiptIdValue,
@@ -249,8 +265,9 @@ export class LoopSession {
 
       this.priorReceiptIdValue = response.receipt_id;
       this.closedFlag = true;
+      this.sealedResult = { sealed: true as const, receipt: response };
 
-      return { sealed: true as const, receipt: response };
+      return this.sealedResult;
     });
   }
 

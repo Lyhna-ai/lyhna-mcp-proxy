@@ -23,8 +23,20 @@
 //     valid, sealed) AND remain byte-identical to source with a matching digest. Any
 //     deviation reds the build.
 //
-// Source material is all PUBLIC: the pinned key, the public verifier, and its static
-// signed corpus. No secrets, no live bind.
+//   Leg 3 (live positive-control — INVERTED HONESTY): the LIVE Chione/Hermes loop, sealed
+//     through the hosted Lyhna bind and exported to tests/fixtures/live/chione-hermes/,
+//     must verify FULL GREEN cold (exit 0, sealed, all_receipts_verified=true) with REAL
+//     hosted-bind Ed25519 signatures, byte-identical with a matching digest. Where Leg 1
+//     asserts synthetic material must NOT verify as signed, Leg 3 asserts the live chain
+//     MUST. This leg is fail-closed: until the live fixture is captured from the ACTUAL
+//     sealed live run, it REDS with a PENDING-LIVE-CAPTURE failure. The fixture must never
+//     be reconstructed or hand-built — only a genuine hosted-bind capture satisfies it. If
+//     the captured receipts are not Ed25519, this leg stops and reports the mismatch rather
+//     than adapting around it.
+//
+// Legs 0–2 source material is all PUBLIC: the pinned key, the public verifier, and its
+// static signed corpus. No secrets, no live bind. Leg 3 additionally consumes a committed
+// live capture (no secrets in the repo — only the already-sealed, signed receipts).
 //
 // Inputs (env):
 //   LYHNA_VERIFY_DIR  path to a lyhna-verify checkout (CI clones it). If unset/missing,
@@ -46,6 +58,9 @@ const EXPORT_CLI = join(ROOT, "dist", "src", "bin", "export-loop-proof.js");
 const VERIFY_REPO = "https://github.com/Lyhna-ai/Lyhna-ai-lyhna-verify";
 const PINNED_KEY = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
 const REAL_LOOP_ID = "a4a40b55-c399-4f4f-b46f-105a53655d3a";
+// Leg 3 live positive-control capture (exported from the ACTUAL sealed live run). Fail-closed
+// until present; never reconstructed. See docs/LIVE-BIND-GATE.md for the capture procedure.
+const LIVE_FIXTURE_DIR = join(ROOT, "tests", "fixtures", "live", "chione-hermes");
 
 const work = mkdtempSync(join(tmpdir(), "verify-legs-"));
 let failed = false;
@@ -261,6 +276,83 @@ function leg2(verifyDir) {
   ok("Leg 2", `FULL GREEN cold (exit 0, sealed, all signatures valid); byte-identical; digest matches`);
 }
 
+// ---- Leg 3: live positive-control (INVERTED HONESTY) ------------------------
+
+function leg3(verifyDir) {
+  log("\n=== Leg 3 (live positive-control; FULL GREEN cold with REAL Ed25519 REQUIRED; fail-closed until captured) ===");
+  const receiptsPath = join(LIVE_FIXTURE_DIR, "receipts.json");
+  const bundlePath = join(LIVE_FIXTURE_DIR, "bundle.json");
+
+  // Fail-closed: a real hosted-bind capture is the ONLY thing that can satisfy this leg.
+  // Absent it, the gate is honestly RED — never skipped, never fabricated.
+  if (!existsSync(receiptsPath)) {
+    fail(
+      "Leg 3",
+      `PENDING LIVE CAPTURE — no live fixture at ${receiptsPath}. ` +
+        `Run the live-bind harness against the hosted tenant (see docs/LIVE-BIND-GATE.md), then ` +
+        `commit the ACTUAL sealed exported artifacts (receipts.json, bundle.json, graph-node.json, ` +
+        `graph-node.md). Do NOT reconstruct or hand-build this fixture.`
+    );
+    return;
+  }
+
+  const outBytes = readFileSync(receiptsPath, "utf8");
+
+  // Real hosted-bind receipts must be Ed25519-signed. lyhna-verify validates Ed25519; a green
+  // verify IS an Ed25519 validation. We additionally assert the receipts are Ed25519-SHAPED
+  // (32-byte hex public key, present signature) so a non-Ed25519 capture STOPS here loudly
+  // rather than being adapted around.
+  let receipts;
+  try {
+    receipts = JSON.parse(outBytes);
+  } catch (e) {
+    fail("Leg 3", `live receipts.json is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!Array.isArray(receipts) || receipts.length === 0) {
+    fail("Leg 3", "live receipts.json must be a non-empty JSON array of signed receipts");
+    return;
+  }
+  const ED25519_PUBKEY = /^[0-9a-f]{64}$/;
+  const notEd25519 = receipts.filter(
+    (r) => !(typeof r.public_key === "string" && ED25519_PUBKEY.test(r.public_key) && typeof r.signature === "string" && r.signature.length > 0)
+  );
+  if (notEd25519.length > 0) {
+    fail(
+      "Leg 3",
+      `live capture is not Ed25519-signed (${notEd25519.length}/${receipts.length} receipts lack a 32-byte hex public_key + signature). ` +
+        `Stopping and reporting the mismatch — NOT adapting around it.`
+    );
+    return;
+  }
+
+  // DECISIVE: the committed live side-car must verify FULL GREEN cold against lyhna-verify.
+  const post = runVerifier(verifyDir, receiptsPath);
+  const c = post.json?.chains?.[0];
+  if (post.exitCode !== 0) {
+    fail("Leg 3", `live receipts.json did not verify green (exit ${post.exitCode}; status ${c?.status})`);
+    return;
+  }
+  if (!c || c.status !== "VERIFIED" || c.sealed !== true || c.all_receipts_verified !== true) {
+    fail("Leg 3", `live chain not full-green: ${JSON.stringify({ status: c?.status, sealed: c?.sealed, all_receipts_verified: c?.all_receipts_verified })}`);
+    return;
+  }
+
+  // Digest match: the committed bundle.json must seal the exact receipts.json bytes.
+  if (!existsSync(bundlePath)) {
+    fail("Leg 3", `live bundle.json missing at ${bundlePath} — cannot confirm digest match`);
+    return;
+  }
+  const bundle = JSON.parse(readFileSync(bundlePath, "utf8"));
+  const digest = createHash("sha256").update(outBytes, "utf8").digest("hex");
+  if (bundle.export?.content_digest?.value !== digest) {
+    fail("Leg 3", "live bundle content_digest does not match sha256 of receipts.json bytes");
+    return;
+  }
+
+  ok("Leg 3", `live Chione/Hermes chain FULL GREEN cold (exit 0, sealed, all Ed25519 signatures valid); digest matches`);
+}
+
 // ---- main -------------------------------------------------------------------
 
 try {
@@ -269,6 +361,7 @@ try {
   await leg0(verifyDir);
   leg1(verifyDir);
   leg2(verifyDir);
+  leg3(verifyDir);
 } catch (e) {
   failed = true;
   log(`\nFATAL: ${e instanceof Error ? e.message : String(e)}`);
@@ -280,7 +373,7 @@ log(
   `\n${
     failed
       ? "VERIFY LEGS: FAILED"
-      : "VERIFY LEGS: PASSED (Leg 0 demo-producer structural+must-not-verify, Leg 1 structural+fail-by-absence, Leg 2 full-green cold)"
+      : "VERIFY LEGS: PASSED (Leg 0 demo-producer structural+must-not-verify, Leg 1 structural+fail-by-absence, Leg 2 full-green cold, Leg 3 live positive-control full-green)"
   }`
 );
 process.exit(failed ? 1 : 0);

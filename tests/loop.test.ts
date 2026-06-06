@@ -301,6 +301,44 @@ describe("LoopSession.close + closeLoopWithRetry", () => {
     expect(result.sealed).toBe(false);
     expect(session.closed).toBe(false);
   });
+
+  // RED-GREEN (additive defense-in-depth). The registry already guarantees one terminal
+  // per session_id (coalesce + delete-on-seal). This makes the invariant LOCAL to the
+  // session: a SECOND direct close() — bypassing the registry entirely — must never build
+  // or re-bind a second terminal loop_close. It returns the already-sealed result verbatim.
+  // Without the closedFlag short-circuit in close(), this test REDS: close() would build
+  // and bind a second loop_close (two terminals), and the two results would differ.
+  it("close() is idempotent: a direct second close emits no second terminal and returns the same sealed result", async () => {
+    const session = new LoopSession(CONTEXT);
+    const closeBinds: BindRequest[] = [];
+    let n = 0;
+    const bind = async (request: BindRequest): Promise<BindResponse> => {
+      if (request.action_type === "loop_close") {
+        closeBinds.push(request);
+      }
+      n += 1;
+      return { outcome: "APPROVED", receipt_id: `receipt_${n}`, signature: `sig_${n}` };
+    };
+
+    await session.bindToolCall(baseRequest(), bind);
+
+    const first = await session.close(bind, { outcome: "COMPLETED", termination_reason: "explicit" });
+    // A second close with a DIFFERENT outcome must NOT win and must NOT re-bind: first
+    // writer wins, locally, at the session.
+    const second = await session.close(bind, { outcome: "FAILED", termination_reason: "second-writer" });
+
+    // Exactly ONE terminal loop_close bind was emitted.
+    expect(closeBinds).toHaveLength(1);
+    // Both calls return the SAME sealed result, byte-identically (same object reference,
+    // and structurally equal — the second call's FAILED/second-writer fields never appear).
+    expect(first.sealed).toBe(true);
+    expect(second).toBe(first);
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+    if (first.sealed && second.sealed) {
+      expect(second.receipt.receipt_id).toBe(first.receipt.receipt_id);
+    }
+    expect(session.closed).toBe(true);
+  });
 });
 
 describe("verifyLoopChain (sealed vs unsealed)", () => {
