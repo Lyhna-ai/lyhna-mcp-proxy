@@ -384,11 +384,56 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
 
   if (input.capsule) {
     const mode = input.capsule.mode;
-    scope_capsule = projectScopeCapsuleForExport(input.capsule.sealed_scope, mode);
+    const sealed = input.capsule.sealed_scope;
+    const continuation = input.capsule.continuation;
+
+    // FAIL CLOSED (identity binding): the sealed scope + continuation must belong to the SAME loop
+    // as the receipt chain. A stale dump_scope/continuation from another loop must never be
+    // packaged onto these receipts (the cold verifier only checks receipts.json, so a mislabeled
+    // pack would otherwise claim an unrelated scope for this chain).
+    const mismatches: string[] = [];
+    if (sealed.structural.loop_id !== loop.loop_id) {
+      mismatches.push(`sealed scope loop_id ${sealed.structural.loop_id} != receipts loop_id ${loop.loop_id}`);
+    }
+    if (sealed.structural.goal_hash !== loop.goal_hash) {
+      mismatches.push(`sealed scope goal_hash != receipts goal_hash`);
+    }
+    if (continuation.loop_id !== loop.loop_id) {
+      mismatches.push(`continuation loop_id ${continuation.loop_id} != receipts loop_id ${loop.loop_id}`);
+    }
+    if (continuation.goal_hash !== loop.goal_hash) {
+      mismatches.push(`continuation goal_hash != receipts goal_hash`);
+    }
+    if (continuation.scope_ref !== sealed.scope_ref) {
+      mismatches.push(`continuation scope_ref != sealed scope_ref`);
+    }
+    for (const e of input.capsule.scope_events ?? []) {
+      if (e.loop_id !== loop.loop_id) {
+        mismatches.push(`scope event ${e.event_hash} loop_id ${e.loop_id} != receipts loop_id ${loop.loop_id}`);
+        break;
+      }
+    }
+    if (mismatches.length > 0) {
+      throw new Error(
+        `Capsule material does not belong to the receipt chain (fail closed): ${mismatches.join("; ")}.`
+      );
+    }
+
+    // FAIL CLOSED (mode contract): an export mode must never be MORE permissive than the sealed
+    // scope declared. A Proof-Mode-sealed scope can never be exported in Verified Context Mode —
+    // that would emit the plaintext sidecar a content-blind scope forbade (an operator --mode typo
+    // must not turn a content-blind pack into a plaintext one). Downgrading a VC scope to a Proof
+    // pack is always safe (strictly more restrictive) and remains allowed.
+    if (mode === "verified_context" && sealed.structural.privacy_mode === "proof") {
+      throw new Error(
+        "Cannot export a Proof-Mode-sealed scope in Verified Context Mode; the sealed scope " +
+          "declared content-blind (proof) and must not emit a plaintext sidecar (fail closed)."
+      );
+    }
+
+    scope_capsule = projectScopeCapsuleForExport(sealed, mode);
     continuation_capsule =
-      mode === "verified_context"
-        ? input.capsule.continuation
-        : projectContinuationProofMode(input.capsule.continuation);
+      mode === "verified_context" ? continuation : projectContinuationProofMode(continuation);
     scope_events = (input.capsule.scope_events ?? []).map((e) => projectScopeEvent(e, mode));
 
     // Proof Mode is content-blind: the scope-capsule.json must be structural-only. Fail closed.
@@ -398,7 +443,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
 
     bundle.capsule = {
       mode,
-      scope_ref: input.capsule.sealed_scope.scope_ref,
+      scope_ref: sealed.scope_ref,
       scope_capsule_file: "scope-capsule.json",
       continuation_capsule_file: "continuation-capsule.json",
       scope_events: {

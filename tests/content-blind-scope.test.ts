@@ -168,3 +168,65 @@ describe("content-blind: Proof Mode bundle export carries no plaintext", () => {
     expect(built.bundle.capsule?.mode).toBe("proof");
   });
 });
+
+describe("export identity binding + mode contract (fail closed)", () => {
+  function loopCloseReceipts(loop_id: string, goal_hash: string): ProofReceipt[] {
+    return [
+      {
+        version: "LYHNA_RECEIPT_V2",
+        receipt_id: "r1",
+        public_key: "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2",
+        tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close",
+        outcome: "APPROVED",
+        signature: "c3R1Yg==",
+        constraints: {
+          loop: { loop_id, prior_receipt_id: null, goal_hash },
+          loop_close: { loop_id, goal_hash, action_count: 0, outcome: "COMPLETED", prior_receipt_id: null, termination_reason: "t" }
+        }
+      }
+    ];
+  }
+  function continuationFor(loop_id: string, goal_hash: string, scope_ref: string) {
+    return {
+      capsule_type: "continuation_capsule" as const,
+      capsule_version: "continuation-capsule/v1",
+      loop_id,
+      goal_hash,
+      scope_ref,
+      inherits_from: { scope_ref },
+      sealed: true,
+      action_count: 0,
+      closed_at: "2026-06-08T00:00:00.000Z",
+      what_changed: [],
+      scope_events: []
+    };
+  }
+
+  it("fails closed when the capsule belongs to a DIFFERENT loop than the receipts", () => {
+    const sealed = sealScopeCapsule({ capsule }); // loop-1
+    const receipts = loopCloseReceipts("loop-OTHER", "a".repeat(64));
+    const continuation = continuationFor("loop-OTHER", "a".repeat(64), sealed.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/does not belong to the receipt chain/);
+  });
+
+  it("fails closed when the continuation scope_ref does not match the sealed scope", () => {
+    const sealed = sealScopeCapsule({ capsule }); // loop-1
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), "scope_v1:" + "f".repeat(64));
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/does not belong to the receipt chain/);
+  });
+
+  it("refuses to export a Proof-Mode-sealed scope in Verified Context Mode (would leak plaintext)", () => {
+    const sealed = sealScopeCapsule({ capsule }); // privacy_mode: "proof"
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "verified_context", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/Proof-Mode-sealed scope in Verified Context/);
+  });
+});
