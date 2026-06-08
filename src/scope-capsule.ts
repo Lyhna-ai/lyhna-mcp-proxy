@@ -287,6 +287,15 @@ export function sealScopeCapsule(input: {
   if (!structural.loop_id || !structural.goal_hash) {
     throw new Error("Scope capsule structural projection requires loop_id and goal_hash.");
   }
+  // privacy_mode arrives as plain JSON (control channel / export CLI); validate it against the two
+  // allowed values at seal time so a typo like "Proof" cannot later slip past a `=== "proof"`
+  // mode-contract check and leak the plaintext sidecar. Fail closed.
+  if (structural.privacy_mode !== "proof" && structural.privacy_mode !== "verified_context") {
+    throw new Error(
+      `Scope capsule privacy_mode must be "proof" or "verified_context", received ` +
+        `${JSON.stringify(structural.privacy_mode)} (fail closed).`
+    );
+  }
   assertScopeStructuralClosed(structural);
   assertScopeStructuralContentBlind(structural);
   assertBoundsEnforceable(structural.bounds);

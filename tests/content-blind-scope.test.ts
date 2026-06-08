@@ -227,6 +227,6 @@ describe("export identity binding + mode contract (fail closed)", () => {
     const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref);
     expect(() =>
       buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "verified_context", sealed_scope: sealed, continuation, scope_events: [] } })
-    ).toThrow(/Proof-Mode-sealed scope in Verified Context/);
+    ).toThrow(/Verified Context Mode/);
   });
 });

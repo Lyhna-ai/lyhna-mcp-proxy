@@ -420,14 +420,16 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     }
 
     // FAIL CLOSED (mode contract): an export mode must never be MORE permissive than the sealed
-    // scope declared. A Proof-Mode-sealed scope can never be exported in Verified Context Mode —
-    // that would emit the plaintext sidecar a content-blind scope forbade (an operator --mode typo
-    // must not turn a content-blind pack into a plaintext one). Downgrading a VC scope to a Proof
-    // pack is always safe (strictly more restrictive) and remains allowed.
-    if (mode === "verified_context" && sealed.structural.privacy_mode === "proof") {
+    // scope declared. A Verified Context (plaintext-sidecar) export is permitted ONLY when the
+    // sealed scope declared EXACTLY "verified_context" — any other value (proof, or a malformed
+    // privacy_mode that slipped through) blocks it, so an operator --mode typo (or a capsule typo)
+    // can never turn a content-blind pack into a plaintext one. Downgrading to a Proof pack is
+    // always safe (strictly more restrictive) and remains allowed.
+    if (mode === "verified_context" && sealed.structural.privacy_mode !== "verified_context") {
       throw new Error(
-        "Cannot export a Proof-Mode-sealed scope in Verified Context Mode; the sealed scope " +
-          "declared content-blind (proof) and must not emit a plaintext sidecar (fail closed)."
+        `Cannot export in Verified Context Mode: the sealed scope's privacy_mode is ` +
+          `${JSON.stringify(sealed.structural.privacy_mode)}, not "verified_context"; refusing to ` +
+          `emit a plaintext sidecar (fail closed).`
       );
     }
 

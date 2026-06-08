@@ -65,6 +65,11 @@ describe("sealScopeCapsule", () => {
     expect(() => sealScopeCapsule({ capsule: { structural: leaky as ScopeStructuralProjection } })).toThrow();
   });
 
+  it("rejects a malformed privacy_mode at seal time (fail closed)", () => {
+    const bad = { ...structural(), privacy_mode: "Proof" } as unknown as ScopeStructuralProjection;
+    expect(() => sealScopeCapsule({ capsule: { structural: bad } })).toThrow(/privacy_mode/);
+  });
+
   it("rejects an UNKNOWN structural field via the closed allowlist (content-blind)", () => {
     const leaky = { ...structural(), description: "fix checkout bug" } as unknown as ScopeStructuralProjection;
     expect(() => sealScopeCapsule({ capsule: { structural: leaky } })).toThrow(/unknown field|closed allowlist/i);
