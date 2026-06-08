@@ -658,10 +658,18 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // privacy_mode that slipped through) blocks it, so an operator --mode typo (or a capsule typo)
     // can never turn a content-blind pack into a plaintext one. Downgrading to a Proof pack is
     // always safe (strictly more restrictive) and remains allowed.
-    if (mode === "verified_context" && sealed.structural.privacy_mode !== "verified_context") {
+    //
+    // This is checked against the VERIFIED `finalScope` (hash-validated history entry), NOT the raw
+    // `sealed` input. With --scope-history the `sealed` object's `structural` is never hash-checked —
+    // only `sealed.scope_ref === finalScope.scope_ref` is enforced above — so a caller could supply a
+    // `sealed_scope` whose scope_ref matches the proof-mode final version while its `structural`
+    // claims `privacy_mode: "verified_context"`. Trusting `sealed` here would emit the verified final
+    // scope's plaintext sidecar despite the verified scope being content-blind. `finalScope` is the
+    // version actually projected below, so the mode contract must be judged on it.
+    if (mode === "verified_context" && finalScope.structural.privacy_mode !== "verified_context") {
       throw new Error(
-        `Cannot export in Verified Context Mode: the sealed scope's privacy_mode is ` +
-          `${JSON.stringify(sealed.structural.privacy_mode)}, not "verified_context"; refusing to ` +
+        `Cannot export in Verified Context Mode: the verified final scope's privacy_mode is ` +
+          `${JSON.stringify(finalScope.structural.privacy_mode)}, not "verified_context"; refusing to ` +
           `emit a plaintext sidecar (fail closed).`
       );
     }
@@ -681,7 +689,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
 
     bundle.capsule = {
       mode,
-      scope_ref: sealed.scope_ref,
+      // Use the VERIFIED final version's scope_ref (proven equal to sealed.scope_ref above), so the
+      // pack advertises the hash-validated scope, never the untrusted sealed input.
+      scope_ref: finalScope.scope_ref,
       scope_capsule_file: "scope-capsule.json",
       continuation_capsule_file: "continuation-capsule.json",
       scope_events: {

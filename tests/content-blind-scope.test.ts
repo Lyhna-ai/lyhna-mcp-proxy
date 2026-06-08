@@ -236,6 +236,30 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/Verified Context Mode/);
   });
 
+  it("judges the mode contract on the VERIFIED finalScope, not an untrusted sealed_scope input (round 21)", () => {
+    // The verified final history version is content-blind (proof). With --scope-history, the separate
+    // `sealed_scope` input is NEVER hash-validated — only its scope_ref is matched to finalScope. A
+    // caller crafts a sealed_scope that reuses the proof version's scope_ref but flips privacy_mode to
+    // "verified_context", trying to unlock a plaintext-sidecar export of the verified (proof) final
+    // scope. The mode contract must be judged on finalScope, so this still fails closed.
+    const sealedProof = sealScopeCapsule({ capsule }); // privacy_mode: "proof", carries a plaintext sidecar
+    const lyingSealed = {
+      ...sealedProof,
+      // scope_ref stays sealedProof.scope_ref (via spread) so the identity check passes, but the
+      // unvalidated structural now claims verified_context.
+      structural: { ...sealedProof.structural, privacy_mode: "verified_context" as const }
+    };
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), sealedProof.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "t",
+        capsule: { mode: "verified_context", sealed_scope: lyingSealed, scope_history: [sealedProof], continuation, scope_events: [] }
+      })
+    ).toThrow(/verified final scope's privacy_mode/);
+  });
+
   it("fails closed when the sealed scope_ref does not hash to its structural projection (tamper)", () => {
     const sealed = sealScopeCapsule({ capsule });
     // Mutate the structural rules but KEEP the original scope_ref (the tamper Codex described).
