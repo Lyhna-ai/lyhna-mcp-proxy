@@ -6,6 +6,7 @@ import {
   assertScopeCapsuleStructuralOnly,
   assertScopeConstraintStructural,
   buildLoopProofBundle,
+  createScopeEventRecorder,
   createSyntheticDemoBindClient,
   mergeScopeConstraint,
   projectScopeCapsuleForExport,
@@ -288,7 +289,56 @@ describe("export identity binding + mode contract (fail closed)", () => {
     };
     expect(() =>
       buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
-    ).toThrow(/outside the verified history/);
+    ).toThrow(/verified history/);
+  });
+
+  it("fails closed when the continuation UNDER-reports amendments vs the verified history", () => {
+    const original = sealScopeCapsule({ capsule });
+    const amended = amendScope(original, { structural: { ...capsule.structural, allowed_targets: ["/checkout/**", "/cart/**"] } });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: original.scope_ref, prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    // History has 1 amendment, but the continuation hides it (what_changed: []).
+    const continuation = {
+      ...continuationFor("loop-1", goal_hash, amended.scope_ref),
+      inherits_from: { scope_ref: original.scope_ref },
+      what_changed: []
+    };
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: amended, scope_history: [original, amended], continuation, scope_events: [] } })
+    ).toThrow(/verified history/);
+  });
+
+  it("fails closed when a supplied scope event's hash does not match its contents (tamper)", () => {
+    const sealed = sealScopeCapsule({ capsule });
+    const rec = createScopeEventRecorder();
+    const event = rec.record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1",
+      scope_ref: sealed.scope_ref,
+      attempted: { action_class: "write", tool_name: "write_file", target_descriptor: "sha256:" + "c".repeat(64) },
+      matched_rule: "/billing/migrations/**",
+      decision: "REFUSED",
+      prior_receipt_id: null
+    });
+    // Tamper the decision while keeping the (now stale) event_hash.
+    const tampered = { ...event, matched_rule: "allowed_targets" };
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [tampered] } })
+    ).toThrow(/event_hash does not match/);
   });
 
   it("accepts a real amendment when the full verified scope_history is supplied", () => {

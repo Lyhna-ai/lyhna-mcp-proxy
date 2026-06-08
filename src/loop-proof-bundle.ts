@@ -30,7 +30,7 @@ import {
   type ScopePrivacyMode,
   type SealedScope
 } from "./scope-capsule.js";
-import { projectScopeEvent, type ScopeEvent } from "./scope-event-recorder.js";
+import { deriveScopeEventHash, projectScopeEvent, type ScopeEvent } from "./scope-event-recorder.js";
 import {
   projectContinuationProofMode,
   type ContinuationCapsule
@@ -462,10 +462,22 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     if (continuation.inherits_from.scope_ref !== original.scope_ref) {
       mismatches.push(`continuation inherits_from != original scope_ref`);
     }
-    for (const a of continuation.what_changed) {
-      if (!chainRefs.has(a.to_scope_ref) || (a.from_scope_ref !== null && !chainRefs.has(a.from_scope_ref))) {
-        mismatches.push(`continuation amendment references a scope_ref outside the verified history`);
-        break;
+    // The continuation's amendment list must reproduce the VERIFIED history EXACTLY (every
+    // amendment, in order) — not merely a subset that happens to end at the right scope_ref.
+    // Otherwise an omitted/reordered `what_changed` could report fewer amendments than actually
+    // occurred while the verified history changed scope.
+    const expectedAmendments = history.length - 1;
+    if (continuation.what_changed.length !== expectedAmendments) {
+      mismatches.push(
+        `continuation what_changed has ${continuation.what_changed.length} amendment(s) but the verified history has ${expectedAmendments}`
+      );
+    } else {
+      for (let k = 1; k < history.length; k += 1) {
+        const a = continuation.what_changed[k - 1]!;
+        if (a.from_scope_ref !== history[k - 1]!.scope_ref || a.to_scope_ref !== history[k]!.scope_ref) {
+          mismatches.push(`continuation amendment ${k} does not match the verified history (from/to scope_ref)`);
+          break;
+        }
       }
     }
     for (const e of input.capsule.scope_events ?? []) {
@@ -478,6 +490,30 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       throw new Error(
         `Capsule material does not belong to the receipt chain (fail closed): ${mismatches.join("; ")}.`
       );
+    }
+
+    // FAIL CLOSED (scope-event integrity): recompute every supplied scope event's hash from its
+    // contents and reject any mismatch, so a tampered scope-events.json (changed decision /
+    // matched_rule / attempted / scope_ref while keeping the old hash) can't publish a sidecar event
+    // whose contents are not committed by its event_hash. Each event's scope_ref must also be in the
+    // verified chain (the refusal happened under a real scope version).
+    for (const [idx, e] of (input.capsule.scope_events ?? []).entries()) {
+      const recomputed = deriveScopeEventHash({
+        event_type: e.event_type,
+        loop_id: e.loop_id,
+        scope_ref: e.scope_ref,
+        attempted: e.attempted,
+        matched_rule: e.matched_rule,
+        decision: e.decision,
+        prior_receipt_id: e.prior_receipt_id,
+        ts: e.ts
+      });
+      if (recomputed !== e.event_hash) {
+        throw new Error(`Scope event ${idx} event_hash does not match its contents (tampered or stale); fail closed.`);
+      }
+      if (!chainRefs.has(e.scope_ref)) {
+        throw new Error(`Scope event ${idx} references scope_ref ${e.scope_ref} outside the verified history; fail closed.`);
+      }
     }
 
     // FAIL CLOSED (scope-stamp binding): for a SCOPED export, every in-loop consequential receipt
