@@ -578,11 +578,16 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         const target_descriptor = typeof stamp?.target_descriptor === "string" ? stamp.target_descriptor : null;
         // Per-target hashes for membership re-validation. Prefer the explicit per-target array
         // (multi-target tools); fall back to the single descriptor for single-target stamps.
-        const stampedTargetHashes: string[] = Array.isArray(stamp?.target_descriptors)
+        // Per-target hashes for membership. Use the per-target ARRAY only when it has ≥1 valid
+        // entry (multi-target tools; the single `target_descriptor` is a set DIGEST, not a member).
+        // Otherwise fall back to the single descriptor — so an EMPTY/malformed `target_descriptors`
+        // array can never HIDE a stamped `target_descriptor` (which would let a targetless exemption
+        // skip membership for a real target).
+        const arrayHashes = Array.isArray(stamp?.target_descriptors)
           ? (stamp!.target_descriptors as unknown[]).filter((h): h is string => typeof h === "string")
-          : target_descriptor !== null
-            ? [target_descriptor]
-            : [];
+          : [];
+        const stampedTargetHashes: string[] =
+          arrayHashes.length > 0 ? arrayHashes : target_descriptor !== null ? [target_descriptor] : [];
 
         if (s.allowed_tools && s.allowed_tools.length > 0) {
           if (tool_name === undefined || !s.allowed_tools.includes(tool_name)) {
@@ -661,7 +666,10 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       );
     }
 
-    scope_capsule = projectScopeCapsuleForExport(sealed, mode);
+    // Project the VERIFIED final scope version (hash + closed-allowlist validated above), NOT the
+    // raw `sealed_scope` input — with --scope-history the input projection is otherwise unvalidated
+    // and could differ from / be unsafe relative to the verified final version.
+    scope_capsule = projectScopeCapsuleForExport(finalScope, mode);
     continuation_capsule =
       mode === "verified_context" ? continuation : projectContinuationProofMode(continuation);
     scope_events = (input.capsule.scope_events ?? []).map((e) => projectScopeEvent(e, mode));
