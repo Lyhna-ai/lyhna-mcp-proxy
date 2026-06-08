@@ -433,6 +433,42 @@ function hashTarget(target: string): string {
 }
 
 /**
+ * Lexically canonicalize a `/`-separated target so glob/membership checks see the SAME path the
+ * filesystem-style upstream will actually operate on — closing path-traversal bypasses like
+ * `/checkout/../billing/migrations/x.sql` (which would match an allowed `/checkout/**` lane while
+ * the upstream resolves it to the forbidden billing path).
+ *
+ * Returns the canonical target, or `null` when it cannot be made safe (so the caller FAILS CLOSED):
+ *   - a backslash (ambiguous Windows-style separator that a `/`-glob cannot reason about), or
+ *   - a `..` that escapes the root / a relative path that escapes its base.
+ *
+ * This is a LEXICAL resolution only (no filesystem access); symlinks are not resolved — a
+ * symlink-based escape is out of scope for an adapter that must not touch the filesystem.
+ */
+export function canonicalizeTarget(target: string): string | null {
+  if (target.includes("\\")) return null; // ambiguous separator -> cannot reason -> fail closed
+  const isAbsolute = target.startsWith("/");
+  const out: string[] = [];
+  for (const part of target.split("/")) {
+    if (part === "" || part === ".") continue; // collapse `//` and `.` segments
+    if (part === "..") {
+      if (out.length > 0 && out[out.length - 1] !== "..") {
+        out.pop();
+      } else if (isAbsolute) {
+        return null; // `..` above an absolute root — refuse rather than silently clamp
+      } else {
+        out.push("..");
+      }
+      continue;
+    }
+    out.push(part);
+  }
+  if (out.includes("..")) return null; // residual `..` (relative escape) -> unsafe
+  const joined = out.join("/");
+  return isAbsolute ? `/${joined}` : joined;
+}
+
+/**
  * Stamp descriptor over the resolved target set: a single target hashes to its own descriptor
  * (so single-target descriptor-hash membership is unchanged); multiple targets hash to a stable
  * set digest. Per-target membership/exclusion is still checked individually in the gate.
@@ -529,18 +565,34 @@ export function checkScopeStructural(
 
   // Resolve EVERY declared/built-in target the call carries — never just the first. A multi-target
   // tool must have all of its targets inside the lane.
-  const targets = resolveTargets(call, s.target_arg_keys);
-  const target_descriptor = hashTargets(targets);
+  const rawTargets = resolveTargets(call, s.target_arg_keys);
   const targetless = (s.targetless_action_classes ?? []).includes(action_class);
+  // A target rule exists if ANY of: allowed globs, forbidden globs, or descriptor hashes.
+  const hasTargetRules =
+    (s.allowed_targets?.length ?? 0) > 0 ||
+    (s.forbidden_targets?.length ?? 0) > 0 ||
+    (s.target_descriptor_hashes?.length ?? 0) > 0;
+
+  // FAIL CLOSED on a path-traversal / ambiguous target BEFORE any glob/membership check, so the
+  // gate matches and hashes the SAME canonical path the upstream will operate on. Only relevant
+  // when target rules are declared (otherwise targets are unconstrained anyway).
+  if (hasTargetRules) {
+    const unsafe = rawTargets.find((t) => canonicalizeTarget(t) === null);
+    if (unsafe !== undefined) {
+      return refuse(
+        action_class,
+        call.toolName,
+        null,
+        `target "${unsafe}" contains unsafe path segments (.. or ambiguous separators); its real location cannot be proven (fail closed)`,
+        "unsafe_target"
+      );
+    }
+  }
+  // Canonical targets used for ALL matching, hashing, and the stamped descriptor.
+  const targets = rawTargets.map((t) => canonicalizeTarget(t) ?? t);
+  const target_descriptor = hashTargets(targets);
 
   if (options.mode === "verified_context") {
-    // A hash-only lane (target_descriptor_hashes with no plaintext globs) is ALSO a target rule
-    // in Verified Context — membership is enforced below just as Proof Mode does.
-    const hasTargetRules =
-      (s.allowed_targets?.length ?? 0) > 0 ||
-      (s.forbidden_targets?.length ?? 0) > 0 ||
-      (s.target_descriptor_hashes?.length ?? 0) > 0;
-
     // FAIL CLOSED: when the capsule declares target-based rules, a call whose target cannot be
     // resolved (missing key, or a key this capsule did not declare) cannot be proven inside the
     // declared lane — refuse it before execution. The only exemption is an action class the
@@ -600,15 +652,10 @@ export function checkScopeStructural(
     };
   }
 
-  // Proof Mode: content-blind EXPORT. Descriptors are derived by HASHING the FORWARDED payload
-  // targets tenant-side (then the plaintext is discarded — never retained or exported), so they
-  // are tied to the exact payload and can NOT be forged by a separate agent-supplied field.
+  // Proof Mode: content-blind EXPORT. Descriptors are derived by HASHING the (canonical) FORWARDED
+  // payload targets tenant-side (then the plaintext is discarded — never retained or exported), so
+  // they are tied to the exact payload and can NOT be forged by a separate agent-supplied field.
   // EVERY target must be a member of the sealed target_descriptor_hashes.
-  const hasTargetRules =
-    (s.allowed_targets?.length ?? 0) > 0 ||
-    (s.forbidden_targets?.length ?? 0) > 0 ||
-    (s.target_descriptor_hashes?.length ?? 0) > 0;
-
   if (hasTargetRules) {
     if (targets.length === 0) {
       // The `targetless` exemption ONLY covers a genuinely missing target. With none resolved and

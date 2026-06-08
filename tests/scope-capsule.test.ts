@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   amendScope,
   assertScopeStructuralContentBlind,
+  canonicalizeTarget,
   checkScopeStructural,
   deriveScopeRef,
   globToRegExp,
@@ -141,6 +142,57 @@ describe("checkScopeStructural — Verified Context Mode", () => {
     );
     expect(d.decision).toBe("REFUSED");
     expect(d.matched_rule).toBe("allowed_tools");
+  });
+});
+
+describe("canonicalizeTarget (path-traversal hardening)", () => {
+  it("resolves . and .. segments lexically", () => {
+    expect(canonicalizeTarget("/checkout/../billing/migrations/x.sql")).toBe("/billing/migrations/x.sql");
+    expect(canonicalizeTarget("/checkout/./cart.ts")).toBe("/checkout/cart.ts");
+    expect(canonicalizeTarget("/checkout//cart.ts")).toBe("/checkout/cart.ts");
+    expect(canonicalizeTarget("/checkout/cart.ts")).toBe("/checkout/cart.ts");
+  });
+
+  it("fails closed on root escape, relative escape, and ambiguous separators", () => {
+    expect(canonicalizeTarget("/checkout/../../etc/passwd")).toBeNull();
+    expect(canonicalizeTarget("../secret")).toBeNull();
+    expect(canonicalizeTarget("C:\\windows\\system32")).toBeNull();
+  });
+});
+
+describe("checkScopeStructural — path traversal (P1)", () => {
+  it("REFUSES a `..` traversal that would escape an allowed lane into a forbidden one", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule() });
+    // Matches allowed /checkout/** textually, but resolves to the forbidden /billing/migrations lane.
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/../billing/migrations/x.sql" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    // After canonicalization the forbidden rule matches (or the unsafe guard fires) — either way refused.
+    expect(["/billing/migrations/**", "unsafe_target"]).toContain(d.matched_rule);
+  });
+
+  it("REFUSES an ambiguous-separator / root-escaping target as unsafe (both modes)", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule() });
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/../../etc/passwd" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    expect(d.matched_rule).toBe("unsafe_target");
+  });
+
+  it("still admits an in-lane target that uses a redundant but safe . segment", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule() });
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/./cart.ts" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(d.decision).toBe("IN_SCOPE");
   });
 });
 

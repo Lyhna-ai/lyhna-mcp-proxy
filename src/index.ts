@@ -48,6 +48,7 @@ export type {
 export {
   amendScope,
   assertBoundsEnforceable,
+  canonicalizeTarget,
   assertScopeCapsuleStructuralOnly,
   assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
