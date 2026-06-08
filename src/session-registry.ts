@@ -133,12 +133,13 @@ export class LoopSessionRegistry {
     }
 
     const context = createLoopContext({ loop_id: input.loop_id, goal: input.goal });
-    const session = new LoopSession(context);
-    this.sessions.set(sessionId, session);
-    this.seenLoopIds.add(input.loop_id);
 
-    // Seal the Scope Capsule at open (supervisor boundary). goal_hash is bound to the loop's
-    // canonical goal_hash so the capsule cannot declare a different goal than the loop.
+    // Seal the Scope Capsule BEFORE mutating any registry state (supervisor boundary). goal_hash
+    // is bound to the loop's canonical goal_hash so the capsule cannot declare a different goal
+    // than the loop. Sealing can throw (bad capsule type, plaintext leak, unenforceable bound);
+    // doing it first means a rejected capsule leaves NO half-opened session that would otherwise
+    // resolve as scoped-but-ungated. Registry writes below are atomic w.r.t. seal success.
+    let scopeState: SessionScopeState | undefined;
     if (input.scope_capsule) {
       const structural = {
         ...input.scope_capsule.structural,
@@ -146,14 +147,20 @@ export class LoopSessionRegistry {
         goal_hash: context.goal_hash
       };
       const sealed = sealScopeCapsule({ capsule: { structural, sidecar: input.scope_capsule.sidecar } });
-      const state: SessionScopeState = {
+      scopeState = {
         session_id: sessionId,
         loop_id: input.loop_id,
         history: [sealed],
         classMap: input.scope_class_map
       };
-      this.scopeBySession.set(sessionId, state);
-      this.scopeByLoop.set(input.loop_id, state);
+    }
+
+    const session = new LoopSession(context);
+    this.sessions.set(sessionId, session);
+    this.seenLoopIds.add(input.loop_id);
+    if (scopeState) {
+      this.scopeBySession.set(sessionId, scopeState);
+      this.scopeByLoop.set(input.loop_id, scopeState);
     }
     return session;
   }

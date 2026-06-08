@@ -97,7 +97,13 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       let scopeStamp: Omit<ScopeConstraint, "prior_receipt_id"> | undefined;
       if (options.scope) {
         const { sealed, mode, recorder } = options.scope;
-        const decision = checkScopeStructural(call, sealed, { mode, classMap: options.scope.classMap });
+        const decision = checkScopeStructural(call, sealed, {
+          mode,
+          classMap: options.scope.classMap,
+          // Steps already taken in this loop, for the declared max_steps bound (best-effort
+          // pre-bind read; consequential steps are serialized in Gate 1, so it is exact there).
+          steps: options.loopSession?.actionCount
+        });
 
         if (decision.decision !== "IN_SCOPE") {
           const event = recorder.record({

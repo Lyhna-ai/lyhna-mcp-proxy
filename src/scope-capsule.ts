@@ -179,6 +179,26 @@ function findPlanKey(value: unknown, path = ""): string | null {
 }
 
 /**
+ * Fail-closed bounds gate at seal time. A declared bound must be one Capsule Gate 1 actually
+ * ENFORCES — otherwise a sealed scope would imply a constraint that is never checked. Gate 1
+ * enforces the STEP bound (`max_steps`) only; `max_writes` and `max_budget` have no honest meter
+ * in this gate (metering/budget are out of scope), so a capsule declaring them is rejected rather
+ * than accepted-and-ignored. (Reserved for a later gate, not silently unenforced here.)
+ */
+export function assertBoundsEnforceable(bounds?: ScopeBounds): void {
+  if (!bounds) return;
+  if (bounds.max_writes !== undefined || bounds.max_budget !== undefined) {
+    throw new Error(
+      "Scope bounds max_writes/max_budget are not enforced in Capsule Gate 1; declare only " +
+        "max_steps (or omit bounds) — fail closed rather than imply an unenforced bound."
+    );
+  }
+  if (bounds.max_steps !== undefined && (!Number.isInteger(bounds.max_steps) || bounds.max_steps < 0)) {
+    throw new Error("Scope bounds max_steps must be a non-negative integer.");
+  }
+}
+
+/**
  * Derive `scope_ref` = "scope_v1:" + sha256(canonical structural projection). Content-blind:
  * the hash is computed over the structural projection only; the sidecar never affects it.
  */
@@ -210,6 +230,7 @@ export function sealScopeCapsule(input: {
     throw new Error("Scope capsule structural projection requires loop_id and goal_hash.");
   }
   assertScopeStructuralContentBlind(structural);
+  assertBoundsEnforceable(structural.bounds);
 
   return {
     scope_ref: deriveScopeRef(structural),
@@ -398,7 +419,7 @@ function matchesAny(target: string, globs?: string[]): string | undefined {
 export function checkScopeStructural(
   call: McpToolCall,
   sealed: SealedScope,
-  options: { mode: ScopePrivacyMode; classMap?: Record<string, string> }
+  options: { mode: ScopePrivacyMode; classMap?: Record<string, string>; steps?: number }
 ): ScopeDecision {
   const s = sealed.structural;
   const action_class = deriveActionClass(call, options.classMap);
@@ -415,6 +436,23 @@ export function checkScopeStructural(
     !s.allowed_action_classes.includes(action_class)
   ) {
     return refuse(action_class, call.toolName, null, `action class "${action_class}" not in allowed_action_classes`, "allowed_action_classes");
+  }
+
+  // 3) Step bound (both modes). `options.steps` is the count of consequential steps already taken
+  // in this loop; a step that would exceed the declared max_steps fails closed before execution.
+  // (Consequential steps are serialized in Gate 1, so the observed count is exact.)
+  if (
+    s.bounds?.max_steps != null &&
+    options.steps != null &&
+    options.steps >= s.bounds.max_steps
+  ) {
+    return refuse(
+      action_class,
+      call.toolName,
+      null,
+      `step bound exceeded: max_steps=${s.bounds.max_steps}, steps_taken=${options.steps}`,
+      "max_steps"
+    );
   }
 
   if (options.mode === "verified_context") {

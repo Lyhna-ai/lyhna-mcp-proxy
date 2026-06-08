@@ -240,6 +240,28 @@ describe("checkScopeStructural — Proof Mode (content-blind)", () => {
   });
 });
 
+describe("scope bounds (max_steps enforced; max_writes/max_budget rejected at seal)", () => {
+  it("rejects a capsule declaring an unenforced bound (max_writes / max_budget)", () => {
+    expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_writes: 3 } }) })).toThrow(/max_writes|max_budget/);
+    expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_budget: 10 } }) })).toThrow(/max_writes|max_budget/);
+  });
+
+  it("seals a capsule declaring only max_steps", () => {
+    expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: 2 } }) })).not.toThrow();
+  });
+
+  it("FAILS CLOSED when the step count reaches the declared max_steps", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: 2 } }) });
+    const call = { toolName: "write_file", arguments: { path: "/checkout/x.ts" } };
+    // 0 and 1 steps taken -> still in lane; 2 steps taken -> the 3rd would exceed, refuse.
+    expect(checkScopeStructural(call, sealed, { mode: "verified_context", steps: 0 }).decision).toBe("IN_SCOPE");
+    expect(checkScopeStructural(call, sealed, { mode: "verified_context", steps: 1 }).decision).toBe("IN_SCOPE");
+    const refused = checkScopeStructural(call, sealed, { mode: "verified_context", steps: 2 });
+    expect(refused.decision).toBe("REFUSED");
+    expect(refused.matched_rule).toBe("max_steps");
+  });
+});
+
 describe("projectScopeCapsuleForExport", () => {
   it("Proof Mode export is structural-only (no sidecar)", () => {
     const sealed = sealScopeCapsule({ capsule: capsule() });

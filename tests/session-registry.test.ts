@@ -270,4 +270,20 @@ describe("LoopSessionRegistry scope (Capsule Gate 1)", () => {
     expect(scope?.sealed.scope_ref).toMatch(/^scope_v1:/);
     expect(scope?.recorder).toBeDefined();
   });
+
+  it("a capsule that fails to seal leaves NO half-opened session (registry unmutated)", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING, createScopeEventRecorder());
+    const bad: ScopeCapsule = {
+      // bounds.max_writes is rejected by sealScopeCapsule -> openLoop must throw before mutating.
+      structural: { ...SCOPE_CAPSULE.structural, bounds: { max_writes: 1 } }
+    };
+    expect(() => registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: bad })).toThrow();
+    // No session, no scope context, and the loop_id is not reserved — the open was atomic.
+    expect(registry.get("s1")).toBeUndefined();
+    expect(registry.getScope("s1")).toBeUndefined();
+    expect(registry.size).toBe(0);
+    // The same loop_id can still be opened cleanly afterward (it was never reserved).
+    expect(() => registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE })).not.toThrow();
+  });
 });

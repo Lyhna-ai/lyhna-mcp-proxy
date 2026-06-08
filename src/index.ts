@@ -46,6 +46,7 @@ export type {
 } from "./loop.js";
 export {
   amendScope,
+  assertBoundsEnforceable,
   assertScopeCapsuleStructuralOnly,
   assertScopeStructuralContentBlind,
   canonicalScopeJson,
