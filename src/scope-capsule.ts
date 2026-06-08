@@ -245,6 +245,14 @@ function findPlanKey(value: unknown, path = ""): string | null {
  */
 export function assertBoundsEnforceable(bounds?: ScopeBounds): void {
   if (!bounds) return;
+  // Closed-key check FIRST: `bounds` arrives as JSON, so a stray nested key (e.g.
+  // `bounds: { max_steps: 2, description: "..." }`) would otherwise be hashed into scope_ref and
+  // emitted in the structural Proof Mode export despite the top-level allowlist. Fail closed.
+  for (const key of Object.keys(bounds)) {
+    if (key !== "max_steps" && key !== "max_writes" && key !== "max_budget") {
+      throw new Error(`Scope bounds has unknown field "${key}"; only max_steps is supported (fail closed).`);
+    }
+  }
   if (bounds.max_writes !== undefined || bounds.max_budget !== undefined) {
     throw new Error(
       "Scope bounds max_writes/max_budget are not enforced in Capsule Gate 1; declare only " +
@@ -489,27 +497,48 @@ function hashTargets(targets: string[]): string | null {
   return `sha256:${sha256Hex(canonical)}`;
 }
 
-/** Translate a glob (supporting `**` and `*`) to an anchored RegExp. */
+// Translate a glob to an anchored RegExp. Globstar (double-star) matches across path segments
+// while PRESERVING the `/` boundary, so a "slash double-star slash package.json" pattern matches
+// "/checkout/package.json" and "/checkout/a/b/package.json" but NOT "/checkout/notpackage.json":
+//   - slash double-star slash (middle)   -> "/(?:.*/)?"  (zero or more whole directory segments)
+//   - slash double-star (trailing)       -> "(?:/.*)?"   (the dir itself and anything beneath it)
+//   - double-star slash (leading)        -> "(?:.*/)?"
+//   - double-star (standalone)           -> ".*"
+//   - single star                        -> "[^/]*" (within one segment)
 export function globToRegExp(glob: string): RegExp {
   let re = "";
   let i = 0;
-  while (i < glob.length) {
+  const n = glob.length;
+  while (i < n) {
     const c = glob[i];
-    // `/**` matches the directory itself AND anything beneath it (so `/checkout/**` matches both
-    // `/checkout` and `/checkout/cart/x.ts`).
-    if (c === "/" && glob[i + 1] === "*" && glob[i + 2] === "*") {
-      re += "(/.*)?";
-      i += 3;
-      if (glob[i] === "/") i += 1; // consume a trailing slash in `/**/`
+    if (c === "/") {
+      // Slash-anchored globstar constructs are handled here so the boundary is never lost.
+      if (glob[i + 1] === "*" && glob[i + 2] === "*") {
+        if (glob[i + 3] === "/") {
+          re += "/(?:.*/)?"; // `/**/` — zero or more whole segments, boundary preserved
+          i += 4;
+        } else {
+          re += "(?:/.*)?"; // `/**` (end / non-slash) — the dir itself and anything beneath it
+          i += 3;
+        }
+        continue;
+      }
+      re += "/";
+      i += 1;
+      continue;
+    }
+    if (c === "*" && glob[i + 1] === "*") {
+      // `**` not preceded by `/` (start, or after a non-slash char).
+      if (glob[i + 2] === "/") {
+        re += "(?:.*/)?"; // `**/` — zero or more leading segments
+        i += 3;
+      } else {
+        re += ".*"; // standalone `**`
+        i += 2;
+      }
       continue;
     }
     if (c === "*") {
-      if (glob[i + 1] === "*") {
-        re += ".*";
-        i += 2;
-        if (glob[i] === "/") i += 1; // `**/` -> `.*`
-        continue;
-      }
       re += "[^/]*";
       i += 1;
       continue;

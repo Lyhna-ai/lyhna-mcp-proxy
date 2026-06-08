@@ -98,6 +98,13 @@ describe("globToRegExp", () => {
     expect(globToRegExp("/payments/*.ts").test("/payments/types.ts")).toBe(true);
     expect(globToRegExp("/payments/*.ts").test("/payments/nested/types.ts")).toBe(false);
   });
+
+  it("preserves the slash boundary for `**/` (does not broaden the match)", () => {
+    const g = globToRegExp("/checkout/**/package.json");
+    expect(g.test("/checkout/package.json")).toBe(true); // zero intermediate dirs
+    expect(g.test("/checkout/a/b/package.json")).toBe(true); // nested dirs
+    expect(g.test("/checkout/notpackage.json")).toBe(false); // NOT broadened across the boundary
+  });
 });
 
 describe("checkScopeStructural — Verified Context Mode", () => {
@@ -440,6 +447,11 @@ describe("scope bounds (max_steps enforced; max_writes/max_budget rejected at se
 
   it("rejects a non-integer / negative max_steps", () => {
     expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: -1 } }) })).toThrow(/max_steps/);
+  });
+
+  it("rejects an UNKNOWN bounds key (closed-key, content-blind)", () => {
+    const bad = capsule({ bounds: { max_steps: 2, description: "fix checkout bug" } as never });
+    expect(() => sealScopeCapsule({ capsule: bad })).toThrow(/unknown field|bounds/i);
   });
 
   // The max_steps bound is stateful, so it is enforced INSIDE the loop mutex against the
