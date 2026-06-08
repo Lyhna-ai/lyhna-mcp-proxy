@@ -83,15 +83,20 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
     },
 
     async callTool(call: McpToolCall): Promise<McpToolResult> {
-      let bindRequest = buildRequest(call);
+      const bindRequest = buildRequest(call);
 
       // Capsule Gate 1: adapter-side, PRE-BIND structural scope check. Runs BEFORE bind() and
       // before any upstream execution. An out-of-lane step is refused here (no bind, no forward)
       // and attested as a sidecar scope event; an in-lane step is stamped with `constraints.scope`
       // citing scope_ref + the prior receipt it was checked against.
+      //
+      // The scope DECISION (descriptor) is independent of the chain position, so it is computed
+      // here. The `prior_receipt_id` ANCHOR, however, is stamped inside the loop mutex (passed to
+      // bindToolCall) so it always cites the same predecessor as constraints.loop — never a stale
+      // value under concurrent scoped calls.
+      let scopeStamp: Omit<ScopeConstraint, "prior_receipt_id"> | undefined;
       if (options.scope) {
         const { sealed, mode, recorder } = options.scope;
-        const priorReceiptId = options.loopSession?.priorReceiptId ?? sealed.structural.prior_receipt_ref ?? null;
         const decision = checkScopeStructural(call, sealed, { mode, classMap: options.scope.classMap });
 
         if (decision.decision !== "IN_SCOPE") {
@@ -109,30 +114,42 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
             },
             matched_rule: decision.matched_rule,
             decision: decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED",
-            prior_receipt_id: priorReceiptId
+            // Best-effort anchor for the (off-chain) attestation: the last receipt the loop saw.
+            prior_receipt_id: options.loopSession?.priorReceiptId ?? sealed.structural.prior_receipt_ref ?? null
           });
           // Refuse before execution: bind is never called, the tool never runs.
           throw new ScopeGateError(decision, event);
         }
 
-        const scopeConstraint: ScopeConstraint = {
+        scopeStamp = {
           scope_ref: sealed.scope_ref,
-          prior_receipt_id: priorReceiptId,
           action_class: decision.descriptor.action_class,
           tool_name: decision.descriptor.tool_name,
           target_descriptor: decision.descriptor.target_descriptor
         };
-        bindRequest = mergeScopeConstraint(bindRequest, scopeConstraint);
       }
 
       let bindResponse: BindResponse;
 
       try {
         bindResponse = options.loopSession
-          ? await options.loopSession.bindToolCall(bindRequest, (request) =>
-              options.bindClient.bind(request)
+          ? // Loop path: bindToolCall stamps constraints.loop AND constraints.scope under one
+            // mutex with a single prior_receipt_id (see LoopSession.bindToolCall).
+            await options.loopSession.bindToolCall(
+              bindRequest,
+              (request) => options.bindClient.bind(request),
+              scopeStamp
             )
-          : await options.bindClient.bind(bindRequest);
+          : // No-loop path: no chain to advance, so stamp the scope anchor from the declared
+            // prior reference (if any) and bind directly.
+            await options.bindClient.bind(
+              scopeStamp
+                ? mergeScopeConstraint(bindRequest, {
+                    ...scopeStamp,
+                    prior_receipt_id: options.scope!.sealed.structural.prior_receipt_ref ?? null
+                  })
+                : bindRequest
+            );
       } catch (error) {
         throw new BindGateError(
           "FAIL_CLOSED",

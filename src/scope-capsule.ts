@@ -469,11 +469,29 @@ export function checkScopeStructural(
     };
   }
 
-  // Proof Mode: content-blind. No plaintext target is read. If the capsule declares
-  // target_descriptor_hashes, the call must carry a matching descriptor hash in its arguments
-  // (explicit, content-blind). Otherwise the structural tool/class checks above govern.
+  // Proof Mode: content-blind — no plaintext target is read, so the ONLY enforceable target
+  // check is explicit descriptor-hash membership. When the sealed scope declares ANY target rule
+  // (descriptor hashes OR plaintext allowed/forbidden globs) and the action is not declared
+  // targetless, a matching descriptor hash is REQUIRED. A capsule that declares only plaintext
+  // target globs — which Proof Mode cannot evaluate — without target_descriptor_hashes cannot be
+  // enforced content-blind, so it FAILS CLOSED rather than degrading to tool/class-only.
   const declaredHash = proofModeDescriptorHash(call);
-  if (s.target_descriptor_hashes && s.target_descriptor_hashes.length > 0) {
+  const hasTargetRules =
+    (s.allowed_targets?.length ?? 0) > 0 ||
+    (s.forbidden_targets?.length ?? 0) > 0 ||
+    (s.target_descriptor_hashes?.length ?? 0) > 0;
+  const targetless = (s.targetless_action_classes ?? []).includes(action_class);
+
+  if (hasTargetRules && !targetless) {
+    if (!s.target_descriptor_hashes || s.target_descriptor_hashes.length === 0) {
+      return refuse(
+        action_class,
+        call.toolName,
+        null,
+        "Proof Mode cannot evaluate plaintext target rules; declare target_descriptor_hashes for content-blind enforcement (fail closed)",
+        "proof_mode_target_unenforceable"
+      );
+    }
     if (!declaredHash) {
       return refuse(action_class, call.toolName, null, "Proof Mode requires an explicit target_descriptor hash; none supplied", "target_descriptor_hashes");
     }

@@ -267,18 +267,30 @@ export class LoopSession {
    * Stamp an in-loop tools/call bind request and advance the chain under the mutex.
    * The provided `bind` runs inside the critical section so the read-prior ->
    * bind -> set-prior sequence is atomic with respect to concurrent calls.
+   *
+   * When `scope` is supplied (Capsule Gate 1), `constraints.scope` is stamped INSIDE the same
+   * mutex with the SAME `prior_receipt_id` as `constraints.loop`, so a concurrent scoped call
+   * cannot leave the scope anchor citing a stale predecessor.
    */
-  bindToolCall(request: BindRequest, bind: LoopBindFn): Promise<BindResponse> {
+  bindToolCall(
+    request: BindRequest,
+    bind: LoopBindFn,
+    scope?: Omit<ScopeConstraint, "prior_receipt_id">
+  ): Promise<BindResponse> {
     return this.runExclusive(async () => {
       if (this.closedFlag) {
         throw new Error("Loop already closed; refusing in-loop bind (fail closed).");
       }
 
-      const stamped = mergeLoopConstraint(request, {
+      const prior = this.priorReceiptIdValue;
+      let stamped = mergeLoopConstraint(request, {
         loop_id: this.context.loop_id,
-        prior_receipt_id: this.priorReceiptIdValue,
+        prior_receipt_id: prior,
         goal_hash: this.context.goal_hash
       });
+      if (scope) {
+        stamped = mergeScopeConstraint(stamped, { ...scope, prior_receipt_id: prior });
+      }
 
       const response = await bind(stamped);
 

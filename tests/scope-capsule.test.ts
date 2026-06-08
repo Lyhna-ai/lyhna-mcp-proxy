@@ -209,6 +209,35 @@ describe("checkScopeStructural — Proof Mode (content-blind)", () => {
     expect(passed.decision).toBe("IN_SCOPE");
     expect(passed.target_plaintext).toBeUndefined();
   });
+
+  it("FAILS CLOSED when target rules are declared but no descriptor hashes back them (P1 round 2)", () => {
+    // Proof Mode cannot evaluate plaintext globs; without target_descriptor_hashes it must refuse.
+    const sealed = sealScopeCapsule({
+      capsule: { structural: structural({ privacy_mode: "proof", target_descriptor_hashes: undefined }) }
+    });
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/anywhere.ts" } },
+      sealed,
+      { mode: "proof" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    expect(d.matched_rule).toBe("proof_mode_target_unenforceable");
+  });
+
+  it("a declared targetless action class is exempt from the Proof Mode target requirement", () => {
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: structural({
+          privacy_mode: "proof",
+          target_descriptor_hashes: undefined,
+          allowed_action_classes: ["run_tests"],
+          targetless_action_classes: ["run_tests"]
+        })
+      }
+    });
+    const d = checkScopeStructural({ toolName: "run_tests", arguments: {} }, sealed, { mode: "proof" });
+    expect(d.decision).toBe("IN_SCOPE");
+  });
 });
 
 describe("projectScopeCapsuleForExport", () => {

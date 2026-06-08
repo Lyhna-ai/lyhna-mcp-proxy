@@ -525,3 +525,58 @@ describe("createProxyCore with a loop session", () => {
     expect(upstream.calls).toEqual([]);
   });
 });
+
+describe("LoopSession.bindToolCall scope stamping (Capsule Gate 1)", () => {
+  // A bind that echoes the stamped constraints and mints unique receipt ids, so the chain and
+  // the scope anchors can be inspected exactly as a verifier would see them.
+  function echoBind(): BindClient & { seen: BindRequest[] } {
+    let n = 0;
+    const seen: BindRequest[] = [];
+    return {
+      seen,
+      async bind(request) {
+        seen.push(request);
+        n += 1;
+        return { outcome: "APPROVED", receipt_id: `r_${n}`, signature: "sig", constraints: request.constraints };
+      }
+    };
+  }
+
+  const scopeStamp = { scope_ref: "scope_v1:" + "a".repeat(64), action_class: "write", tool_name: "write_file", target_descriptor: "sha256:" + "b".repeat(64) };
+
+  it("stamps constraints.scope with the SAME prior_receipt_id as constraints.loop", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_s", goal: "g" }));
+    const bind = echoBind();
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp);
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp);
+
+    for (const req of bind.seen) {
+      const loop = req.constraints?.loop as { prior_receipt_id: string | null };
+      const scope = req.constraints?.scope as { prior_receipt_id: string | null; scope_ref: string };
+      expect(scope.prior_receipt_id).toBe(loop.prior_receipt_id); // same anchor, never stale
+      expect(scope.scope_ref).toBe(scopeStamp.scope_ref);
+    }
+    // Second link's anchor is the first receipt id (chain advanced under the mutex).
+    const secondScope = bind.seen[1]!.constraints?.scope as { prior_receipt_id: string | null };
+    expect(secondScope.prior_receipt_id).toBe("r_1");
+  });
+
+  it("under CONCURRENT scoped calls, each scope anchor matches its own loop anchor (mutex-stamped)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_c", goal: "g" }));
+    const bind = echoBind();
+    await Promise.all([
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp)
+    ]);
+    const priors = new Set<string | null>();
+    for (const req of bind.seen) {
+      const loop = req.constraints?.loop as { prior_receipt_id: string | null };
+      const scope = req.constraints?.scope as { prior_receipt_id: string | null };
+      expect(scope.prior_receipt_id).toBe(loop.prior_receipt_id);
+      priors.add(loop.prior_receipt_id);
+    }
+    // Three distinct anchors (null, r_1, r_2) — the chain serialized cleanly.
+    expect(priors.size).toBe(3);
+  });
+});
