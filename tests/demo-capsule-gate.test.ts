@@ -33,7 +33,8 @@ const SCOPE_CAPSULE: ScopeCapsule = {
     privacy_mode: "verified_context",
     allowed_action_classes: ["read", "write", "run_tests"],
     allowed_targets: ["/checkout/**", "/payments/types.ts"],
-    forbidden_targets: ["/billing/migrations/**"]
+    forbidden_targets: ["/billing/migrations/**"],
+    targetless_action_classes: ["run_tests"]
   },
   sidecar: { goal_summary: "fix checkout bug", planned_steps: ["edit /checkout", "run tests"] }
 };

@@ -133,6 +133,59 @@ describe("checkScopeStructural — Verified Context Mode", () => {
   });
 });
 
+describe("checkScopeStructural — Verified Context Mode fail-closed on unresolved target (P1)", () => {
+  it("REFUSES a target-bearing call whose target cannot be resolved when target rules are declared", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule() });
+    // write_file carries its argument under an unrecognized key — no target resolves.
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { command: "rm -rf /billing" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    expect(d.matched_rule).toBe("unresolved_target");
+  });
+
+  it("allows an action class the capsule explicitly declares targetless", () => {
+    const sealed = sealScopeCapsule({ capsule: capsule({ targetless_action_classes: ["run_tests"] }) });
+    const d = checkScopeStructural(
+      { toolName: "run_tests", arguments: { suite: "checkout" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(d.decision).toBe("IN_SCOPE");
+  });
+
+  it("resolves a target from a capsule-declared target_arg_key and applies forbidden/allowed rules", () => {
+    // write_file derives to the allowed "write" class; the target lives under a declared key.
+    const sealed = sealScopeCapsule({ capsule: capsule({ target_arg_keys: ["command"] }) });
+    expect(
+      checkScopeStructural({ toolName: "write_file", arguments: { command: "/checkout/build.ts" } }, sealed, {
+        mode: "verified_context"
+      }).decision
+    ).toBe("IN_SCOPE");
+    expect(
+      checkScopeStructural({ toolName: "write_file", arguments: { command: "/billing/migrations/x.sql" } }, sealed, {
+        mode: "verified_context"
+      }).decision
+    ).toBe("REFUSED");
+  });
+
+  it("does not require a target when the capsule declares no target rules", () => {
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: structural({
+          allowed_action_classes: undefined,
+          allowed_targets: undefined,
+          forbidden_targets: undefined
+        })
+      }
+    });
+    const d = checkScopeStructural({ toolName: "ping", arguments: {} }, sealed, { mode: "verified_context" });
+    expect(d.decision).toBe("IN_SCOPE");
+  });
+});
+
 describe("checkScopeStructural — Proof Mode (content-blind)", () => {
   it("does not read a plaintext target; degrades to descriptor-hash membership", () => {
     const hash = "sha256:" + "b".repeat(64);

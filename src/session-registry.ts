@@ -123,6 +123,14 @@ export class LoopSessionRegistry {
         `Loop id already used: ${input.loop_id}. A loop_id identifies exactly one loop; reusing it would merge distinct chains in the recorded dump.`
       );
     }
+    // FAIL CLOSED: a scoped loop without a scope-event recorder has no attestation sink, so a
+    // scope refusal could not be recorded/proved. Refuse to open it rather than silently degrade
+    // the scoped session to an ungated one. (Checked before any state mutation.)
+    if (input.scope_capsule && !this.scopeEventRecorder) {
+      throw new Error(
+        "Cannot open a scoped loop without a scope-event recorder: scope refusals must be attestable (fail closed)."
+      );
+    }
 
     const context = createLoopContext({ loop_id: input.loop_id, goal: input.goal });
     const session = new LoopSession(context);

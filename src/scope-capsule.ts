@@ -49,6 +49,18 @@ export type ScopeStructuralProjection = {
   allowed_targets?: string[];
   /** Explicit out-of-scope target globs, e.g. ["/billing/migrations/**"]. */
   forbidden_targets?: string[];
+  /**
+   * Extra tool-argument keys (beyond the built-in path/file/target set) where this capsule's
+   * tools carry their target, e.g. ["command","cwd"]. Declared, never inferred — lets a capsule
+   * name where the target lives so target-based rules can be evaluated for its tools.
+   */
+  target_arg_keys?: string[];
+  /**
+   * Action classes that legitimately operate WITHOUT a target (e.g. ["run_tests"]). When
+   * target-based rules are declared, a call whose target cannot be resolved fails closed UNLESS
+   * its action class is named here. Declared exemption — the capsule says what needs no target.
+   */
+  targetless_action_classes?: string[];
   /** Pre-hashed target descriptors for content-blind (Proof Mode) membership checks. */
   target_descriptor_hashes?: string[];
   bounds?: ScopeBounds;
@@ -315,9 +327,10 @@ export function deriveActionClass(call: McpToolCall, classMap?: Record<string, s
 }
 
 /** Resolve the plaintext target argument of a tool call, if any (Verified Context Mode). */
-export function resolveTargetPlaintext(call: McpToolCall): string | undefined {
+export function resolveTargetPlaintext(call: McpToolCall, extraKeys?: string[]): string | undefined {
   const args = call.arguments ?? {};
-  for (const key of TARGET_ARG_KEYS) {
+  const keys = extraKeys && extraKeys.length > 0 ? [...TARGET_ARG_KEYS, ...extraKeys] : TARGET_ARG_KEYS;
+  for (const key of keys) {
     const v = (args as Record<string, unknown>)[key];
     if (typeof v === "string" && v.length > 0) return v;
   }
@@ -406,8 +419,25 @@ export function checkScopeStructural(
 
   if (options.mode === "verified_context") {
     // Verified Context Mode: read the plaintext target for richer exclusion / membership checks.
-    const target = resolveTargetPlaintext(call);
+    const target = resolveTargetPlaintext(call, s.target_arg_keys);
     const target_descriptor = target ? hashTarget(target) : null;
+    const hasTargetRules =
+      (s.allowed_targets?.length ?? 0) > 0 || (s.forbidden_targets?.length ?? 0) > 0;
+    const targetless = (s.targetless_action_classes ?? []).includes(action_class);
+
+    // FAIL CLOSED: when the capsule declares target-based rules, a call whose target cannot be
+    // resolved (missing key, or a key this capsule did not declare) cannot be proven inside the
+    // declared lane — refuse it before execution. The only exemption is an action class the
+    // capsule explicitly declared targetless (e.g. run_tests). Declared, never inferred.
+    if (hasTargetRules && target === undefined && !targetless) {
+      return refuse(
+        action_class,
+        call.toolName,
+        null,
+        `target-based scope rules are declared but no target could be resolved for "${call.toolName}" (fail closed)`,
+        "unresolved_target"
+      );
+    }
 
     if (target !== undefined) {
       const forbidden = matchesAny(target, s.forbidden_targets);

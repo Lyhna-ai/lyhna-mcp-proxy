@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { BindRequest, BindResponse, LoopChainLink } from "../src/index.js";
-import { LoopSessionRegistry, verifyLoopChain } from "../src/index.js";
+import type { BindRequest, BindResponse, LoopChainLink, ScopeCapsule } from "../src/index.js";
+import { createScopeEventRecorder, LoopSessionRegistry, verifyLoopChain } from "../src/index.js";
 
 type BindRecord = { request: BindRequest; response: BindResponse };
 
@@ -236,5 +236,38 @@ describe("LoopSessionRegistry lifecycle", () => {
     expect(registry.size).toBe(0);
     expect(verifyLoopChain(reconstructLinks(records, "loop_x"))).toMatchObject({ valid: true, sealed: true });
     expect(verifyLoopChain(reconstructLinks(records, "loop_y"))).toMatchObject({ valid: true, sealed: true });
+  });
+});
+
+const SCOPE_CAPSULE: ScopeCapsule = {
+  structural: {
+    capsule_type: "scope_capsule",
+    capsule_version: "scope-capsule/v1",
+    loop_id: "loop_scoped",
+    goal_hash: "",
+    privacy_mode: "verified_context",
+    allowed_targets: ["/checkout/**"]
+  }
+};
+
+describe("LoopSessionRegistry scope (Capsule Gate 1)", () => {
+  it("fails closed: opening a scoped loop without a scope-event recorder is rejected (P2)", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING); // no scope-event recorder
+    expect(() =>
+      registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE })
+    ).toThrow(/scope-event recorder/);
+    // A non-scoped open on the same recorder-less registry is unaffected.
+    expect(() => registry.openLoop({ session_id: "s2", loop_id: "loop_plain", goal: "g" })).not.toThrow();
+  });
+
+  it("with a recorder, a scoped loop opens and getScope returns an engaged gate context", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING, createScopeEventRecorder());
+    registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE });
+    const scope = registry.getScope("s1");
+    expect(scope?.mode).toBe("verified_context");
+    expect(scope?.sealed.scope_ref).toMatch(/^scope_v1:/);
+    expect(scope?.recorder).toBeDefined();
   });
 });
