@@ -195,6 +195,7 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
       material: {
         receiptsText: JSON.stringify(dumped.receipts, null, 2),
         sealedScope,
+        scopeHistory: dumpedScope.scope_history,
         continuation,
         scopeEvents: dumpedScope.scope_events
       },
@@ -222,17 +223,19 @@ export function exportCapsulePack({ material, outDir, mode = "verified-context",
   try {
     const receiptsPath = join(srcDir, "receipts.json");
     const scopePath = join(srcDir, "scope.json");
+    const historyPath = join(srcDir, "scope-history.json");
     const continuationPath = join(srcDir, "continuation.json");
     const eventsPath = join(srcDir, "events.json");
     writeFileSync(receiptsPath, material.receiptsText);
     writeFileSync(scopePath, JSON.stringify(material.sealedScope, null, 2));
+    writeFileSync(historyPath, JSON.stringify(material.scopeHistory ?? [material.sealedScope], null, 2));
     writeFileSync(continuationPath, JSON.stringify(material.continuation, null, 2));
     writeFileSync(eventsPath, JSON.stringify(material.scopeEvents, null, 2));
     execFileSync(
       "node",
       [
         exportCli, receiptsPath, "--out", outDir, "--source-env", "demo-capsule-gate",
-        "--scope-capsule", scopePath, "--continuation", continuationPath,
+        "--scope-capsule", scopePath, "--scope-history", historyPath, "--continuation", continuationPath,
         "--scope-events", eventsPath, "--mode", mode
       ],
       { stdio: "pipe" }

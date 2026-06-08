@@ -153,6 +153,13 @@ export type BuildLoopProofBundleInput = {
   capsule?: {
     mode: ScopePrivacyMode;
     sealed_scope: SealedScope;
+    /**
+     * The full sealed scope/amendment history (original ... final). Each entry is independently
+     * hash-verifiable and chains via prior_scope_ref; the export derives the VERIFIED set of valid
+     * scope_refs from this, never from the unsigned continuation. Omit for a single-version
+     * (un-amended) loop — then the single `sealed_scope` is the whole chain.
+     */
+    scope_history?: SealedScope[];
     continuation: ContinuationCapsule;
     scope_events?: ScopeEvent[];
   };
@@ -187,6 +194,10 @@ export function serializeReceipts(receipts: ProofReceipt[]): string {
 
 export function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -389,33 +400,55 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     const sealed = input.capsule.sealed_scope;
     const continuation = input.capsule.continuation;
 
-    // FAIL CLOSED (hash integrity): the sealed scope carries a scope_ref / sidecar_hash, but when
-    // it is loaded from a JSON file (export CLI) those could have been tampered to keep a legit
-    // scope_ref while mutating allowed_targets / bounds / sidecar. RECOMPUTE the hashes from the
-    // projections and reject any mismatch, so a packaged scope-capsule.json can only present rules
-    // that actually hash to its scope_ref.
-    const recomputedScopeRef = deriveScopeRef(sealed.structural);
-    if (recomputedScopeRef !== sealed.scope_ref) {
-      throw new Error(
-        `Sealed scope_ref ${sealed.scope_ref} does not match the hash of its structural projection ` +
-          `(${recomputedScopeRef}); the scope material was tampered or is stale (fail closed).`
-      );
-    }
-    const recomputedSidecarHash = deriveSidecarHash(sealed.sidecar);
-    if (recomputedSidecarHash !== sealed.sidecar_hash) {
-      throw new Error(`Sealed sidecar_hash does not match the hash of its sidecar projection (fail closed).`);
+    // The VERIFIED scope/amendment chain. The set of valid scope_refs is derived ONLY from the
+    // sealed scope history (each entry independently hash-verifiable), NEVER from the unsigned
+    // continuation's claims — so a tampered continuation cannot whitelist arbitrary receipt stamps.
+    // When no history is supplied, the single final sealed scope is the whole chain.
+    const history = input.capsule.scope_history ?? [sealed];
+    if (history.length === 0) {
+      throw new Error("Capsule scope_history must contain at least the sealed scope (fail closed).");
     }
 
-    // FAIL CLOSED (identity binding): the sealed scope + continuation must belong to the SAME loop
-    // as the receipt chain. A stale dump_scope/continuation from another loop must never be
-    // packaged onto these receipts (the cold verifier only checks receipts.json, so a mislabeled
-    // pack would otherwise claim an unrelated scope for this chain).
-    const mismatches: string[] = [];
-    if (sealed.structural.loop_id !== loop.loop_id) {
-      mismatches.push(`sealed scope loop_id ${sealed.structural.loop_id} != receipts loop_id ${loop.loop_id}`);
+    // FAIL CLOSED (per-version hash integrity + loop binding): every history entry's scope_ref /
+    // sidecar_hash must recompute from its own projections (so a tampered JSON cannot keep a legit
+    // ref while mutating rules), and every version must belong to THIS loop.
+    for (const entry of history) {
+      if (deriveScopeRef(entry.structural) !== entry.scope_ref) {
+        throw new Error(
+          `Sealed scope_ref ${entry.scope_ref} does not match the hash of its structural projection; ` +
+            `the scope material was tampered or is stale (fail closed).`
+        );
+      }
+      if (deriveSidecarHash(entry.sidecar) !== entry.sidecar_hash) {
+        throw new Error(`Sealed sidecar_hash for ${entry.scope_ref} does not match its sidecar projection (fail closed).`);
+      }
+      if (entry.structural.loop_id !== loop.loop_id || entry.structural.goal_hash !== loop.goal_hash) {
+        throw new Error(
+          `Sealed scope ${entry.scope_ref} does not belong to the receipt chain (loop_id/goal_hash mismatch); fail closed.`
+        );
+      }
     }
-    if (sealed.structural.goal_hash !== loop.goal_hash) {
-      mismatches.push(`sealed scope goal_hash != receipts goal_hash`);
+
+    // FAIL CLOSED (anchored + contiguous amendment chain): the first version is a root
+    // (prior_scope_ref null) and each subsequent version chains to its predecessor's scope_ref.
+    if ((history[0]!.prior_scope_ref ?? null) !== null) {
+      throw new Error("Scope history does not start at a root (history[0].prior_scope_ref must be null); fail closed.");
+    }
+    for (let k = 1; k < history.length; k += 1) {
+      if ((history[k]!.prior_scope_ref ?? null) !== history[k - 1]!.scope_ref) {
+        throw new Error(`Scope history is not contiguous at version ${k} (prior_scope_ref does not chain); fail closed.`);
+      }
+    }
+    const original = history[0]!;
+    const finalScope = history[history.length - 1]!;
+    const chainRefs = new Set<string>(history.map((h) => h.scope_ref));
+
+    // FAIL CLOSED (identity binding): the declared sealed scope must BE the verified final version,
+    // the continuation must inherit from the verified original and end at the verified final, its
+    // amendments must all reference verified versions, and scope events must belong to this loop.
+    const mismatches: string[] = [];
+    if (sealed.scope_ref !== finalScope.scope_ref) {
+      mismatches.push(`sealed_scope is not the final history version`);
     }
     if (continuation.loop_id !== loop.loop_id) {
       mismatches.push(`continuation loop_id ${continuation.loop_id} != receipts loop_id ${loop.loop_id}`);
@@ -423,8 +456,17 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     if (continuation.goal_hash !== loop.goal_hash) {
       mismatches.push(`continuation goal_hash != receipts goal_hash`);
     }
-    if (continuation.scope_ref !== sealed.scope_ref) {
-      mismatches.push(`continuation scope_ref != sealed scope_ref`);
+    if (continuation.scope_ref !== finalScope.scope_ref) {
+      mismatches.push(`continuation scope_ref != final sealed scope_ref`);
+    }
+    if (continuation.inherits_from.scope_ref !== original.scope_ref) {
+      mismatches.push(`continuation inherits_from != original scope_ref`);
+    }
+    for (const a of continuation.what_changed) {
+      if (!chainRefs.has(a.to_scope_ref) || (a.from_scope_ref !== null && !chainRefs.has(a.from_scope_ref))) {
+        mismatches.push(`continuation amendment references a scope_ref outside the verified history`);
+        break;
+      }
     }
     for (const e of input.capsule.scope_events ?? []) {
       if (e.loop_id !== loop.loop_id) {
@@ -438,23 +480,28 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       );
     }
 
-    // FAIL CLOSED (scope-stamp binding): the signed receipts carry the scope_ref each consequential
-    // step was actually stamped with. EVERY such stamp must belong to the exported scope/amendment
-    // chain (the original, the final, and every amendment from/to ref). Otherwise the receipts were
-    // authorized under a scope_ref this pack does not present, and bundle.capsule.scope_ref would
-    // advertise the wrong authorization lane (the cold verifier ignores the sidecars).
-    const chainRefs = new Set<string>([sealed.scope_ref, continuation.scope_ref, continuation.inherits_from.scope_ref]);
-    for (const a of continuation.what_changed) {
-      if (a.from_scope_ref) chainRefs.add(a.from_scope_ref);
-      chainRefs.add(a.to_scope_ref);
-    }
+    // FAIL CLOSED (scope-stamp binding): for a SCOPED export, every in-loop consequential receipt
+    // must carry a `constraints.scope.scope_ref` that is in the VERIFIED chain. A receipt stamp
+    // outside the chain, OR a consequential receipt with NO scope stamp at all (so a legacy/no-scope
+    // chain can't be dressed up with a capsule), fails closed. The terminal `loop_close` is exempt
+    // (it may be intentionally unstamped); if it does carry a stamp, the stamp must still be in-chain.
     input.receipts.forEach((r, i) => {
-      const stamp = (r.constraints as { scope?: { scope_ref?: unknown } } | undefined)?.scope;
-      const sref = stamp?.scope_ref;
-      if (typeof sref === "string" && !chainRefs.has(sref)) {
+      const c = r.constraints as { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: unknown } } | undefined;
+      const isTerminal = isRecord(c?.loop_close);
+      const isInLoop = isRecord(c?.loop) && !isTerminal;
+      const sref = c?.scope?.scope_ref;
+      if (typeof sref === "string") {
+        if (!chainRefs.has(sref)) {
+          throw new Error(
+            `Receipt ${describe(r, i)} carries scope_ref ${sref} outside the exported scope/amendment ` +
+              `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
+          );
+        }
+      } else if (isInLoop) {
         throw new Error(
-          `Receipt ${describe(r, i)} carries scope_ref ${sref} outside the exported scope/amendment ` +
-            `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
+          `Receipt ${describe(r, i)} is an in-loop consequential step with no constraints.scope.scope_ref; ` +
+            `a scoped export requires every consequential receipt to be scope-stamped (terminal loop_close ` +
+            `exempt). Fail closed.`
         );
       }
     });

@@ -41,6 +41,7 @@ type Args = {
   verdictPath?: string;
   exportedAt?: string;
   scopeCapsulePath?: string;
+  scopeHistoryPath?: string;
   continuationPath?: string;
   scopeEventsPath?: string;
   mode: ScopePrivacyMode;
@@ -55,6 +56,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--verdict") args.verdictPath = argv[++i];
     else if (a === "--exported-at") args.exportedAt = argv[++i];
     else if (a === "--scope-capsule") args.scopeCapsulePath = argv[++i];
+    else if (a === "--scope-history") args.scopeHistoryPath = argv[++i];
     else if (a === "--continuation") args.continuationPath = argv[++i];
     else if (a === "--scope-events") args.scopeEventsPath = argv[++i];
     else if (a === "--mode") args.mode = normalizeMode(argv[++i]);
@@ -103,9 +105,10 @@ function main(): void {
       throw new Error("--scope-capsule requires --continuation (the Continuation Capsule).");
     }
     const sealed_scope = readJson<SealedScope>(args.scopeCapsulePath);
+    const scope_history = args.scopeHistoryPath ? readJson<SealedScope[]>(args.scopeHistoryPath) : undefined;
     const continuation = readJson<ContinuationCapsule>(args.continuationPath);
     const scope_events = args.scopeEventsPath ? readJson<ScopeEvent[]>(args.scopeEventsPath) : [];
-    capsule = { mode: args.mode, sealed_scope, continuation, scope_events };
+    capsule = { mode: args.mode, sealed_scope, scope_history, continuation, scope_events };
   }
 
   const built = buildLoopProofBundle({
