@@ -365,7 +365,8 @@ describe("export identity binding + mode contract (fail closed)", () => {
     const continuation = {
       ...continuationFor("loop-1", goal_hash, amended.scope_ref),
       inherits_from: { scope_ref: original.scope_ref },
-      what_changed: [{ from_scope_ref: original.scope_ref, to_scope_ref: amended.scope_ref, sealed_at: amended.sealed_at, changed_fields: [] }]
+      // changed_fields + sealed_at must match the verified history diff.
+      what_changed: [{ from_scope_ref: original.scope_ref, to_scope_ref: amended.scope_ref, sealed_at: amended.sealed_at, changed_fields: ["allowed_targets"] }]
     };
     const built = buildLoopProofBundle({
       receipts,
@@ -373,6 +374,34 @@ describe("export identity binding + mode contract (fail closed)", () => {
       capsule: { mode: "proof", sealed_scope: amended, scope_history: [original, amended], continuation, scope_events: [] }
     });
     expect(built.bundle.capsule?.scope_ref).toBe(amended.scope_ref);
+  });
+
+  it("fails closed when a continuation amendment falsifies changed_fields (hides what changed)", () => {
+    const original = sealScopeCapsule({ capsule });
+    const amended = amendScope(original, { structural: { ...capsule.structural, allowed_targets: ["/checkout/**", "/cart/**"] } });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: original.scope_ref, prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = {
+      ...continuationFor("loop-1", goal_hash, amended.scope_ref),
+      inherits_from: { scope_ref: original.scope_ref },
+      // Correct refs + sealed_at, but changed_fields LIES (hides the allowed_targets expansion).
+      what_changed: [{ from_scope_ref: original.scope_ref, to_scope_ref: amended.scope_ref, sealed_at: amended.sealed_at, changed_fields: [] }]
+    };
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: amended, scope_history: [original, amended], continuation, scope_events: [] } })
+    ).toThrow(/changed_fields do not match/);
   });
 
   it("fails closed when a receipt carries a scope_ref outside the exported scope chain", () => {

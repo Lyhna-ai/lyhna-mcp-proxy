@@ -32,6 +32,7 @@ import {
 } from "./scope-capsule.js";
 import { deriveScopeEventHash, projectScopeEvent, type ScopeEvent } from "./scope-event-recorder.js";
 import {
+  diffStructural,
   projectContinuationProofMode,
   type ContinuationCapsule
 } from "./continuation-capsule.js";
@@ -476,6 +477,20 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         const a = continuation.what_changed[k - 1]!;
         if (a.from_scope_ref !== history[k - 1]!.scope_ref || a.to_scope_ref !== history[k]!.scope_ref) {
           mismatches.push(`continuation amendment ${k} does not match the verified history (from/to scope_ref)`);
+          break;
+        }
+        // RECOMPUTE the amendment record from the verified history — a correct from/to pair must
+        // not be allowed to falsify what changed. changed_fields must equal the actual structural
+        // diff and sealed_at must match the sealed version, so the continuation/proof card cannot
+        // under-report an amendment (e.g. hide an allowed_targets expansion with changed_fields: []).
+        const expectedFields = diffStructural(history[k - 1]!, history[k]!);
+        const gotFields = [...(a.changed_fields ?? [])].sort();
+        if (JSON.stringify(gotFields) !== JSON.stringify(expectedFields)) {
+          mismatches.push(`continuation amendment ${k} changed_fields do not match the verified history diff`);
+          break;
+        }
+        if (a.sealed_at !== history[k]!.sealed_at) {
+          mismatches.push(`continuation amendment ${k} sealed_at does not match the verified history`);
           break;
         }
       }
