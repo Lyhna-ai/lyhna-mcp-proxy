@@ -49,6 +49,7 @@ export {
   amendScope,
   assertBoundsEnforceable,
   assertScopeCapsuleStructuralOnly,
+  assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
   canonicalScopeJson,
   checkScopeStructural,

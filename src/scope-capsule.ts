@@ -117,6 +117,64 @@ const PLAN_PLAINTEXT_KEYS = new Set([
   "source_pointers"
 ]);
 
+// The CLOSED allowlist of structural-projection fields. The structural projection is hashed into
+// scope_ref AND emitted in the Proof Mode (content-blind) scope-capsule.json, so it must carry
+// ONLY known structural keys — any stray/typo/future field (e.g. `description: "fix checkout bug"`)
+// would otherwise ride into the content-blind export. Anything not on this list fails closed.
+const STRUCTURAL_ALLOWED_KEYS = new Set([
+  "capsule_type",
+  "capsule_version",
+  "loop_id",
+  "goal_hash",
+  "privacy_mode",
+  "allowed_action_classes",
+  "allowed_tools",
+  "allowed_targets",
+  "forbidden_targets",
+  "target_arg_keys",
+  "targetless_action_classes",
+  "target_descriptor_hashes",
+  "bounds",
+  "prior_receipt_ref",
+  "prior_proof_bundle_ref",
+  "prior_capsule_ref"
+]);
+
+// Structural fields that must be string arrays — validated so a nested object can't smuggle a
+// plaintext value past the closed-key allowlist.
+const STRUCTURAL_STRING_ARRAY_KEYS = [
+  "allowed_action_classes",
+  "allowed_tools",
+  "allowed_targets",
+  "forbidden_targets",
+  "target_arg_keys",
+  "targetless_action_classes",
+  "target_descriptor_hashes"
+];
+
+/**
+ * Fail-closed CLOSED-allowlist validation of the structural projection. Rejects any unknown
+ * top-level field (so a typo/stray/future field cannot be hashed into scope_ref or emitted in the
+ * content-blind export) and enforces that the string-array fields really are arrays of strings.
+ */
+export function assertScopeStructuralClosed(structural: ScopeStructuralProjection): void {
+  for (const key of Object.keys(structural)) {
+    if (!STRUCTURAL_ALLOWED_KEYS.has(key)) {
+      throw new Error(
+        `Scope structural projection has unknown field "${key}"; it is a CLOSED allowlist — a ` +
+          `stray or plaintext field must never be hashed into scope_ref or emitted in the ` +
+          `content-blind export (fail closed).`
+      );
+    }
+  }
+  for (const key of STRUCTURAL_STRING_ARRAY_KEYS) {
+    const v = (structural as Record<string, unknown>)[key];
+    if (v !== undefined && (!Array.isArray(v) || v.some((x) => typeof x !== "string"))) {
+      throw new Error(`Scope structural projection field "${key}" must be an array of strings (fail closed).`);
+    }
+  }
+}
+
 function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
@@ -229,6 +287,7 @@ export function sealScopeCapsule(input: {
   if (!structural.loop_id || !structural.goal_hash) {
     throw new Error("Scope capsule structural projection requires loop_id and goal_hash.");
   }
+  assertScopeStructuralClosed(structural);
   assertScopeStructuralContentBlind(structural);
   assertBoundsEnforceable(structural.bounds);
 
@@ -550,31 +609,36 @@ export function checkScopeStructural(
     (s.forbidden_targets?.length ?? 0) > 0 ||
     (s.target_descriptor_hashes?.length ?? 0) > 0;
 
-  if (hasTargetRules && !targetless) {
-    // No payload target to tie a descriptor to -> cannot prove in-lane -> fail closed.
+  if (hasTargetRules) {
     if (targets.length === 0) {
-      return refuse(
-        action_class,
-        call.toolName,
-        null,
-        `target-based scope rules are declared but no target could be resolved for "${call.toolName}" (fail closed)`,
-        "unresolved_target"
-      );
-    }
-    // Content-blind enforcement requires the capsule to declare the allowed descriptor hashes;
-    // plaintext globs cannot be evaluated in Proof Mode, so absent hashes it FAILS CLOSED.
-    if (!s.target_descriptor_hashes || s.target_descriptor_hashes.length === 0) {
-      return refuse(
-        action_class,
-        call.toolName,
-        target_descriptor,
-        "Proof Mode cannot evaluate plaintext target rules; declare target_descriptor_hashes for content-blind enforcement (fail closed)",
-        "proof_mode_target_unenforceable"
-      );
-    }
-    for (const target of targets) {
-      if (!s.target_descriptor_hashes.includes(hashTarget(target))) {
-        return refuse(action_class, call.toolName, hashTarget(target), "payload target descriptor is not a declared member", "target_descriptor_hashes");
+      // The `targetless` exemption ONLY covers a genuinely missing target. With none resolved and
+      // the class not declared targetless, the call cannot be proven in-lane -> fail closed.
+      if (!targetless) {
+        return refuse(
+          action_class,
+          call.toolName,
+          null,
+          `target-based scope rules are declared but no target could be resolved for "${call.toolName}" (fail closed)`,
+          "unresolved_target"
+        );
+      }
+    } else {
+      // Targets ARE present — even for a 'targetless' action class, every present target must be
+      // validated before forwarding (the exemption never licenses an unchecked present target).
+      // Content-blind enforcement requires declared descriptor hashes; absent them, FAIL CLOSED.
+      if (!s.target_descriptor_hashes || s.target_descriptor_hashes.length === 0) {
+        return refuse(
+          action_class,
+          call.toolName,
+          target_descriptor,
+          "Proof Mode cannot evaluate plaintext target rules; declare target_descriptor_hashes for content-blind enforcement (fail closed)",
+          "proof_mode_target_unenforceable"
+        );
+      }
+      for (const target of targets) {
+        if (!s.target_descriptor_hashes.includes(hashTarget(target))) {
+          return refuse(action_class, call.toolName, hashTarget(target), "payload target descriptor is not a declared member", "target_descriptor_hashes");
+        }
       }
     }
   }

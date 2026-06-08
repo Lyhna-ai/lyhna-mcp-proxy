@@ -63,6 +63,16 @@ describe("sealScopeCapsule", () => {
     expect(() => assertScopeStructuralContentBlind(leaky as ScopeStructuralProjection)).toThrow(/content-blind/);
     expect(() => sealScopeCapsule({ capsule: { structural: leaky as ScopeStructuralProjection } })).toThrow();
   });
+
+  it("rejects an UNKNOWN structural field via the closed allowlist (content-blind)", () => {
+    const leaky = { ...structural(), description: "fix checkout bug" } as unknown as ScopeStructuralProjection;
+    expect(() => sealScopeCapsule({ capsule: { structural: leaky } })).toThrow(/unknown field|closed allowlist/i);
+  });
+
+  it("rejects a non-string entry in a structural string-array field", () => {
+    const bad = { ...structural(), allowed_targets: ["/checkout/**", 123] } as unknown as ScopeStructuralProjection;
+    expect(() => sealScopeCapsule({ capsule: { structural: bad } })).toThrow(/array of strings/);
+  });
 });
 
 describe("amendScope", () => {
@@ -317,6 +327,32 @@ describe("checkScopeStructural — Proof Mode (content-blind)", () => {
     );
     expect(d.decision).toBe("REFUSED");
     expect(d.matched_rule).toBe("proof_mode_target_unenforceable");
+  });
+
+  it("validates PRESENT targets even for a declared-targetless class (exemption covers only missing targets)", () => {
+    const allowed = "/checkout/cart.ts";
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: structural({
+          privacy_mode: "proof",
+          allowed_action_classes: ["run_tests"],
+          targetless_action_classes: ["run_tests"],
+          target_descriptor_hashes: [targetHash(allowed)],
+          allowed_targets: undefined,
+          forbidden_targets: undefined
+        })
+      }
+    });
+    // No target -> exemption applies -> IN_SCOPE.
+    expect(checkScopeStructural({ toolName: "run_tests", arguments: {} }, sealed, { mode: "proof" }).decision).toBe("IN_SCOPE");
+    // A PRESENT non-member target on the targetless class -> still REFUSED.
+    const refused = checkScopeStructural(
+      { toolName: "run_tests", arguments: { path: "/billing/migrations/x.sql" } },
+      sealed,
+      { mode: "proof" }
+    );
+    expect(refused.decision).toBe("REFUSED");
+    expect(refused.matched_rule).toBe("target_descriptor_hashes");
   });
 
   it("a declared targetless action class is exempt from the Proof Mode target requirement", () => {
