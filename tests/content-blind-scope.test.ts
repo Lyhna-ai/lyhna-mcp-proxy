@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+
+const hashTarget = (t: string) => "sha256:" + createHash("sha256").update(t, "utf8").digest("hex");
 
 import {
   amendScope,
@@ -342,19 +345,27 @@ describe("export identity binding + mode contract (fail closed)", () => {
   });
 
   it("accepts a real amendment when the full verified scope_history is supplied", () => {
-    const original = sealScopeCapsule({ capsule });
+    // Export-verifiable target lane: the scope declares target_descriptor_hashes (Option B).
+    const base = {
+      capsule_type: "scope_capsule" as const,
+      capsule_version: "scope-capsule/v1",
+      loop_id: "loop-1",
+      goal_hash: "a".repeat(64),
+      privacy_mode: "proof" as const,
+      allowed_action_classes: ["write"],
+      target_descriptor_hashes: [hashTarget("/checkout/cart.ts")]
+    };
+    const original = sealScopeCapsule({ capsule: { structural: base } });
     // A STRUCTURALLY distinct amendment -> a new scope_ref, chained to the original.
-    const amended = amendScope(original, {
-      structural: { ...capsule.structural, allowed_targets: ["/checkout/**", "/cart/**"] }
-    });
+    const amended = amendScope(original, { structural: { ...base, allowed_action_classes: ["write", "read"] } });
     const goal_hash = "a".repeat(64);
     const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
-    // One in-loop receipt stamped with the ORIGINAL scope_ref, terminal close.
+    // One in-loop receipt stamped under the ORIGINAL scope_ref with an in-lane (member) target.
     const receipts: ProofReceipt[] = [
       {
         version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
         action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
-        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: original.scope_ref, prior_receipt_id: null } }
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: original.scope_ref, action_class: "write", target_descriptor: hashTarget("/checkout/cart.ts"), prior_receipt_id: null } }
       },
       {
         version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
@@ -365,8 +376,7 @@ describe("export identity binding + mode contract (fail closed)", () => {
     const continuation = {
       ...continuationFor("loop-1", goal_hash, amended.scope_ref),
       inherits_from: { scope_ref: original.scope_ref },
-      // changed_fields + sealed_at must match the verified history diff.
-      what_changed: [{ from_scope_ref: original.scope_ref, to_scope_ref: amended.scope_ref, sealed_at: amended.sealed_at, changed_fields: ["allowed_targets"] }]
+      what_changed: [{ from_scope_ref: original.scope_ref, to_scope_ref: amended.scope_ref, sealed_at: amended.sealed_at, changed_fields: ["allowed_action_classes"] }]
     };
     const built = buildLoopProofBundle({
       receipts,
@@ -374,6 +384,28 @@ describe("export identity binding + mode contract (fail closed)", () => {
       capsule: { mode: "proof", sealed_scope: amended, scope_history: [original, amended], continuation, scope_events: [] }
     });
     expect(built.bundle.capsule?.scope_ref).toBe(amended.scope_ref);
+  });
+
+  it("fails closed: a globs-only target scope cannot be export-re-validated (Option B)", () => {
+    const sealed = sealScopeCapsule({ capsule }); // allowed_targets globs, NO target_descriptor_hashes
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: sealed.scope_ref, action_class: "write", target_descriptor: hashTarget("/checkout/cart.ts"), prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, sealed.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/target_descriptor_hashes|export-verifiable target lane/);
   });
 
   it("fails closed when a continuation amendment falsifies changed_fields (hides what changed)", () => {

@@ -19,6 +19,7 @@
 
 import { execFileSync } from "node:child_process";
 import { connect as netConnect } from "node:net";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,8 +37,20 @@ const SESSION_ID = "capsule-session-1";
 const LOOP_ID = "loop-capsule-gate-1";
 const GOAL = "fix checkout bug";
 
+// The concrete in-lane target the agent writes. Its content-blind hash is declared in the capsule
+// so the EXPORT can re-validate the target lane (globs alone are runtime-only — see below).
+const CHECKOUT_TARGET = "/checkout/cart.ts";
+const targetHash = (t) => "sha256:" + createHash("sha256").update(t, "utf8").digest("hex");
+
 // The Scope Capsule the supervisor seals at open. Structural projection is content-blind; the
 // sidecar carries the human plan (Verified Context Mode export only).
+//
+// TARGET-LANE GUARANTEES (the load-bearing distinction):
+//   - allowed_targets / forbidden_targets globs are RUNTIME-GATE guarantees: the adapter sees the
+//     plaintext target pre-bind and enforces them before execution (incl. the /billing refusal).
+//   - target_descriptor_hashes are EXPORT-PROOF guarantees: content-blind export can re-validate
+//     exact hash membership but cannot re-evaluate globs over plaintext it no longer holds, so an
+//     export-verifiable target lane must enumerate the concrete in-lane target hash(es).
 const SCOPE_CAPSULE = {
   structural: {
     capsule_type: "scope_capsule",
@@ -48,6 +61,7 @@ const SCOPE_CAPSULE = {
     allowed_action_classes: ["read", "write", "run_tests"],
     allowed_targets: ["/checkout/**", "/payments/types.ts"],
     forbidden_targets: ["/billing/migrations/**"],
+    target_descriptor_hashes: [targetHash(CHECKOUT_TARGET)],
     // run_tests legitimately operates without a file target; declare it targetless so the
     // fail-closed "unresolved target" rule does not refuse it.
     targetless_action_classes: ["run_tests"]

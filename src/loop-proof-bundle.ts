@@ -582,14 +582,29 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
             );
           }
         }
-        // Content-blind target re-validation: a receipt only carries the target HASH, so the lane
-        // can be re-checked from the export only when the referenced scope declares
-        // target_descriptor_hashes. A target-bearing stamp must then be a declared member; a
-        // declared-targetless action class is exempt. (For globs-only scopes the target can't be
-        // re-derived from a hash — the runtime gate already enforced it; this is an inherent
-        // content-blind limit, not a regression.)
+        // Content-blind target re-validation (Option B). The receipt only carries the target HASH,
+        // so the export can prove EXACT hash membership but cannot re-evaluate plaintext globs from
+        // a hash. Therefore an export-verifiable target lane REQUIRES `target_descriptor_hashes`:
+        //   - allowed_targets / forbidden_targets globs are RUNTIME-GATE guarantees (the adapter saw
+        //     the plaintext target pre-bind);
+        //   - target_descriptor_hashes are EXPORT-PROOF guarantees (re-checkable content-blind).
+        // For a target-constrained scope (any of globs/hashes) on a non-targetless step, the stamp
+        // MUST carry a target_descriptor that is a member of the scope version's
+        // target_descriptor_hashes. A scope that constrains targets only via globs (no hashes) cannot
+        // be re-validated at export and FAILS CLOSED.
         const targetless = action_class !== undefined && (s.targetless_action_classes ?? []).includes(action_class);
-        if ((s.target_descriptor_hashes?.length ?? 0) > 0 && !targetless) {
+        const declaresTargetRules =
+          (s.allowed_targets?.length ?? 0) > 0 ||
+          (s.forbidden_targets?.length ?? 0) > 0 ||
+          (s.target_descriptor_hashes?.length ?? 0) > 0;
+        if (declaresTargetRules && !targetless) {
+          if ((s.target_descriptor_hashes?.length ?? 0) === 0) {
+            throw new Error(
+              `Receipt ${describe(r, i)} runs under target-constrained scope ${sref} that declares only ` +
+                `plaintext target globs (no target_descriptor_hashes); content-blind export cannot re-validate ` +
+                `a target from a hash — declare target_descriptor_hashes for an export-verifiable target lane (fail closed).`
+            );
+          }
           if (target_descriptor === null || !s.target_descriptor_hashes!.includes(target_descriptor)) {
             throw new Error(
               `Receipt ${describe(r, i)} stamped target_descriptor is not a declared member under scope ${sref} (fail closed).`
@@ -783,6 +798,16 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `- \`continuation-capsule.json\` — settled / open / next + what changed, inheriting \`scope_ref\`.`,
       `- Scope refusals/escalations are attested by \`event_hash\` under \`bundle.json\` ->`,
       `  \`capsule.scope_events.event_hashes\` (${bundle.capsule.scope_events.count} event(s)).`,
+      ``,
+      `### Target-lane guarantees (what this proof does and does not assert)`,
+      ``,
+      `- \`allowed_targets\` / \`forbidden_targets\` globs are **runtime-gate** guarantees: the adapter`,
+      `  saw the plaintext target before execution and enforced them pre-bind.`,
+      `- \`target_descriptor_hashes\` are **export-proof** guarantees: every consequential receipt's`,
+      `  stamped target hash is re-validated here as exact membership.`,
+      `- Content-blind export can prove exact hash membership, NOT arbitrary glob semantics over`,
+      `  plaintext it no longer holds — so an export-verifiable target lane requires`,
+      `  \`target_descriptor_hashes\`; a globs-only scope fails closed at export.`,
       ``
     );
   }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { connect as netConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +35,8 @@ const SCOPE_CAPSULE: ScopeCapsule = {
     allowed_action_classes: ["read", "write", "run_tests"],
     allowed_targets: ["/checkout/**", "/payments/types.ts"],
     forbidden_targets: ["/billing/migrations/**"],
+    // Export-verifiable target lane: hash of the concrete in-lane target the test writes.
+    target_descriptor_hashes: ["sha256:" + createHash("sha256").update("/checkout/cart.ts", "utf8").digest("hex")],
     targetless_action_classes: ["run_tests"]
   },
   sidecar: { goal_summary: "fix checkout bug", planned_steps: ["edit /checkout", "run tests"] }
