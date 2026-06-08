@@ -475,8 +475,12 @@ export function checkScopeStructural(
   const targetless = (s.targetless_action_classes ?? []).includes(action_class);
 
   if (options.mode === "verified_context") {
+    // A hash-only lane (target_descriptor_hashes with no plaintext globs) is ALSO a target rule
+    // in Verified Context — membership is enforced below just as Proof Mode does.
     const hasTargetRules =
-      (s.allowed_targets?.length ?? 0) > 0 || (s.forbidden_targets?.length ?? 0) > 0;
+      (s.allowed_targets?.length ?? 0) > 0 ||
+      (s.forbidden_targets?.length ?? 0) > 0 ||
+      (s.target_descriptor_hashes?.length ?? 0) > 0;
 
     // FAIL CLOSED: when the capsule declares target-based rules, a call whose target cannot be
     // resolved (missing key, or a key this capsule did not declare) cannot be proven inside the
@@ -492,8 +496,8 @@ export function checkScopeStructural(
       );
     }
 
-    // EVERY target must pass: any forbidden match, or any target outside a declared allow-list,
-    // refuses the whole call before execution.
+    // EVERY target must pass: any forbidden match, any target outside a declared allow-list, or
+    // any target whose hash is not a declared descriptor-hash member refuses the whole call.
     for (const target of targets) {
       const forbidden = matchesAny(target, s.forbidden_targets);
       if (forbidden) {
@@ -510,6 +514,19 @@ export function checkScopeStructural(
           decision: "REFUSED",
           reason: `target is outside allowed_targets`,
           matched_rule: "allowed_targets",
+          descriptor: { action_class, tool_name: call.toolName, target_descriptor: hashTarget(target) },
+          target_plaintext: target
+        };
+      }
+      if (
+        s.target_descriptor_hashes &&
+        s.target_descriptor_hashes.length > 0 &&
+        !s.target_descriptor_hashes.includes(hashTarget(target))
+      ) {
+        return {
+          decision: "REFUSED",
+          reason: `target descriptor is not a declared member`,
+          matched_rule: "target_descriptor_hashes",
           descriptor: { action_class, tool_name: call.toolName, target_descriptor: hashTarget(target) },
           target_plaintext: target
         };

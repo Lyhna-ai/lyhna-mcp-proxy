@@ -194,6 +194,32 @@ describe("checkScopeStructural — Verified Context Mode fail-closed on unresolv
     expect(passed.decision).toBe("IN_SCOPE");
   });
 
+  it("enforces target_descriptor_hashes membership in Verified Context (hash-only lane, no globs)", () => {
+    const allowed = "/checkout/cart.ts";
+    const h = (t: string) => "sha256:" + createHash("sha256").update(t, "utf8").digest("hex");
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: structural({
+          allowed_targets: undefined,
+          forbidden_targets: undefined,
+          target_descriptor_hashes: [h(allowed)]
+        })
+      }
+    });
+    expect(
+      checkScopeStructural({ toolName: "write_file", arguments: { path: allowed } }, sealed, {
+        mode: "verified_context"
+      }).decision
+    ).toBe("IN_SCOPE");
+    const refused = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/other.ts" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(refused.decision).toBe("REFUSED");
+    expect(refused.matched_rule).toBe("target_descriptor_hashes");
+  });
+
   it("does not require a target when the capsule declares no target rules", () => {
     const sealed = sealScopeCapsule({
       capsule: {
