@@ -391,8 +391,12 @@ export type ScopeDecisionKind = "IN_SCOPE" | "REFUSED" | "ESCALATED";
 export type ScopeStructuralDescriptor = {
   action_class: string;
   tool_name: string;
-  /** sha256 hash of the resolved target, or a structural class — never the plaintext target. */
+  /** sha256 hash of the resolved target (single), or a stable SET DIGEST (multi-target), or null.
+   * Never the plaintext target. */
   target_descriptor: string | null;
+  /** Per-target sha256 hashes (one per resolved target), so a multi-target call is re-validatable
+   * member-by-member at export. Omitted when no target resolved. */
+  target_descriptors?: string[];
 };
 
 export type ScopeDecision = {
@@ -629,6 +633,8 @@ export function checkScopeStructural(
   // Canonical targets used for ALL matching, hashing, and the stamped descriptor.
   const targets = rawTargets.map((t) => canonicalizeTarget(t) ?? t);
   const target_descriptor = hashTargets(targets);
+  // Per-target hashes (deduped) so a multi-target call is re-validatable member-by-member at export.
+  const target_descriptors = targets.length > 0 ? [...new Set(targets.map((t) => hashTarget(t)))] : undefined;
 
   if (options.mode === "verified_context") {
     // FAIL CLOSED: when the capsule declares target-based rules, a call whose target cannot be
@@ -685,7 +691,7 @@ export function checkScopeStructural(
     return {
       decision: "IN_SCOPE",
       reason: "within declared structural lane",
-      descriptor: { action_class, tool_name: call.toolName, target_descriptor },
+      descriptor: { action_class, tool_name: call.toolName, target_descriptor, target_descriptors },
       target_plaintext: targets.length === 1 ? targets[0] : targets.join(", ") || undefined
     };
   }
@@ -730,7 +736,7 @@ export function checkScopeStructural(
   return {
     decision: "IN_SCOPE",
     reason: "within declared structural lane (content-blind)",
-    descriptor: { action_class, tool_name: call.toolName, target_descriptor }
+    descriptor: { action_class, tool_name: call.toolName, target_descriptor, target_descriptors }
     // No target_plaintext: Proof Mode discards the plaintext after hashing (content-blind).
   };
 }

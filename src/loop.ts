@@ -154,8 +154,12 @@ export type ScopeConstraint = {
   prior_receipt_id: string | null;
   action_class?: string;
   tool_name?: string;
-  /** sha256 hash or a structural class — never the plaintext target. */
+  /** sha256 hash or a structural class — never the plaintext target. For multi-target calls this
+   * is a stable SET DIGEST (identity); per-target membership is carried in `target_descriptors`. */
   target_descriptor?: string | null;
+  /** Per-target sha256 hashes (one per resolved target) so a multi-target call can be re-validated
+   * member-by-member at export. Never plaintext. */
+  target_descriptors?: string[];
 };
 
 // The complete, closed set of keys `constraints.scope` may carry. The merge fails closed on any
@@ -165,7 +169,8 @@ const SCOPE_CONSTRAINT_KEYS = new Set([
   "prior_receipt_id",
   "action_class",
   "tool_name",
-  "target_descriptor"
+  "target_descriptor",
+  "target_descriptors"
 ]);
 
 /**

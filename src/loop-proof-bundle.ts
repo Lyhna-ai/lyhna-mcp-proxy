@@ -545,7 +545,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         | {
             loop?: unknown;
             loop_close?: unknown;
-            scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown };
+            scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown };
           }
         | undefined;
       const isTerminal = isRecord(c?.loop_close);
@@ -565,6 +565,13 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         const action_class = typeof stamp?.action_class === "string" ? stamp.action_class : undefined;
         const tool_name = typeof stamp?.tool_name === "string" ? stamp.tool_name : undefined;
         const target_descriptor = typeof stamp?.target_descriptor === "string" ? stamp.target_descriptor : null;
+        // Per-target hashes for membership re-validation. Prefer the explicit per-target array
+        // (multi-target tools); fall back to the single descriptor for single-target stamps.
+        const stampedTargetHashes: string[] = Array.isArray(stamp?.target_descriptors)
+          ? (stamp!.target_descriptors as unknown[]).filter((h): h is string => typeof h === "string")
+          : target_descriptor !== null
+            ? [target_descriptor]
+            : [];
 
         if (s.allowed_tools && s.allowed_tools.length > 0) {
           if (tool_name === undefined || !s.allowed_tools.includes(tool_name)) {
@@ -582,22 +589,23 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
             );
           }
         }
-        // Content-blind target re-validation (Option B). The receipt only carries the target HASH,
-        // so the export can prove EXACT hash membership but cannot re-evaluate plaintext globs from
-        // a hash. Therefore an export-verifiable target lane REQUIRES `target_descriptor_hashes`:
+        // Content-blind target re-validation (Option B). The receipt only carries target HASHES, so
+        // the export can prove EXACT hash membership but cannot re-evaluate plaintext globs from a
+        // hash. Therefore an export-verifiable target lane REQUIRES `target_descriptor_hashes`:
         //   - allowed_targets / forbidden_targets globs are RUNTIME-GATE guarantees (the adapter saw
         //     the plaintext target pre-bind);
         //   - target_descriptor_hashes are EXPORT-PROOF guarantees (re-checkable content-blind).
-        // For a target-constrained scope (any of globs/hashes) on a non-targetless step, the stamp
-        // MUST carry a target_descriptor that is a member of the scope version's
-        // target_descriptor_hashes. A scope that constrains targets only via globs (no hashes) cannot
-        // be re-validated at export and FAILS CLOSED.
+        // The targetless exemption applies ONLY when the stamp names NO target; a targetless step
+        // that still carries a target hash is re-validated like any other (round 18 #1). Multi-target
+        // stamps are validated member-by-member via the per-target hashes (round 18 #2). A scope that
+        // constrains targets only via globs (no hashes) cannot be re-validated and FAILS CLOSED.
         const targetless = action_class !== undefined && (s.targetless_action_classes ?? []).includes(action_class);
         const declaresTargetRules =
           (s.allowed_targets?.length ?? 0) > 0 ||
           (s.forbidden_targets?.length ?? 0) > 0 ||
           (s.target_descriptor_hashes?.length ?? 0) > 0;
-        if (declaresTargetRules && !targetless) {
+        const mustValidateTarget = declaresTargetRules && (stampedTargetHashes.length > 0 || !targetless);
+        if (mustValidateTarget) {
           if ((s.target_descriptor_hashes?.length ?? 0) === 0) {
             throw new Error(
               `Receipt ${describe(r, i)} runs under target-constrained scope ${sref} that declares only ` +
@@ -605,10 +613,18 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
                 `a target from a hash — declare target_descriptor_hashes for an export-verifiable target lane (fail closed).`
             );
           }
-          if (target_descriptor === null || !s.target_descriptor_hashes!.includes(target_descriptor)) {
+          if (stampedTargetHashes.length === 0) {
             throw new Error(
-              `Receipt ${describe(r, i)} stamped target_descriptor is not a declared member under scope ${sref} (fail closed).`
+              `Receipt ${describe(r, i)} runs under target-constrained scope ${sref} but stamps no target ` +
+                `descriptor and is not a declared-targetless action (fail closed).`
             );
+          }
+          for (const h of stampedTargetHashes) {
+            if (!s.target_descriptor_hashes!.includes(h)) {
+              throw new Error(
+                `Receipt ${describe(r, i)} stamped target_descriptor ${h} is not a declared member under scope ${sref} (fail closed).`
+              );
+            }
           }
         }
       } else if (isInLoop) {

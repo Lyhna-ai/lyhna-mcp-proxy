@@ -408,6 +408,82 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/target_descriptor_hashes|export-verifiable target lane/);
   });
 
+  it("re-validates a PRESENT target even for a declared-targetless action class (round 18 #1)", () => {
+    const base = {
+      capsule_type: "scope_capsule" as const,
+      capsule_version: "scope-capsule/v1",
+      loop_id: "loop-1",
+      goal_hash: "a".repeat(64),
+      privacy_mode: "proof" as const,
+      allowed_action_classes: ["run_tests"],
+      targetless_action_classes: ["run_tests"],
+      target_descriptor_hashes: [hashTarget("/checkout/cart.ts")]
+    };
+    const sealed = sealScopeCapsule({ capsule: { structural: base } });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "run_tests", outcome: "APPROVED", signature: "c3R1Yg==",
+        // Targetless class but it NAMES an out-of-lane target hash — must still be re-validated.
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: sealed.scope_ref, action_class: "run_tests", target_descriptor: hashTarget("/billing/migrations/x.sql"), prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, sealed.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/not a declared member/);
+  });
+
+  it("keeps multi-target stamps exportable when every target is declared, rejects a non-member (round 18 #2)", () => {
+    const base = {
+      capsule_type: "scope_capsule" as const,
+      capsule_version: "scope-capsule/v1",
+      loop_id: "loop-1",
+      goal_hash: "a".repeat(64),
+      privacy_mode: "proof" as const,
+      allowed_action_classes: ["write"],
+      target_descriptor_hashes: [hashTarget("/checkout/a.ts"), hashTarget("/checkout/b.ts")]
+    };
+    const sealed = sealScopeCapsule({ capsule: { structural: base } });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const mkReceipts = (targetHashes: string[]): ProofReceipt[] => [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "copy_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: sealed.scope_ref, action_class: "write", target_descriptor: "sha256:" + "9".repeat(64), target_descriptors: targetHashes, prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, sealed.scope_ref);
+    // Both targets declared -> exportable.
+    const built = buildLoopProofBundle({
+      receipts: mkReceipts([hashTarget("/checkout/a.ts"), hashTarget("/checkout/b.ts")]),
+      source_env: "t",
+      capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] }
+    });
+    expect(built.bundle.capsule?.scope_ref).toBe(sealed.scope_ref);
+    // One target not a declared member -> fail closed.
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: mkReceipts([hashTarget("/checkout/a.ts"), hashTarget("/checkout/c.ts")]),
+        source_env: "t",
+        capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] }
+      })
+    ).toThrow(/not a declared member/);
+  });
+
   it("fails closed when a continuation amendment falsifies changed_fields (hides what changed)", () => {
     const original = sealScopeCapsule({ capsule });
     const amended = amendScope(original, { structural: { ...capsule.structural, allowed_targets: ["/checkout/**", "/cart/**"] } });

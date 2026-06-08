@@ -128,7 +128,8 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
           scope_ref: sealed.scope_ref,
           action_class: decision.descriptor.action_class,
           tool_name: decision.descriptor.tool_name,
-          target_descriptor: decision.descriptor.target_descriptor
+          target_descriptor: decision.descriptor.target_descriptor,
+          ...(decision.descriptor.target_descriptors ? { target_descriptors: decision.descriptor.target_descriptors } : {})
         };
       }
 
