@@ -23,6 +23,8 @@ import { createHash } from "node:crypto";
 import { verifyLoopChain, type LoopChainLink } from "./loop.js";
 import {
   assertScopeCapsuleStructuralOnly,
+  deriveScopeRef,
+  deriveSidecarHash,
   projectScopeCapsuleForExport,
   type ScopeCapsuleExport,
   type ScopePrivacyMode,
@@ -387,6 +389,23 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     const sealed = input.capsule.sealed_scope;
     const continuation = input.capsule.continuation;
 
+    // FAIL CLOSED (hash integrity): the sealed scope carries a scope_ref / sidecar_hash, but when
+    // it is loaded from a JSON file (export CLI) those could have been tampered to keep a legit
+    // scope_ref while mutating allowed_targets / bounds / sidecar. RECOMPUTE the hashes from the
+    // projections and reject any mismatch, so a packaged scope-capsule.json can only present rules
+    // that actually hash to its scope_ref.
+    const recomputedScopeRef = deriveScopeRef(sealed.structural);
+    if (recomputedScopeRef !== sealed.scope_ref) {
+      throw new Error(
+        `Sealed scope_ref ${sealed.scope_ref} does not match the hash of its structural projection ` +
+          `(${recomputedScopeRef}); the scope material was tampered or is stale (fail closed).`
+      );
+    }
+    const recomputedSidecarHash = deriveSidecarHash(sealed.sidecar);
+    if (recomputedSidecarHash !== sealed.sidecar_hash) {
+      throw new Error(`Sealed sidecar_hash does not match the hash of its sidecar projection (fail closed).`);
+    }
+
     // FAIL CLOSED (identity binding): the sealed scope + continuation must belong to the SAME loop
     // as the receipt chain. A stale dump_scope/continuation from another loop must never be
     // packaged onto these receipts (the cold verifier only checks receipts.json, so a mislabeled
@@ -418,6 +437,27 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         `Capsule material does not belong to the receipt chain (fail closed): ${mismatches.join("; ")}.`
       );
     }
+
+    // FAIL CLOSED (scope-stamp binding): the signed receipts carry the scope_ref each consequential
+    // step was actually stamped with. EVERY such stamp must belong to the exported scope/amendment
+    // chain (the original, the final, and every amendment from/to ref). Otherwise the receipts were
+    // authorized under a scope_ref this pack does not present, and bundle.capsule.scope_ref would
+    // advertise the wrong authorization lane (the cold verifier ignores the sidecars).
+    const chainRefs = new Set<string>([sealed.scope_ref, continuation.scope_ref, continuation.inherits_from.scope_ref]);
+    for (const a of continuation.what_changed) {
+      if (a.from_scope_ref) chainRefs.add(a.from_scope_ref);
+      chainRefs.add(a.to_scope_ref);
+    }
+    input.receipts.forEach((r, i) => {
+      const stamp = (r.constraints as { scope?: { scope_ref?: unknown } } | undefined)?.scope;
+      const sref = stamp?.scope_ref;
+      if (typeof sref === "string" && !chainRefs.has(sref)) {
+        throw new Error(
+          `Receipt ${describe(r, i)} carries scope_ref ${sref} outside the exported scope/amendment ` +
+            `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
+        );
+      }
+    });
 
     // FAIL CLOSED (mode contract): an export mode must never be MORE permissive than the sealed
     // scope declared. A Verified Context (plaintext-sidecar) export is permitted ONLY when the
