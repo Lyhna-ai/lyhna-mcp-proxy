@@ -28,6 +28,7 @@ import {
   assertScopeStructuralContentBlind,
   deriveScopeRef,
   deriveSidecarHash,
+  hashTarget,
   projectScopeCapsuleForExport,
   type ScopeCapsuleExport,
   type ScopePrivacyMode,
@@ -540,6 +541,23 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       }
       if (!chainRefs.has(e.scope_ref)) {
         throw new Error(`Scope event ${idx} references scope_ref ${e.scope_ref} outside the verified history; fail closed.`);
+      }
+      // FAIL CLOSED (retained-plaintext binding): `event_hash` deliberately covers only the structural
+      // `target_descriptor` (a hash), NOT the plaintext `attempted.target`, so the hash is identical in
+      // Proof and Verified Context modes. That means a tampered scope-events.json can keep the same
+      // descriptor/event_hash while swapping ONLY the plaintext `attempted.target`. In Verified Context
+      // Mode that false plaintext would be published in the tenant-visible sidecar, so when a plaintext
+      // target is RETAINED (verified_context) it must hash to its committed descriptor — exactly the
+      // gate's invariant at record time (`target_descriptor = hashTarget(target)`). Proof Mode strips
+      // the plaintext at projection, so it is never published and needs no binding here.
+      if (mode === "verified_context" && typeof e.attempted.target === "string") {
+        const boundDescriptor = e.attempted.target_descriptor;
+        if (typeof boundDescriptor !== "string" || hashTarget(e.attempted.target) !== boundDescriptor) {
+          throw new Error(
+            `Scope event ${idx} retains a plaintext target that does not hash to its committed ` +
+              `target_descriptor; the verified-context sidecar would publish an unattested plaintext target (fail closed).`
+          );
+        }
       }
     }
 

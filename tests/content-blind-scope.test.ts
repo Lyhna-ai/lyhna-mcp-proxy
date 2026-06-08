@@ -11,6 +11,7 @@ import {
   assertScopeConstraintStructural,
   buildLoopProofBundle,
   createScopeEventRecorder,
+  deriveScopeEventHash,
   createSyntheticDemoBindClient,
   mergeScopeConstraint,
   projectScopeCapsuleForExport,
@@ -258,6 +259,49 @@ describe("export identity binding + mode contract (fail closed)", () => {
         capsule: { mode: "verified_context", sealed_scope: lyingSealed, scope_history: [sealedProof], continuation, scope_events: [] }
       })
     ).toThrow(/verified final scope's privacy_mode/);
+  });
+
+  it("fails closed when a verified-context scope event's retained plaintext target does not hash to its descriptor (round 22)", () => {
+    // A verified-context scope (plaintext retained in the sidecar). `event_hash` covers only the
+    // structural target_descriptor (a hash), NOT the plaintext target — so a tampered scope-events.json
+    // can keep the same descriptor/event_hash while swapping ONLY the plaintext, publishing a false
+    // plaintext target in the tenant-visible sidecar. The export must bind retained plaintext to its hash.
+    const vc: ScopeCapsule = {
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop-1",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "verified_context",
+        allowed_targets: ["/checkout/**"]
+      },
+      sidecar: { goal_summary: "x", planned_steps: [], open_questions: [] }
+    };
+    const sealed = sealScopeCapsule({ capsule: vc });
+    const rec = createScopeEventRecorder();
+    // A legit refusal: target outside allowed_targets; descriptor == hashTarget(the real plaintext).
+    const event = rec.record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1",
+      scope_ref: sealed.scope_ref,
+      attempted: { action_class: "write", tool_name: "write_file", target_descriptor: hashTarget("/billing/secrets.env"), target: "/billing/secrets.env" },
+      matched_rule: "allowed_targets",
+      decision: "REFUSED",
+      prior_receipt_id: null
+    });
+    // Tamper ONLY the retained plaintext; descriptor + event_hash (which excludes the plaintext) are unchanged.
+    const tampered = { ...event, attempted: { ...event.attempted, target: "/checkout/cart.ts" } };
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref);
+    // The event_hash still validates (it never covered the plaintext) — the new binding check is what catches it.
+    expect(deriveScopeEventHash({ ...tampered })).toBe(event.event_hash);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "verified_context", sealed_scope: sealed, continuation, scope_events: [tampered] } })
+    ).toThrow(/does not hash to its committed/);
+
+    // Control: the untampered event exports cleanly in verified-context mode.
+    const ok = buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "verified_context", sealed_scope: sealed, continuation, scope_events: [event] } });
+    expect(ok.scope_events?.[0]?.attempted.target).toBe("/billing/secrets.env");
   });
 
   it("fails closed when the sealed scope_ref does not hash to its structural projection (tamper)", () => {

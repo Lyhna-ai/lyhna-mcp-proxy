@@ -449,7 +449,7 @@ export function resolveTargets(call: McpToolCall, extraKeys?: string[]): string[
   return out;
 }
 
-function hashTarget(target: string): string {
+export function hashTarget(target: string): string {
   return `sha256:${sha256Hex(target)}`;
 }
 
