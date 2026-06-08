@@ -157,4 +157,24 @@ describe("proxy-core scope gate", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ decision: "REFUSED", matched_rule: "max_steps" });
   });
+
+  it("fails closed for a scoped max_steps capsule with NO loop session (cannot enforce the bound)", async () => {
+    const up = upstream();
+    const bind = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const sealed = sealScopeCapsule({
+      capsule: { structural: { ...capsule.structural, bounds: { max_steps: 1 } }, sidecar: capsule.sidecar }
+    });
+    // Scoped proxy but NO loopSession: max_steps cannot be enforced -> refuse rather than ignore.
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      scope: { sealed, mode: "verified_context", recorder }
+    });
+    await expect(
+      proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } })
+    ).rejects.toMatchObject({ name: "BindGateError", decision: "FAIL_CLOSED" });
+    expect(bind.requests).toEqual([]);
+    expect(up.calls).toEqual([]);
+  });
 });

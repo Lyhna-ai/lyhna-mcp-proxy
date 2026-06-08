@@ -172,6 +172,28 @@ describe("checkScopeStructural — Verified Context Mode fail-closed on unresolv
     ).toBe("REFUSED");
   });
 
+  it("evaluates ALL declared target fields, not just the first (multi-target tools)", () => {
+    // write_file carries a second target under a capsule-declared key; the real out-of-lane write
+    // is in `destination` while `path` looks allowed. The gate must catch it.
+    const sealed = sealScopeCapsule({ capsule: capsule({ target_arg_keys: ["destination"] }) });
+    const refused = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/cart.ts", destination: "/billing/migrations/x.sql" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(refused.decision).toBe("REFUSED");
+    expect(refused.matched_rule).toBe("/billing/migrations/**");
+    expect(refused.target_plaintext).toBe("/billing/migrations/x.sql");
+
+    // Both targets in-lane -> IN_SCOPE.
+    const passed = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/checkout/cart.ts", destination: "/checkout/cart.bak.ts" } },
+      sealed,
+      { mode: "verified_context" }
+    );
+    expect(passed.decision).toBe("IN_SCOPE");
+  });
+
   it("does not require a target when the capsule declares no target rules", () => {
     const sealed = sealScopeCapsule({
       capsule: {
@@ -215,6 +237,27 @@ describe("checkScopeStructural — Proof Mode (content-blind)", () => {
     expect(refused.decision).toBe("REFUSED");
     expect(refused.matched_rule).toBe("target_descriptor_hashes");
     expect(refused.target_plaintext).toBeUndefined();
+  });
+
+  it("enforces membership for EVERY payload target (multi-target tools)", () => {
+    const allowed = "/checkout/cart.ts";
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: structural({
+          privacy_mode: "proof",
+          target_arg_keys: ["destination"],
+          target_descriptor_hashes: [targetHash(allowed)]
+        })
+      }
+    });
+    // `path` is a member but `destination` is not -> the whole call is refused.
+    const d = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: allowed, destination: "/billing/migrations/x.sql" } },
+      sealed,
+      { mode: "proof" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    expect(d.matched_rule).toBe("target_descriptor_hashes");
   });
 
   it("does NOT trust an agent-supplied target_descriptor untied to the forwarded payload (P1 round 4)", () => {

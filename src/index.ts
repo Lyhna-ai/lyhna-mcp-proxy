@@ -58,6 +58,7 @@ export {
   globToRegExp,
   projectScopeCapsuleForExport,
   resolveTargetPlaintext,
+  resolveTargets,
   sealScopeCapsule,
   SCOPE_CAPSULE_VERSION
 } from "./scope-capsule.js";

@@ -137,6 +137,16 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       // Declared step bound, enforced INSIDE the loop mutex (authoritative serialized count).
       const maxSteps = options.scope?.sealed.structural.bounds?.max_steps;
 
+      // FAIL CLOSED: max_steps is only enforceable against a loop's serialized count. A scoped
+      // call with a declared step bound but NO loop session cannot honor that bound, so it must be
+      // refused rather than silently ignore the sealed constraint.
+      if (maxSteps != null && !options.loopSession) {
+        throw new BindGateError(
+          "FAIL_CLOSED",
+          "Scoped max_steps requires a loop session to enforce the step bound; refusing a scoped no-loop call (fail closed)."
+        );
+      }
+
       try {
         bindResponse = options.loopSession
           ? // Loop path: bindToolCall stamps constraints.loop AND constraints.scope under one

@@ -347,19 +347,42 @@ export function deriveActionClass(call: McpToolCall, classMap?: Record<string, s
   return "other";
 }
 
-/** Resolve the plaintext target argument of a tool call, if any (Verified Context Mode). */
+/** Resolve the FIRST plaintext target argument of a tool call, if any. */
 export function resolveTargetPlaintext(call: McpToolCall, extraKeys?: string[]): string | undefined {
-  const args = call.arguments ?? {};
+  return resolveTargets(call, extraKeys)[0];
+}
+
+/**
+ * Resolve ALL distinct plaintext target arguments of a tool call (built-in keys + capsule-declared
+ * `target_arg_keys`). Multi-target tools (copy/move: `path` + `destination`, etc.) carry more than
+ * one target; the gate must evaluate EVERY one, never just the first — otherwise a call could put
+ * an allowed value in one key and the real out-of-lane target in another.
+ */
+export function resolveTargets(call: McpToolCall, extraKeys?: string[]): string[] {
+  const args = (call.arguments ?? {}) as Record<string, unknown>;
   const keys = extraKeys && extraKeys.length > 0 ? [...TARGET_ARG_KEYS, ...extraKeys] : TARGET_ARG_KEYS;
+  const out: string[] = [];
   for (const key of keys) {
-    const v = (args as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.length > 0) return v;
+    const v = args[key];
+    if (typeof v === "string" && v.length > 0 && !out.includes(v)) out.push(v);
   }
-  return undefined;
+  return out;
 }
 
 function hashTarget(target: string): string {
   return `sha256:${sha256Hex(target)}`;
+}
+
+/**
+ * Stamp descriptor over the resolved target set: a single target hashes to its own descriptor
+ * (so single-target descriptor-hash membership is unchanged); multiple targets hash to a stable
+ * set digest. Per-target membership/exclusion is still checked individually in the gate.
+ */
+function hashTargets(targets: string[]): string | null {
+  if (targets.length === 0) return null;
+  if (targets.length === 1) return hashTarget(targets[0]!);
+  const canonical = JSON.stringify([...new Set(targets)].sort());
+  return `sha256:${sha256Hex(canonical)}`;
 }
 
 /** Translate a glob (supporting `**` and `*`) to an anchored RegExp. */
@@ -445,19 +468,21 @@ export function checkScopeStructural(
     return refuse(action_class, call.toolName, null, `action class "${action_class}" not in allowed_action_classes`, "allowed_action_classes");
   }
 
+  // Resolve EVERY declared/built-in target the call carries — never just the first. A multi-target
+  // tool must have all of its targets inside the lane.
+  const targets = resolveTargets(call, s.target_arg_keys);
+  const target_descriptor = hashTargets(targets);
+  const targetless = (s.targetless_action_classes ?? []).includes(action_class);
+
   if (options.mode === "verified_context") {
-    // Verified Context Mode: read the plaintext target for richer exclusion / membership checks.
-    const target = resolveTargetPlaintext(call, s.target_arg_keys);
-    const target_descriptor = target ? hashTarget(target) : null;
     const hasTargetRules =
       (s.allowed_targets?.length ?? 0) > 0 || (s.forbidden_targets?.length ?? 0) > 0;
-    const targetless = (s.targetless_action_classes ?? []).includes(action_class);
 
     // FAIL CLOSED: when the capsule declares target-based rules, a call whose target cannot be
     // resolved (missing key, or a key this capsule did not declare) cannot be proven inside the
     // declared lane — refuse it before execution. The only exemption is an action class the
     // capsule explicitly declared targetless (e.g. run_tests). Declared, never inferred.
-    if (hasTargetRules && target === undefined && !targetless) {
+    if (hasTargetRules && targets.length === 0 && !targetless) {
       return refuse(
         action_class,
         call.toolName,
@@ -467,14 +492,16 @@ export function checkScopeStructural(
       );
     }
 
-    if (target !== undefined) {
+    // EVERY target must pass: any forbidden match, or any target outside a declared allow-list,
+    // refuses the whole call before execution.
+    for (const target of targets) {
       const forbidden = matchesAny(target, s.forbidden_targets);
       if (forbidden) {
         return {
           decision: "REFUSED",
           reason: `target matches forbidden_targets rule "${forbidden}"`,
           matched_rule: forbidden,
-          descriptor: { action_class, tool_name: call.toolName, target_descriptor },
+          descriptor: { action_class, tool_name: call.toolName, target_descriptor: hashTarget(target) },
           target_plaintext: target
         };
       }
@@ -483,7 +510,7 @@ export function checkScopeStructural(
           decision: "REFUSED",
           reason: `target is outside allowed_targets`,
           matched_rule: "allowed_targets",
-          descriptor: { action_class, tool_name: call.toolName, target_descriptor },
+          descriptor: { action_class, tool_name: call.toolName, target_descriptor: hashTarget(target) },
           target_plaintext: target
         };
       }
@@ -493,28 +520,22 @@ export function checkScopeStructural(
       decision: "IN_SCOPE",
       reason: "within declared structural lane",
       descriptor: { action_class, tool_name: call.toolName, target_descriptor },
-      target_plaintext: target
+      target_plaintext: targets.length === 1 ? targets[0] : targets.join(", ") || undefined
     };
   }
 
-  // Proof Mode: content-blind EXPORT. The descriptor is derived by HASHING the FORWARDED payload
-  // target tenant-side (then the plaintext is discarded — never retained or exported), so it is
-  // tied to the exact payload and can NOT be forged by a separate agent-supplied field. Target
-  // lanes are enforced by descriptor-hash membership against the sealed target_descriptor_hashes.
-  const target = resolveTargetPlaintext(call, s.target_arg_keys);
-  // Hash of the payload target. The plaintext `target` is used only to compute this hash and is
-  // intentionally NOT placed on the decision (no target_plaintext) — so it never reaches the
-  // sidecar event or export. Content-blind by construction.
-  const target_descriptor = target ? hashTarget(target) : null;
+  // Proof Mode: content-blind EXPORT. Descriptors are derived by HASHING the FORWARDED payload
+  // targets tenant-side (then the plaintext is discarded — never retained or exported), so they
+  // are tied to the exact payload and can NOT be forged by a separate agent-supplied field.
+  // EVERY target must be a member of the sealed target_descriptor_hashes.
   const hasTargetRules =
     (s.allowed_targets?.length ?? 0) > 0 ||
     (s.forbidden_targets?.length ?? 0) > 0 ||
     (s.target_descriptor_hashes?.length ?? 0) > 0;
-  const targetless = (s.targetless_action_classes ?? []).includes(action_class);
 
   if (hasTargetRules && !targetless) {
     // No payload target to tie a descriptor to -> cannot prove in-lane -> fail closed.
-    if (target === undefined) {
+    if (targets.length === 0) {
       return refuse(
         action_class,
         call.toolName,
@@ -534,8 +555,10 @@ export function checkScopeStructural(
         "proof_mode_target_unenforceable"
       );
     }
-    if (!s.target_descriptor_hashes.includes(target_descriptor!)) {
-      return refuse(action_class, call.toolName, target_descriptor, "payload target descriptor is not a declared member", "target_descriptor_hashes");
+    for (const target of targets) {
+      if (!s.target_descriptor_hashes.includes(hashTarget(target))) {
+        return refuse(action_class, call.toolName, hashTarget(target), "payload target descriptor is not a declared member", "target_descriptor_hashes");
+      }
     }
   }
   return {
