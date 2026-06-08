@@ -5,6 +5,7 @@ const hashTarget = (t: string) => "sha256:" + createHash("sha256").update(t, "ut
 
 import {
   amendScope,
+  canonicalScopeJson,
   assertContentBlind,
   assertScopeCapsuleStructuralOnly,
   assertScopeConstraintStructural,
@@ -482,6 +483,26 @@ describe("export identity binding + mode contract (fail closed)", () => {
         capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] }
       })
     ).toThrow(/not a declared member/);
+  });
+
+  it("fails closed when an imported scope is hash-consistent but carries an unsafe structural key (round 19)", () => {
+    // A leaky structural projection with an extra (non-blacklisted) key, plus a scope_ref that is
+    // the genuine hash of THAT projection — so recompute passes, but the closed allowlist must reject it.
+    const structural = {
+      capsule_type: "scope_capsule",
+      capsule_version: "scope-capsule/v1",
+      loop_id: "loop-1",
+      goal_hash: "a".repeat(64),
+      privacy_mode: "proof",
+      description: "fix checkout bug"
+    };
+    const scope_ref = "scope_v1:" + createHash("sha256").update(canonicalScopeJson(structural), "utf8").digest("hex");
+    const sealed = { scope_ref, sidecar_hash: null, structural, prior_scope_ref: null, sealed_at: "x" } as never;
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation, scope_events: [] } })
+    ).toThrow(/unknown field|closed allowlist/);
   });
 
   it("fails closed when a continuation amendment falsifies changed_fields (hides what changed)", () => {

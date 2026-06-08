@@ -22,7 +22,10 @@ import { createHash } from "node:crypto";
 
 import { verifyLoopChain, type LoopChainLink } from "./loop.js";
 import {
+  assertBoundsEnforceable,
   assertScopeCapsuleStructuralOnly,
+  assertScopeStructuralClosed,
+  assertScopeStructuralContentBlind,
   deriveScopeRef,
   deriveSidecarHash,
   projectScopeCapsuleForExport,
@@ -414,6 +417,14 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // sidecar_hash must recompute from its own projections (so a tampered JSON cannot keep a legit
     // ref while mutating rules), and every version must belong to THIS loop.
     for (const entry of history) {
+      // Re-apply the SEAL-TIME structural validation: the export reads scope material from JSON
+      // (bypassing sealScopeCapsule), so recomputing scope_ref alone proves only hash-consistency,
+      // not that the projection is safe to publish. Re-run the closed allowlist + content-blind +
+      // bounds checks so a hash-consistent but unsafe structural projection (e.g. a stray
+      // `description` key) can never ride into scope_ref or the content-blind Proof Mode export.
+      assertScopeStructuralClosed(entry.structural);
+      assertScopeStructuralContentBlind(entry.structural);
+      assertBoundsEnforceable(entry.structural.bounds);
       if (deriveScopeRef(entry.structural) !== entry.scope_ref) {
         throw new Error(
           `Sealed scope_ref ${entry.scope_ref} does not match the hash of its structural projection; ` +
