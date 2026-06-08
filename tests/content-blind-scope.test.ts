@@ -404,6 +404,45 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/changed_fields do not match/);
   });
 
+  it("fails closed when a receipt's stamped descriptor is out-of-scope for its scope_ref (round 16)", () => {
+    // A scope that allows only write_file / write — but a receipt stamps a valid scope_ref with an
+    // out-of-scope tool. Chain-membership passes; descriptor re-validation must reject it.
+    const scoped = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: "loop-1",
+          goal_hash: "a".repeat(64),
+          privacy_mode: "proof",
+          allowed_action_classes: ["write"],
+          allowed_tools: ["write_file"]
+        }
+      }
+    });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "exfiltrate", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: {
+          loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash },
+          scope: { scope_ref: scoped.scope_ref, action_class: "write", tool_name: "exfiltrate", prior_receipt_id: null }
+        }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, scoped.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: scoped, continuation, scope_events: [] } })
+    ).toThrow(/not allowed under scope/);
+  });
+
   it("fails closed when a receipt carries a scope_ref outside the exported scope chain", () => {
     const sealed = sealScopeCapsule({ capsule });
     const goal_hash = "a".repeat(64);

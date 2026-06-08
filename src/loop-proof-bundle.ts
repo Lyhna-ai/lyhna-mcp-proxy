@@ -443,6 +443,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     const original = history[0]!;
     const finalScope = history[history.length - 1]!;
     const chainRefs = new Set<string>(history.map((h) => h.scope_ref));
+    const byRef = new Map(history.map((h) => [h.scope_ref, h]));
 
     // FAIL CLOSED (identity binding): the declared sealed scope must BE the verified final version,
     // the continuation must inherit from the verified original and end at the verified final, its
@@ -531,22 +532,69 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       }
     }
 
-    // FAIL CLOSED (scope-stamp binding): for a SCOPED export, every in-loop consequential receipt
-    // must carry a `constraints.scope.scope_ref` that is in the VERIFIED chain. A receipt stamp
-    // outside the chain, OR a consequential receipt with NO scope stamp at all (so a legacy/no-scope
-    // chain can't be dressed up with a capsule), fails closed. The terminal `loop_close` is exempt
-    // (it may be intentionally unstamped); if it does carry a stamp, the stamp must still be in-chain.
+    // FAIL CLOSED (scope-stamp binding + re-validation): for a SCOPED export, every in-loop
+    // consequential receipt must carry a `constraints.scope.scope_ref` in the VERIFIED chain, AND
+    // the stamped descriptor (action_class / tool_name / target_descriptor) must actually be IN-LANE
+    // for THAT referenced scope version's structural rules — not merely point at a valid scope_ref.
+    // Otherwise a receipt stamped with the right scope_ref but an out-of-scope tool/target could be
+    // packaged as an in-scope proof. A consequential receipt with NO scope stamp also fails closed
+    // (a legacy/no-scope chain can't be dressed up with a capsule). The terminal `loop_close` is
+    // exempt (it may be intentionally unstamped); if it does carry a stamp it is still re-validated.
     input.receipts.forEach((r, i) => {
-      const c = r.constraints as { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: unknown } } | undefined;
+      const c = r.constraints as
+        | {
+            loop?: unknown;
+            loop_close?: unknown;
+            scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown };
+          }
+        | undefined;
       const isTerminal = isRecord(c?.loop_close);
       const isInLoop = isRecord(c?.loop) && !isTerminal;
-      const sref = c?.scope?.scope_ref;
+      const stamp = c?.scope;
+      const sref = stamp?.scope_ref;
       if (typeof sref === "string") {
-        if (!chainRefs.has(sref)) {
+        const version = byRef.get(sref);
+        if (!version) {
           throw new Error(
             `Receipt ${describe(r, i)} carries scope_ref ${sref} outside the exported scope/amendment ` +
               `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
           );
+        }
+        // Re-validate the stamped descriptor against the referenced version's structural lane.
+        const s = version.structural;
+        const action_class = typeof stamp?.action_class === "string" ? stamp.action_class : undefined;
+        const tool_name = typeof stamp?.tool_name === "string" ? stamp.tool_name : undefined;
+        const target_descriptor = typeof stamp?.target_descriptor === "string" ? stamp.target_descriptor : null;
+
+        if (s.allowed_tools && s.allowed_tools.length > 0) {
+          if (tool_name === undefined || !s.allowed_tools.includes(tool_name)) {
+            throw new Error(
+              `Receipt ${describe(r, i)} stamped tool_name ${JSON.stringify(tool_name)} is not allowed under ` +
+                `scope ${sref} (fail closed).`
+            );
+          }
+        }
+        if (s.allowed_action_classes && s.allowed_action_classes.length > 0) {
+          if (action_class === undefined || !s.allowed_action_classes.includes(action_class)) {
+            throw new Error(
+              `Receipt ${describe(r, i)} stamped action_class ${JSON.stringify(action_class)} is not allowed under ` +
+                `scope ${sref} (fail closed).`
+            );
+          }
+        }
+        // Content-blind target re-validation: a receipt only carries the target HASH, so the lane
+        // can be re-checked from the export only when the referenced scope declares
+        // target_descriptor_hashes. A target-bearing stamp must then be a declared member; a
+        // declared-targetless action class is exempt. (For globs-only scopes the target can't be
+        // re-derived from a hash — the runtime gate already enforced it; this is an inherent
+        // content-blind limit, not a regression.)
+        const targetless = action_class !== undefined && (s.targetless_action_classes ?? []).includes(action_class);
+        if ((s.target_descriptor_hashes?.length ?? 0) > 0 && !targetless) {
+          if (target_descriptor === null || !s.target_descriptor_hashes!.includes(target_descriptor)) {
+            throw new Error(
+              `Receipt ${describe(r, i)} stamped target_descriptor is not a declared member under scope ${sref} (fail closed).`
+            );
+          }
         }
       } else if (isInLoop) {
         throw new Error(
