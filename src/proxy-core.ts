@@ -1,7 +1,7 @@
 import type { BindClient, BindRequest, BindResponse } from "./bind.js";
 import { buildBindRequest } from "./bind.js";
 import { decideForward, type ForwardDecision } from "./enforcement.js";
-import { mergeScopeConstraint, type LoopSession, type ScopeConstraint } from "./loop.js";
+import { LoopStepBoundError, mergeScopeConstraint, type LoopSession, type ScopeConstraint } from "./loop.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 import {
   checkScopeStructural,
@@ -99,10 +99,7 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         const { sealed, mode, recorder } = options.scope;
         const decision = checkScopeStructural(call, sealed, {
           mode,
-          classMap: options.scope.classMap,
-          // Steps already taken in this loop, for the declared max_steps bound (best-effort
-          // pre-bind read; consequential steps are serialized in Gate 1, so it is exact there).
-          steps: options.loopSession?.actionCount
+          classMap: options.scope.classMap
         });
 
         if (decision.decision !== "IN_SCOPE") {
@@ -137,14 +134,19 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
 
       let bindResponse: BindResponse;
 
+      // Declared step bound, enforced INSIDE the loop mutex (authoritative serialized count).
+      const maxSteps = options.scope?.sealed.structural.bounds?.max_steps;
+
       try {
         bindResponse = options.loopSession
           ? // Loop path: bindToolCall stamps constraints.loop AND constraints.scope under one
-            // mutex with a single prior_receipt_id (see LoopSession.bindToolCall).
+            // mutex with a single prior_receipt_id, and enforces max_steps against the serialized
+            // count before binding (see LoopSession.bindToolCall).
             await options.loopSession.bindToolCall(
               bindRequest,
               (request) => options.bindClient.bind(request),
-              scopeStamp
+              scopeStamp,
+              maxSteps
             )
           : // No-loop path: no chain to advance, so stamp the scope anchor from the declared
             // prior reference (if any) and bind directly.
@@ -157,6 +159,35 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
                 : bindRequest
             );
       } catch (error) {
+        // A step-bound violation is a SCOPE refusal discovered under the mutex: attest it as a
+        // sidecar scope event and surface it as a ScopeGateError (the tool never executed).
+        if (error instanceof LoopStepBoundError && options.scope && scopeStamp) {
+          const { sealed, recorder } = options.scope;
+          const stepDecision: ScopeDecision = {
+            decision: "REFUSED",
+            reason: error.message,
+            matched_rule: "max_steps",
+            descriptor: {
+              action_class: scopeStamp.action_class ?? "",
+              tool_name: scopeStamp.tool_name ?? "",
+              target_descriptor: scopeStamp.target_descriptor ?? null
+            }
+          };
+          const event = recorder.record({
+            event_type: "scope_refusal",
+            loop_id: sealed.structural.loop_id,
+            scope_ref: sealed.scope_ref,
+            attempted: {
+              action_class: scopeStamp.action_class,
+              tool_name: scopeStamp.tool_name,
+              target_descriptor: scopeStamp.target_descriptor
+            },
+            matched_rule: "max_steps",
+            decision: "REFUSED",
+            prior_receipt_id: options.loopSession?.priorReceiptId ?? null
+          });
+          throw new ScopeGateError(stepDecision, event);
+        }
         throw new BindGateError(
           "FAIL_CLOSED",
           "Bind failed before upstream execution; call was not forwarded.",

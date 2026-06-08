@@ -10,6 +10,7 @@ import {
   deriveGoalHash,
   loadLoopContextFromEnv,
   LoopSession,
+  LoopStepBoundError,
   mergeLoopConstraint,
   stripAuthorityTier,
   verifyLoopChain,
@@ -578,5 +579,28 @@ describe("LoopSession.bindToolCall scope stamping (Capsule Gate 1)", () => {
     }
     // Three distinct anchors (null, r_1, r_2) — the chain serialized cleanly.
     expect(priors.size).toBe(3);
+  });
+
+  it("enforces max_steps inside the mutex: the over-limit call throws LoopStepBoundError and never binds", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_ms", goal: "g" }));
+    const bind = echoBind();
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1); // step 1: ok
+    await expect(
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1)
+    ).rejects.toBeInstanceOf(LoopStepBoundError);
+    expect(bind.seen).toHaveLength(1); // the 2nd call never bound
+  });
+
+  it("under CONCURRENCY, max_steps:1 admits exactly one bind; the rest throw (no pre-bind race)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_msc", goal: "g" }));
+    const bind = echoBind();
+    const results = await Promise.allSettled([
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1)
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+    expect(bind.seen).toHaveLength(1); // exactly one bind crossed the bound
   });
 });

@@ -27,6 +27,7 @@ export {
   loadLoopCloseTuning,
   loadLoopContextFromEnv,
   LoopSession,
+  LoopStepBoundError,
   mergeLoopConstraint,
   mergeScopeConstraint,
   stripAuthorityTier,

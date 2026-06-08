@@ -70,6 +70,21 @@ const LOOP_CLOSE_ACTION_TYPE = "loop_close";
 const LOOP_INTENT_VERSION = "loop_v1";
 
 /**
+ * Thrown by LoopSession.bindToolCall when a scoped loop's declared `max_steps` bound is reached.
+ * Raised INSIDE the loop mutex against the authoritative serialized count, before any bind — so
+ * the offending step never executes. The adapter catches it to attest the scope refusal.
+ */
+export class LoopStepBoundError extends Error {
+  constructor(
+    readonly maxSteps: number,
+    readonly stepsTaken: number
+  ) {
+    super(`Loop step bound exceeded: max_steps=${maxSteps}, steps_taken=${stepsTaken}`);
+    this.name = "LoopStepBoundError";
+  }
+}
+
+/**
  * goal_hash is sha256(utf8(goal)) hex-encoded, with NO normalization or trimming —
  * byte-equivalent to the canonical @lyhna/bind computeGoalHash. It is carried (and
  * signed) inside every link's constraints.loop so verifiers can confirm a chain
@@ -271,15 +286,26 @@ export class LoopSession {
    * When `scope` is supplied (Capsule Gate 1), `constraints.scope` is stamped INSIDE the same
    * mutex with the SAME `prior_receipt_id` as `constraints.loop`, so a concurrent scoped call
    * cannot leave the scope anchor citing a stale predecessor.
+   *
+   * When `maxSteps` is supplied, the declared step bound is enforced INSIDE the mutex against the
+   * authoritative (serialized) action count, BEFORE binding — so two concurrent calls cannot both
+   * pass a pre-bind count read and then both execute. On violation it throws LoopStepBoundError
+   * and never binds (the tool does not run); the caller attests the refusal.
    */
   bindToolCall(
     request: BindRequest,
     bind: LoopBindFn,
-    scope?: Omit<ScopeConstraint, "prior_receipt_id">
+    scope?: Omit<ScopeConstraint, "prior_receipt_id">,
+    maxSteps?: number
   ): Promise<BindResponse> {
     return this.runExclusive(async () => {
       if (this.closedFlag) {
         throw new Error("Loop already closed; refusing in-loop bind (fail closed).");
+      }
+
+      // Authoritative step-bound check: serialized count, evaluated before any bind/forward.
+      if (maxSteps != null && this.actionCountValue >= maxSteps) {
+        throw new LoopStepBoundError(maxSteps, this.actionCountValue);
       }
 
       const prior = this.priorReceiptIdValue;

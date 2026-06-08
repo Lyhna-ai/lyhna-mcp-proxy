@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createLoopContext,
   createProxyCore,
   createScopeEventRecorder,
+  LoopSession,
   sealScopeCapsule,
   ScopeGateError,
   type BindClient,
@@ -128,5 +130,31 @@ describe("proxy-core scope gate", () => {
     ).resolves.toEqual({ ok: true });
     expect(bind.requests).toHaveLength(1);
     expect(bind.requests[0]!.constraints?.scope).toBeUndefined();
+  });
+
+  it("enforces max_steps through the full proxy path: the over-limit call is an attested ScopeGateError", async () => {
+    const up = upstream();
+    const bind = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const sealed = sealScopeCapsule({
+      capsule: { structural: { ...capsule.structural, bounds: { max_steps: 1 } }, sidecar: capsule.sidecar }
+    });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "fix checkout bug" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder }
+    });
+    const call: McpToolCall = { toolName: "write_file", arguments: { path: "/checkout/cart.ts" } };
+
+    await expect(proxy.callTool(call)).resolves.toEqual({ ok: true }); // step 1 forwards
+    await expect(proxy.callTool(call)).rejects.toBeInstanceOf(ScopeGateError); // step 2 over the bound
+
+    // The 2nd call never reached the upstream, and the refusal is attested with matched_rule max_steps.
+    expect(up.calls).toHaveLength(1);
+    const events = recorder.scopeEventsForLoop("loop-1");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ decision: "REFUSED", matched_rule: "max_steps" });
   });
 });

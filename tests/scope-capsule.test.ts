@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -186,28 +187,53 @@ describe("checkScopeStructural — Verified Context Mode fail-closed on unresolv
   });
 });
 
-describe("checkScopeStructural — Proof Mode (content-blind)", () => {
-  it("does not read a plaintext target; degrades to descriptor-hash membership", () => {
-    const hash = "sha256:" + "b".repeat(64);
-    const sealed = sealScopeCapsule({
-      capsule: { structural: structural({ privacy_mode: "proof", target_descriptor_hashes: [hash] }) }
-    });
-    const refused = checkScopeStructural(
-      { toolName: "write_file", arguments: { path: "/billing/migrations/x.sql" } },
-      sealed,
-      { mode: "proof" }
-    );
-    // Proof Mode never reads the plaintext path; with a required descriptor hash absent, it refuses.
-    expect(refused.decision).toBe("REFUSED");
-    expect(refused.target_plaintext).toBeUndefined();
+const targetHash = (t: string) => "sha256:" + createHash("sha256").update(t, "utf8").digest("hex");
 
+describe("checkScopeStructural — Proof Mode (content-blind)", () => {
+  it("derives the descriptor from the PAYLOAD target, hashes it, discards plaintext, and enforces membership", () => {
+    const allowedPath = "/checkout/cart.ts";
+    const sealed = sealScopeCapsule({
+      capsule: { structural: structural({ privacy_mode: "proof", target_descriptor_hashes: [targetHash(allowedPath)] }) }
+    });
+
+    // Payload target hashes to a declared member -> IN_SCOPE; plaintext is discarded (content-blind).
     const passed = checkScopeStructural(
-      { toolName: "write_file", arguments: { target_descriptor: hash } },
+      { toolName: "write_file", arguments: { path: allowedPath } },
       sealed,
       { mode: "proof" }
     );
     expect(passed.decision).toBe("IN_SCOPE");
     expect(passed.target_plaintext).toBeUndefined();
+    expect(passed.descriptor.target_descriptor).toBe(targetHash(allowedPath));
+
+    // A different payload target hashes to a non-member -> REFUSED.
+    const refused = checkScopeStructural(
+      { toolName: "write_file", arguments: { path: "/billing/migrations/x.sql" } },
+      sealed,
+      { mode: "proof" }
+    );
+    expect(refused.decision).toBe("REFUSED");
+    expect(refused.matched_rule).toBe("target_descriptor_hashes");
+    expect(refused.target_plaintext).toBeUndefined();
+  });
+
+  it("does NOT trust an agent-supplied target_descriptor untied to the forwarded payload (P1 round 4)", () => {
+    const allowedPath = "/checkout/cart.ts";
+    const sealed = sealScopeCapsule({
+      capsule: { structural: structural({ privacy_mode: "proof", target_descriptor_hashes: [targetHash(allowedPath)] }) }
+    });
+    // Agent sends the ALLOWED hash as a field but a DIFFERENT real target to the tool — the gate
+    // ties the descriptor to the payload (/billing...), so this must REFUSE, not pass.
+    const d = checkScopeStructural(
+      {
+        toolName: "write_file",
+        arguments: { path: "/billing/migrations/x.sql", target_descriptor: targetHash(allowedPath) }
+      },
+      sealed,
+      { mode: "proof" }
+    );
+    expect(d.decision).toBe("REFUSED");
+    expect(d.matched_rule).toBe("target_descriptor_hashes");
   });
 
   it("FAILS CLOSED when target rules are declared but no descriptor hashes back them (P1 round 2)", () => {
@@ -250,16 +276,12 @@ describe("scope bounds (max_steps enforced; max_writes/max_budget rejected at se
     expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: 2 } }) })).not.toThrow();
   });
 
-  it("FAILS CLOSED when the step count reaches the declared max_steps", () => {
-    const sealed = sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: 2 } }) });
-    const call = { toolName: "write_file", arguments: { path: "/checkout/x.ts" } };
-    // 0 and 1 steps taken -> still in lane; 2 steps taken -> the 3rd would exceed, refuse.
-    expect(checkScopeStructural(call, sealed, { mode: "verified_context", steps: 0 }).decision).toBe("IN_SCOPE");
-    expect(checkScopeStructural(call, sealed, { mode: "verified_context", steps: 1 }).decision).toBe("IN_SCOPE");
-    const refused = checkScopeStructural(call, sealed, { mode: "verified_context", steps: 2 });
-    expect(refused.decision).toBe("REFUSED");
-    expect(refused.matched_rule).toBe("max_steps");
+  it("rejects a non-integer / negative max_steps", () => {
+    expect(() => sealScopeCapsule({ capsule: capsule({ bounds: { max_steps: -1 } }) })).toThrow(/max_steps/);
   });
+
+  // The max_steps bound is stateful, so it is enforced INSIDE the loop mutex against the
+  // serialized action count — see tests/loop.test.ts (LoopStepBoundError, including concurrency).
 });
 
 describe("projectScopeCapsuleForExport", () => {

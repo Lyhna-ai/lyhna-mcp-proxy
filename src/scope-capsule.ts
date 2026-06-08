@@ -409,17 +409,24 @@ function matchesAny(target: string, globs?: string[]): string | undefined {
  * The adapter-side structural scope check. Runs PRE-BIND. Returns a decision plus the structural
  * descriptor to stamp (IN_SCOPE) or attest (REFUSED/ESCALATED).
  *
- * Verified Context Mode reads the plaintext target for richer allowed/forbidden glob checks.
- * Proof Mode degrades to tool / action-class / explicit descriptor-hash membership and does NOT
- * read plaintext targets (no readable blast-radius guidance promised).
+ * Verified Context Mode reads the plaintext target for richer allowed/forbidden glob checks and
+ * RETAINS it (sidecar event/export). Proof Mode also resolves the FORWARDED payload target
+ * tenant-side, but only to HASH it (then discards the plaintext — content-blind export), and
+ * enforces target lanes by descriptor-hash membership. Neither mode trusts a separate
+ * agent-supplied descriptor field; the descriptor is always tied to the actual payload.
  *
  * Declared, never inferred: a check only fails on an EXPLICIT declared rule (a forbidden match,
- * a non-empty allow-list miss, or a missing required descriptor in Proof Mode).
+ * a non-empty allow-list miss, an unresolved target, or a descriptor-hash miss).
+ *
+ * NOTE: the step bound (`bounds.max_steps`) is stateful (it depends on the loop's advancing
+ * action count), so it is enforced INSIDE the loop mutex (LoopSession.bindToolCall), NOT here —
+ * a pre-bind read of the count races concurrent calls. This function checks only the structural
+ * lane (tool/class/target).
  */
 export function checkScopeStructural(
   call: McpToolCall,
   sealed: SealedScope,
-  options: { mode: ScopePrivacyMode; classMap?: Record<string, string>; steps?: number }
+  options: { mode: ScopePrivacyMode; classMap?: Record<string, string> }
 ): ScopeDecision {
   const s = sealed.structural;
   const action_class = deriveActionClass(call, options.classMap);
@@ -436,23 +443,6 @@ export function checkScopeStructural(
     !s.allowed_action_classes.includes(action_class)
   ) {
     return refuse(action_class, call.toolName, null, `action class "${action_class}" not in allowed_action_classes`, "allowed_action_classes");
-  }
-
-  // 3) Step bound (both modes). `options.steps` is the count of consequential steps already taken
-  // in this loop; a step that would exceed the declared max_steps fails closed before execution.
-  // (Consequential steps are serialized in Gate 1, so the observed count is exact.)
-  if (
-    s.bounds?.max_steps != null &&
-    options.steps != null &&
-    options.steps >= s.bounds.max_steps
-  ) {
-    return refuse(
-      action_class,
-      call.toolName,
-      null,
-      `step bound exceeded: max_steps=${s.bounds.max_steps}, steps_taken=${options.steps}`,
-      "max_steps"
-    );
   }
 
   if (options.mode === "verified_context") {
@@ -507,13 +497,15 @@ export function checkScopeStructural(
     };
   }
 
-  // Proof Mode: content-blind — no plaintext target is read, so the ONLY enforceable target
-  // check is explicit descriptor-hash membership. When the sealed scope declares ANY target rule
-  // (descriptor hashes OR plaintext allowed/forbidden globs) and the action is not declared
-  // targetless, a matching descriptor hash is REQUIRED. A capsule that declares only plaintext
-  // target globs — which Proof Mode cannot evaluate — without target_descriptor_hashes cannot be
-  // enforced content-blind, so it FAILS CLOSED rather than degrading to tool/class-only.
-  const declaredHash = proofModeDescriptorHash(call);
+  // Proof Mode: content-blind EXPORT. The descriptor is derived by HASHING the FORWARDED payload
+  // target tenant-side (then the plaintext is discarded — never retained or exported), so it is
+  // tied to the exact payload and can NOT be forged by a separate agent-supplied field. Target
+  // lanes are enforced by descriptor-hash membership against the sealed target_descriptor_hashes.
+  const target = resolveTargetPlaintext(call, s.target_arg_keys);
+  // Hash of the payload target. The plaintext `target` is used only to compute this hash and is
+  // intentionally NOT placed on the decision (no target_plaintext) — so it never reaches the
+  // sidecar event or export. Content-blind by construction.
+  const target_descriptor = target ? hashTarget(target) : null;
   const hasTargetRules =
     (s.allowed_targets?.length ?? 0) > 0 ||
     (s.forbidden_targets?.length ?? 0) > 0 ||
@@ -521,32 +513,37 @@ export function checkScopeStructural(
   const targetless = (s.targetless_action_classes ?? []).includes(action_class);
 
   if (hasTargetRules && !targetless) {
-    if (!s.target_descriptor_hashes || s.target_descriptor_hashes.length === 0) {
+    // No payload target to tie a descriptor to -> cannot prove in-lane -> fail closed.
+    if (target === undefined) {
       return refuse(
         action_class,
         call.toolName,
         null,
+        `target-based scope rules are declared but no target could be resolved for "${call.toolName}" (fail closed)`,
+        "unresolved_target"
+      );
+    }
+    // Content-blind enforcement requires the capsule to declare the allowed descriptor hashes;
+    // plaintext globs cannot be evaluated in Proof Mode, so absent hashes it FAILS CLOSED.
+    if (!s.target_descriptor_hashes || s.target_descriptor_hashes.length === 0) {
+      return refuse(
+        action_class,
+        call.toolName,
+        target_descriptor,
         "Proof Mode cannot evaluate plaintext target rules; declare target_descriptor_hashes for content-blind enforcement (fail closed)",
         "proof_mode_target_unenforceable"
       );
     }
-    if (!declaredHash) {
-      return refuse(action_class, call.toolName, null, "Proof Mode requires an explicit target_descriptor hash; none supplied", "target_descriptor_hashes");
-    }
-    if (!s.target_descriptor_hashes.includes(declaredHash)) {
-      return refuse(action_class, call.toolName, declaredHash, "target descriptor hash is not a declared member", "target_descriptor_hashes");
+    if (!s.target_descriptor_hashes.includes(target_descriptor!)) {
+      return refuse(action_class, call.toolName, target_descriptor, "payload target descriptor is not a declared member", "target_descriptor_hashes");
     }
   }
   return {
     decision: "IN_SCOPE",
     reason: "within declared structural lane (content-blind)",
-    descriptor: { action_class, tool_name: call.toolName, target_descriptor: declaredHash }
+    descriptor: { action_class, tool_name: call.toolName, target_descriptor }
+    // No target_plaintext: Proof Mode discards the plaintext after hashing (content-blind).
   };
-}
-
-function proofModeDescriptorHash(call: McpToolCall): string | null {
-  const v = (call.arguments as Record<string, unknown> | undefined)?.target_descriptor;
-  return typeof v === "string" && v.length > 0 ? v : null;
 }
 
 function refuse(
