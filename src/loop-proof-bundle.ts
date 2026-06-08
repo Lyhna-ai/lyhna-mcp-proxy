@@ -21,6 +21,18 @@
 import { createHash } from "node:crypto";
 
 import { verifyLoopChain, type LoopChainLink } from "./loop.js";
+import {
+  assertScopeCapsuleStructuralOnly,
+  projectScopeCapsuleForExport,
+  type ScopeCapsuleExport,
+  type ScopePrivacyMode,
+  type SealedScope
+} from "./scope-capsule.js";
+import { projectScopeEvent, type ScopeEvent } from "./scope-event-recorder.js";
+import {
+  projectContinuationProofMode,
+  type ContinuationCapsule
+} from "./continuation-capsule.js";
 
 /** A signed receipt payload (loose — we read fields, never reshape them). */
 export type ProofReceipt = Record<string, unknown> & {
@@ -85,6 +97,21 @@ export type LoopProofBundle = {
   };
   verdict: AdvisoryVerdict;
   graph_node_file: "graph-node.json";
+  /**
+   * Capsule Gate 1 references (ADDITIVE; present only for a scoped loop). The scope capsule and
+   * continuation capsule live in sibling files; scope refusals/escalations are referenced by
+   * `event_hash`. The signed `receipts.json` chain is untouched — cold verification is unaffected.
+   */
+  capsule?: BundleCapsuleSection;
+};
+
+export type BundleCapsuleSection = {
+  mode: ScopePrivacyMode;
+  scope_ref: string;
+  scope_capsule_file: "scope-capsule.json";
+  continuation_capsule_file: "continuation-capsule.json";
+  /** Attested scope events, referenced by hash (the halt is visible/verifiable here). */
+  scope_events: { count: number; event_hashes: string[] };
 };
 
 export type AuthorityContextGraphNode = {
@@ -115,6 +142,18 @@ export type BuildLoopProofBundleInput = {
    * When omitted, the canonical `serializeReceipts(receipts)` form is used.
    */
   receipts_text?: string;
+  /**
+   * Optional Capsule Gate 1 material (ADDITIVE). When present, the build emits the scope capsule
+   * + continuation capsule projections (mode-appropriate), references scope events by hash, and
+   * renders proof-card.md / verify-instructions.md. When absent, output is byte-for-byte the
+   * legacy 4-artifact bundle.
+   */
+  capsule?: {
+    mode: ScopePrivacyMode;
+    sealed_scope: SealedScope;
+    continuation: ContinuationCapsule;
+    scope_events?: ScopeEvent[];
+  };
 };
 
 export type BuiltLoopProofBundle = {
@@ -123,6 +162,12 @@ export type BuiltLoopProofBundle = {
   receipts_json: string;
   graph_node: AuthorityContextGraphNode;
   graph_node_markdown: string;
+  // --- Capsule Gate 1 artifacts (present only when input.capsule was supplied) ---
+  scope_capsule?: ScopeCapsuleExport;
+  continuation_capsule?: ContinuationCapsule;
+  scope_events?: ScopeEvent[];
+  proof_card_markdown?: string;
+  verify_instructions_markdown?: string;
 };
 
 const RECEIPT_VERSION = "LYHNA_RECEIPT_V2";
@@ -166,7 +211,22 @@ export function assertExternalScope(receipts: ProofReceipt[]): void {
 // included because the loop_close bind defaults its `intent` to the raw goal
 // (buildLoopCloseRequest), and a free-text `goal` is an explicit leak. The structured
 // derivatives `goal_hash` / `intent_version` are NOT goal-bearing and are not matched.
-const PLAINTEXT_GOAL_KEYS = new Set(["goal", "intent"]);
+// `goal` / `intent` carry the plaintext goal. The compound `*_steps` / `*_questions` / etc. keys
+// are unambiguous plaintext PLAN markers (Scope Capsule sidecar fields) that must never appear in
+// a signed receipt — adding them extends content-blindness from "no goal" to "no plan" on the
+// gate/core path (criterion 15.8). They cannot occur in a normal external receipt, so this adds
+// no false positives.
+const PLAINTEXT_GOAL_KEYS = new Set([
+  "goal",
+  "intent",
+  "goal_summary",
+  "planned_steps",
+  "settled_decisions",
+  "open_questions",
+  "next_actions",
+  "success_criteria",
+  "source_pointers"
+]);
 
 /**
  * Content-blind enforcement — the content counterpart to external-scope identity
@@ -313,10 +373,58 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     graph_node_file: "graph-node.json"
   };
 
+  // Capsule Gate 1 (additive): project the scope + continuation capsules and reference the
+  // attested scope events. Only runs when capsule material was supplied, so the legacy
+  // 4-artifact bundle is byte-for-byte unchanged for a non-scoped loop.
+  let scope_capsule: ScopeCapsuleExport | undefined;
+  let continuation_capsule: ContinuationCapsule | undefined;
+  let scope_events: ScopeEvent[] | undefined;
+  let proof_card_markdown: string | undefined;
+  let verify_instructions_markdown: string | undefined;
+
+  if (input.capsule) {
+    const mode = input.capsule.mode;
+    scope_capsule = projectScopeCapsuleForExport(input.capsule.sealed_scope, mode);
+    continuation_capsule =
+      mode === "verified_context"
+        ? input.capsule.continuation
+        : projectContinuationProofMode(input.capsule.continuation);
+    scope_events = (input.capsule.scope_events ?? []).map((e) => projectScopeEvent(e, mode));
+
+    // Proof Mode is content-blind: the scope-capsule.json must be structural-only. Fail closed.
+    if (mode === "proof") {
+      assertScopeCapsuleStructuralOnly(scope_capsule);
+    }
+
+    bundle.capsule = {
+      mode,
+      scope_ref: input.capsule.sealed_scope.scope_ref,
+      scope_capsule_file: "scope-capsule.json",
+      continuation_capsule_file: "continuation-capsule.json",
+      scope_events: {
+        count: scope_events.length,
+        event_hashes: scope_events.map((e) => e.event_hash)
+      }
+    };
+
+    proof_card_markdown = renderProofCardMarkdown(bundle, continuation_capsule);
+    verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle);
+  }
+
   const graph_node = buildGraphNode(bundle);
   const graph_node_markdown = renderGraphNodeMarkdown(graph_node);
 
-  return { bundle, receipts_json, graph_node, graph_node_markdown };
+  return {
+    bundle,
+    receipts_json,
+    graph_node,
+    graph_node_markdown,
+    scope_capsule,
+    continuation_capsule,
+    scope_events,
+    proof_card_markdown,
+    verify_instructions_markdown
+  };
 }
 
 /** Authority Context Graph node describing this one verified loop. */
@@ -364,6 +472,88 @@ export function renderGraphNodeMarkdown(node: AuthorityContextGraphNode): string
     `> \`lyhna-verify --chain receipts.json\` (trusts only the pinned public key).`,
     ``
   ].join("\n");
+}
+
+/**
+ * proof-card.md — a one-page human summary of the proof pack (Capsule Gate 1). Content-blind:
+ * carries goal_hash, scope_ref, structural counts, and attested scope-event hashes — never the
+ * plaintext goal or plan.
+ */
+export function renderProofCardMarkdown(
+  bundle: LoopProofBundle,
+  continuation: ContinuationCapsule
+): string {
+  const cap = bundle.capsule;
+  const lines = [
+    `# Loop Proof Card`,
+    ``,
+    `| field | value |`,
+    `| --- | --- |`,
+    `| loop_id | \`${bundle.loop.loop_id}\` |`,
+    `| goal_hash | \`${bundle.loop.goal_hash}\` |`,
+    `| sealed | **${bundle.loop.sealed ? "SEALED ✓" : "UNSEALED ✗"}** |`,
+    `| action_count | ${bundle.loop.action_count} |`,
+    `| receipt_count | ${bundle.loop.receipt_count} |`,
+    `| scope_ref | \`${cap?.scope_ref ?? "—"}\` |`,
+    `| mode | \`${cap?.mode ?? "—"}\` |`,
+    `| attested scope events | ${cap?.scope_events.count ?? 0} |`,
+    `| amendments | ${continuation.what_changed.length} |`,
+    `| trust_root.key_id | \`${bundle.trust_root.key_id}\` |`,
+    `| content_digest | \`sha256:${bundle.export.content_digest.value}\` |`,
+    ``,
+    `> Content-blind: only \`goal_hash\` / \`scope_ref\` / hashes are carried — never the`,
+    `> plaintext goal or plan. Verify independently: see \`verify-instructions.md\`.`,
+    ``
+  ];
+  if ((cap?.scope_events.count ?? 0) > 0) {
+    lines.push(`## Attested scope refusals / escalations`, ``);
+    for (const e of continuation.scope_events) {
+      lines.push(`- **${e.decision}** ${e.event_type} (rule: ${e.matched_rule ?? "—"}) — \`${e.event_hash}\``);
+    }
+    lines.push(``);
+  }
+  return lines.join("\n");
+}
+
+/** verify-instructions.md — how to cold-verify the pack with the independent verifier. */
+export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): string {
+  const lines = [
+    `# Verify Instructions`,
+    ``,
+    `This proof pack is verified by the independent, trust-no-one \`lyhna-verify\`. The adapter's`,
+    `embedded verdict is advisory; re-run the verifier to trust it.`,
+    ``,
+    `## 1. Cold-verify the signed receipt chain`,
+    ``,
+    `\`\`\``,
+    `lyhna-verify --chain receipts.json --json`,
+    `\`\`\``,
+    ``,
+    `Expect a single chain with \`sealed: true\`, continuity/loop_id/goal_hash consistency, and`,
+    `\`all_receipts_verified: true\` for a real signed chain (a synthetic/unsigned chain reports`,
+    `\`all_receipts_verified: false\` — crypto fail-by-absence, by design).`,
+    ``,
+    `## 2. Confirm the content digest`,
+    ``,
+    `\`bundle.json\`'s \`export.content_digest.value\` is sha256 over the exact bytes of`,
+    `\`receipts.json\` (\`${bundle.export.content_digest.value}\`).`,
+    ``
+  ];
+  if (bundle.capsule) {
+    lines.push(
+      `## 3. Capsule Gate 1 scope artifacts`,
+      ``,
+      `- \`scope-capsule.json\` — the sealed Scope Capsule (\`scope_ref: ${bundle.capsule.scope_ref}\`).`,
+      bundle.capsule.mode === "proof"
+        ? `  In Proof Mode this is STRUCTURAL-ONLY (no plaintext plan).`
+        : `  In Verified Context Mode this also carries the plaintext sidecar.`,
+      `- \`continuation-capsule.json\` — settled / open / next + what changed, inheriting \`scope_ref\`.`,
+      `- Scope refusals/escalations are attested by \`event_hash\` under \`bundle.json\` ->`,
+      `  \`capsule.scope_events.event_hashes\` (${bundle.capsule.scope_events.count} event(s)).`,
+      ``
+    );
+  }
+  return lines.join("\n");
 }
 
 // --- internal helpers --------------------------------------------------------

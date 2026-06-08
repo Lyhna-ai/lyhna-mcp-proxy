@@ -107,7 +107,14 @@ export async function serveStandingHttpProxy(
     // refused so nothing runs ungoverned.
     const session = options.registry.get(sessionId);
     const core = session
-      ? createProxyCore({ upstream: options.upstream, bindClient: options.bindClient, loopSession: session })
+      ? createProxyCore({
+          upstream: options.upstream,
+          bindClient: options.bindClient,
+          loopSession: session,
+          // Capsule Gate 1: engage the adapter-side pre-bind scope gate when this session opened
+          // with a sealed Scope Capsule. Undefined for baseline (ungated) sessions.
+          scope: options.registry.getScope(sessionId)
+        })
       : failClosedCore(options.upstream, sessionId);
 
     const transport = new StreamableHTTPServerTransport({

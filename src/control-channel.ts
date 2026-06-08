@@ -33,6 +33,8 @@ import { chmod, unlink } from "node:fs/promises";
 
 import type { ReceiptSource } from "./receipt-recorder.js";
 import type { LoopSessionRegistry } from "./session-registry.js";
+import type { ScopeCapsule } from "./scope-capsule.js";
+import type { ScopeEventSource } from "./scope-event-recorder.js";
 
 export type ControlChannelLogger = (line: string) => void;
 
@@ -46,6 +48,11 @@ export type ControlChannelOptions =
        * omitted, `dump` is unavailable (fails closed). Never on the agent path.
        */
       receiptSource?: ReceiptSource;
+      /**
+       * Optional read-only scope-event source backing the supervisor `dump_scope` verb. When
+       * omitted, `dump_scope` returns scope history only. Never on the agent path.
+       */
+      scopeEventSource?: ScopeEventSource;
       logger?: ControlChannelLogger;
     }
   | {
@@ -54,6 +61,7 @@ export type ControlChannelOptions =
       port?: number;
       registry: LoopSessionRegistry;
       receiptSource?: ReceiptSource;
+      scopeEventSource?: ScopeEventSource;
       logger?: ControlChannelLogger;
     };
 
@@ -73,7 +81,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, options.receiptSource, log);
+    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, log);
   });
 
   if (options.transport === "unix") {
@@ -113,6 +121,7 @@ function handleConnection(
   socket: Socket,
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
+  scopeEventSource: ScopeEventSource | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
@@ -134,7 +143,7 @@ function handleConnection(
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
         queue = queue.then(async () => {
-          const response = await dispatchLine(line, registry, receiptSource, log);
+          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -156,6 +165,7 @@ async function dispatchLine(
   line: string,
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
+  scopeEventSource: ScopeEventSource | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;
@@ -175,9 +185,45 @@ async function dispatchLine(
         const session_id = requireString(command, "session_id");
         const loop_id = requireString(command, "loop_id");
         const goal = requireString(command, "goal");
-        registry.openLoop({ session_id, loop_id, goal });
+        // Optional Capsule Gate 1 scope material, sealed at open by this supervisor boundary.
+        const scope_capsule = command.scope_capsule as ScopeCapsule | undefined;
+        const scope_class_map = isRecord(command.scope_class_map)
+          ? (command.scope_class_map as Record<string, string>)
+          : undefined;
+        const session = registry.openLoop({ session_id, loop_id, goal, scope_capsule, scope_class_map });
+        if (scope_capsule) {
+          const scope = registry.getScope(session_id);
+          log(`[control] opened loop session=${session_id} loop=${loop_id} scope_ref=${scope?.sealed.scope_ref ?? "(no recorder)"}`);
+          return { ok: true, session_id, loop_id, scope_ref: scope?.sealed.scope_ref ?? null };
+        }
+        // Touch `session` so the no-scope path keeps the same return shape as before.
+        void session;
         log(`[control] opened loop session=${session_id} loop=${loop_id}`);
         return { ok: true, session_id, loop_id };
+      }
+
+      case "amend": {
+        // SUPERVISOR-ONLY scope amendment: seal a NEW scope_ref version chained to the prior.
+        const session_id = requireString(command, "session_id");
+        if (!isRecord(command.scope_capsule)) {
+          return { ok: false, error: "amend requires a `scope_capsule` object." };
+        }
+        const sealed = registry.amendLoop({
+          session_id,
+          scope_capsule: command.scope_capsule as unknown as ScopeCapsule
+        });
+        log(`[control] amended scope session=${session_id} scope_ref=${sealed.scope_ref} prior=${sealed.prior_scope_ref}`);
+        return { ok: true, session_id, scope_ref: sealed.scope_ref, prior_scope_ref: sealed.prior_scope_ref };
+      }
+
+      case "dump_scope": {
+        // Read-only supervisor verb: hand back the sealed scope seal-history (original +
+        // amendments) and the attested scope events for a loop, so the supervisor can package the
+        // Continuation Capsule and the Proof Pack scope artifacts. Keyed by loop_id, like `dump`.
+        const loop_id = requireString(command, "loop_id");
+        const scope_history = registry.scopeHistoryForLoop(loop_id);
+        const scope_events = scopeEventSource ? scopeEventSource.scopeEventsForLoop(loop_id) : [];
+        return { ok: true, loop_id, scope_history, scope_events };
       }
 
       case "close": {

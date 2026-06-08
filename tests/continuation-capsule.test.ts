@@ -1,0 +1,123 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  amendScope,
+  buildContinuationCapsule,
+  createScopeEventRecorder,
+  projectContinuationProofMode,
+  sealScopeCapsule,
+  type ScopeCapsule,
+  type ScopeStructuralProjection
+} from "../src/index.js";
+
+function structural(overrides: Partial<ScopeStructuralProjection> = {}): ScopeStructuralProjection {
+  return {
+    capsule_type: "scope_capsule",
+    capsule_version: "scope-capsule/v1",
+    loop_id: "loop-1",
+    goal_hash: "a".repeat(64),
+    privacy_mode: "verified_context",
+    allowed_targets: ["/checkout/**"],
+    forbidden_targets: ["/billing/migrations/**"],
+    ...overrides
+  };
+}
+
+function capsule(overrides: Partial<ScopeStructuralProjection> = {}): ScopeCapsule {
+  return { structural: structural(overrides), sidecar: { goal_summary: "fix checkout bug" } };
+}
+
+describe("buildContinuationCapsule", () => {
+  it("inherits scope_ref / goal_hash / loop_id and records settled/open/next (Verified Context)", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 2 },
+      settled: ["used the checkout fix"],
+      open_questions: ["regression coverage?"],
+      next_actions: ["ship"],
+      mode: "verified_context"
+    });
+    expect(cont.loop_id).toBe("loop-1");
+    expect(cont.goal_hash).toBe("a".repeat(64));
+    expect(cont.scope_ref).toBe(original.scope_ref);
+    expect(cont.inherits_from.scope_ref).toBe(original.scope_ref);
+    expect(cont.sealed).toBe(true);
+    expect(cont.action_count).toBe(2);
+    expect(cont.settled).toEqual(["used the checkout fix"]);
+    expect(cont.open_questions).toEqual(["regression coverage?"]);
+    expect(cont.next_actions).toEqual(["ship"]);
+  });
+
+  it("records what changed for an amendment, with the final scope_ref and a structural diff", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const amended = amendScope(original, capsule({ allowed_targets: ["/checkout/**", "/cart/**"] }));
+    const cont = buildContinuationCapsule({
+      scope_history: [original, amended],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 1 },
+      mode: "verified_context"
+    });
+    expect(cont.scope_ref).toBe(amended.scope_ref);
+    expect(cont.inherits_from.scope_ref).toBe(original.scope_ref);
+    expect(cont.what_changed).toHaveLength(1);
+    expect(cont.what_changed[0]!.from_scope_ref).toBe(original.scope_ref);
+    expect(cont.what_changed[0]!.to_scope_ref).toBe(amended.scope_ref);
+    expect(cont.what_changed[0]!.changed_fields).toContain("allowed_targets");
+  });
+
+  it("lists attested scope events by structural reference", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const rec = createScopeEventRecorder();
+    const event = rec.record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1",
+      scope_ref: original.scope_ref,
+      attempted: { action_class: "write", tool_name: "write_file", target_descriptor: "sha256:" + "c".repeat(64) },
+      matched_rule: "/billing/migrations/**",
+      decision: "REFUSED",
+      prior_receipt_id: "lrv2_0002"
+    });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [event],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 1 },
+      mode: "verified_context"
+    });
+    expect(cont.scope_events).toHaveLength(1);
+    expect(cont.scope_events[0]).toMatchObject({
+      event_hash: event.event_hash,
+      decision: "REFUSED",
+      prior_receipt_id: "lrv2_0002"
+    });
+  });
+
+  it("Proof Mode projection strips the plaintext sidecar fields", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 0 },
+      settled: ["secret settled note"],
+      mode: "verified_context"
+    });
+    const proof = projectContinuationProofMode(cont);
+    expect(proof.settled).toBeUndefined();
+    expect(JSON.stringify(proof)).not.toContain("secret settled note");
+    // Structural core survives.
+    expect(proof.scope_ref).toBe(original.scope_ref);
+  });
+
+  it("Proof Mode build omits sidecar fields from the start (mode=proof)", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 0 },
+      settled: ["should not appear"],
+      mode: "proof"
+    });
+    expect(cont.settled).toBeUndefined();
+  });
+});

@@ -127,6 +127,65 @@ export function mergeLoopConstraint(request: BindRequest, loop: LoopConstraint):
   return { ...stripped, constraints };
 }
 
+/**
+ * Per-consequential-event scope stamp merged additively under `constraints.scope`. Every field
+ * is structural / a reference / a hash — NEVER a plaintext plan field. This is the Capsule Gate 1
+ * citation: each consequential event cites `scope_ref` and the prior receipt it was checked
+ * against, plus a structural descriptor. It rides the same additive `constraints` envelope as
+ * `constraints.loop`, so it adds zero core / receipt-schema change.
+ */
+export type ScopeConstraint = {
+  scope_ref: string;
+  prior_receipt_id: string | null;
+  action_class?: string;
+  tool_name?: string;
+  /** sha256 hash or a structural class — never the plaintext target. */
+  target_descriptor?: string | null;
+};
+
+// The complete, closed set of keys `constraints.scope` may carry. The merge fails closed on any
+// other key so a plaintext plan field can never transit the gate/core path under scope.
+const SCOPE_CONSTRAINT_KEYS = new Set([
+  "scope_ref",
+  "prior_receipt_id",
+  "action_class",
+  "tool_name",
+  "target_descriptor"
+]);
+
+/**
+ * Assert a scope constraint carries only the closed structural key set — the content-blind floor
+ * for the gate/core path. Fail closed on any unexpected key (a plaintext plan field could only
+ * arrive as an unexpected key).
+ */
+export function assertScopeConstraintStructural(scope: Record<string, unknown>): void {
+  for (const key of Object.keys(scope)) {
+    if (!SCOPE_CONSTRAINT_KEYS.has(key)) {
+      throw new Error(
+        `constraints.scope carries unexpected key "${key}"; only structural scope fields may ` +
+          `transit the gate/core path (fail closed).`
+      );
+    }
+  }
+}
+
+/**
+ * Merge a scope stamp additively into `request.constraints.scope`, mirroring
+ * mergeLoopConstraint exactly:
+ *   - preserves caller/server-appended sibling keys (never clobbers `constraints.loop`),
+ *   - sets `constraints.scope` as a distinct sibling key,
+ *   - strips caller-supplied `authority_tier`,
+ *   - never touches `action_payload`.
+ * Validates the scope stamp is structural-only before stamping (fail closed).
+ */
+export function mergeScopeConstraint(request: BindRequest, scope: ScopeConstraint): BindRequest {
+  assertScopeConstraintStructural(scope as unknown as Record<string, unknown>);
+  const stripped = stripAuthorityTier(request);
+  const constraints = isRecord(stripped.constraints) ? { ...stripped.constraints } : {};
+  constraints.scope = scope;
+  return { ...stripped, constraints };
+}
+
 /** Build the terminal loop_close bind request carrying `constraints.loop_close`. */
 export function buildLoopCloseRequest(
   context: LoopContext,
