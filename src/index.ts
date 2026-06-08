@@ -120,7 +120,7 @@ export type {
   OpenLoopInput,
   SessionSummary
 } from "./session-registry.js";
-export { serveControlChannel } from "./control-channel.js";
+export { serveControlChannel, isLoopbackHost } from "./control-channel.js";
 export type {
   ControlChannelHandle,
   ControlChannelLogger,

@@ -172,7 +172,9 @@ function startControlChannel(
 
   return serveControlChannel({
     transport: "tcp",
-    host: process.env.LYHNA_PROXY_CONTROL_HOST ?? "127.0.0.1",
+    // Empty/whitespace falls back to loopback; a non-loopback value is refused by serveControlChannel
+    // (the control plane is supervisor-only and must never bind a non-loopback interface).
+    host: process.env.LYHNA_PROXY_CONTROL_HOST?.trim() || "127.0.0.1",
     port: parsePort(process.env.LYHNA_PROXY_CONTROL_PORT),
     registry,
     receiptSource,

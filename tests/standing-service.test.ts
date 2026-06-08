@@ -17,6 +17,7 @@ import type {
 } from "../src/index.js";
 import {
   connectStreamableHttpUpstream,
+  isLoopbackHost,
   LoopSessionRegistry,
   serveControlChannel,
   serveStandingHttpProxy,
@@ -288,5 +289,31 @@ describe("standing service: registry + supervisor control channel", () => {
     await expect(
       sendControl(socketPath, { cmd: "open", session_id: "ok", loop_id: "loop_ok", goal: "g" })
     ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("control TCP fallback is loopback-only: a non-loopback host fails closed (never published off-host)", async () => {
+    const { client: bindClient } = recordingBindClient();
+    const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 50, retryDelayMs: 5 });
+    // 0.0.0.0 / :: / a LAN address would expose open/close/dump/dump_scope to the network — refuse.
+    for (const host of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.5", ""]) {
+      await expect(serveControlChannel({ transport: "tcp", host, port: 0, registry })).rejects.toThrow(/loopback/i);
+    }
+    // Loopback hosts are accepted (and immediately closed so the test leaks no listener). Limited to
+    // IPv4 loopback here because some CI sandboxes can't bind ::1; ::1/localhost acceptance is proven
+    // by the isLoopbackHost unit test below (no socket bind).
+    for (const host of ["127.0.0.1", "127.0.0.5"]) {
+      const handle = await serveControlChannel({ transport: "tcp", host, port: 0, registry });
+      expect(handle.transport).toBe("tcp");
+      await handle.close();
+    }
+  });
+
+  it("isLoopbackHost: only local-machine hosts are loopback", () => {
+    for (const h of ["127.0.0.1", "127.0.0.5", "127.255.255.254", "::1", "localhost", "LOCALHOST", "::ffff:127.0.0.1"]) {
+      expect(isLoopbackHost(h)).toBe(true);
+    }
+    for (const h of ["0.0.0.0", "::", "", "   ", "192.168.0.1", "10.0.0.1", "8.8.8.8", "169.254.1.1", "example.com", "::ffff:10.0.0.1"]) {
+      expect(isLoopbackHost(h)).toBe(false);
+    }
   });
 });

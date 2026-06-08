@@ -103,6 +103,19 @@ export async function serveControlChannel(
   }
 
   const host = options.host ?? "127.0.0.1";
+  // FAIL CLOSED (loopback-only invariant): the control plane (open/close/dump/dump_scope) is
+  // supervisor-only and topologically separate from the agent transport. The TCP fallback is a
+  // weaker, same-host convenience — binding it to a non-loopback interface (0.0.0.0, ::, or a LAN
+  // address) would publish those verbs to anyone who can reach the interface, letting a non-supervisor
+  // seal/close/dump a loop. Refuse any non-loopback host here so a stray LYHNA_PROXY_CONTROL_HOST can
+  // never expose the control plane remotely; use a unix-domain socket (preferred) for stronger isolation.
+  if (!isLoopbackHost(host)) {
+    throw new Error(
+      `Control channel TCP host ${JSON.stringify(host)} is not loopback; the control plane is ` +
+        `supervisor-only and must never be published to a non-loopback interface (fail closed). ` +
+        `Use a 127.0.0.0/8 / ::1 host, or a unix-domain socket.`
+    );
+  }
   const port = options.port ?? 0;
   await listen(server, { host, port });
 
@@ -277,6 +290,22 @@ function requireString(record: Record<string, unknown>, key: string): string {
     throw new Error(`Control command requires a non-empty string \`${key}\`.`);
   }
   return value;
+}
+
+/**
+ * A host is loopback iff it names the local machine only: `localhost`, the IPv6 loopback `::1`, or
+ * any IPv4 in 127.0.0.0/8 (incl. its IPv4-mapped IPv6 form `::ffff:127.x.x.x`). Everything else —
+ * `0.0.0.0`, `::`, an empty/unspecified host, or a routable LAN/WAN address — is non-loopback and is
+ * refused so the supervisor-only control plane cannot be published off-host.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  if (h === "localhost" || h === "::1") return true;
+  const v4 = h.startsWith("::ffff:") ? h.slice("::ffff:".length) : h;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v4);
+  if (!m) return false;
+  const octets = m.slice(1).map((n) => Number(n));
+  return octets.every((n) => n <= 255) && octets[0] === 127;
 }
 
 function listen(server: NetServer, options: { path: string } | { host: string; port: number }): Promise<void> {
