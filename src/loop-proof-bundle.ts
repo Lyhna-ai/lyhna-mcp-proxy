@@ -1060,14 +1060,38 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
-  // 4) Runtime hashes are structural only (sha256-shaped) — never interpreted, never plaintext.
+  // 4) Runtime reports may ONLY exist on a FORWARDED call, i.e. an APPROVED bind turn (decideForward
+  // forwards on APPROVED only). Since runtime_report is excluded from turn_ref, a tampered ledger
+  // could otherwise bolt a result/error hash onto a REFUSED / ESCALATED / scope-gate / loop-bound
+  // turn and have the reducer publish it as a runtime result that never happened. Fail closed unless:
+  // the carrier is an APPROVED bind turn, `returned` is a boolean, and EXACTLY the hash that matches
+  // `returned` is present (returned=true => result_hash only; false => error_hash only), sha256-shaped.
   for (const t of turns) {
     const rr = t.runtime_report;
-    if (rr?.result_hash && !RUNTIME_HASH.test(rr.result_hash)) {
-      throw new Error(`Judgment turn ${t.turn_index} runtime result_hash is not a structural sha256 hash (fail closed).`);
+    if (!rr) continue;
+    if (t.verdict.source !== "bind" || t.verdict.kind !== "APPROVED") {
+      throw new Error(
+        `Judgment turn ${t.turn_index} carries a runtime_report but is not an APPROVED bind turn; only a forwarded ` +
+          `call returns a runtime result/error (fail closed).`
+      );
     }
-    if (rr?.error_hash && !RUNTIME_HASH.test(rr.error_hash)) {
-      throw new Error(`Judgment turn ${t.turn_index} runtime error_hash is not a structural sha256 hash (fail closed).`);
+    if (typeof rr.returned !== "boolean") {
+      throw new Error(`Judgment turn ${t.turn_index} runtime_report.returned must be a boolean (fail closed).`);
+    }
+    if (rr.returned) {
+      if (typeof rr.result_hash !== "string" || !RUNTIME_HASH.test(rr.result_hash)) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=true requires a structural result_hash (fail closed).`);
+      }
+      if (rr.error_hash !== undefined) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=true must not carry an error_hash (fail closed).`);
+      }
+    } else {
+      if (typeof rr.error_hash !== "string" || !RUNTIME_HASH.test(rr.error_hash)) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=false requires a structural error_hash (fail closed).`);
+      }
+      if (rr.result_hash !== undefined) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=false must not carry a result_hash (fail closed).`);
+      }
     }
   }
 

@@ -429,6 +429,48 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/is anchored to "r1" \(fail closed\)/);
   });
 
+  // A 3-turn ledger (bind r1, scope refusal, bind r2) with valid turn_refs, returned for tampering.
+  function threeTurns(f: ReturnType<typeof fixture>) {
+    const rec = createJudgmentRecorder();
+    const t0 = rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    const scopeTurn = rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    return { rec, t0, scopeTurn };
+  }
+
+  it("cold validation rejects a runtime_report bolted onto a non-forwarded (scope_gate) turn", () => {
+    const f = fixture("verified_context");
+    const { rec, scopeTurn } = threeTurns(f);
+    rec.attachRuntimeReport(LOOP_ID, scopeTurn.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}` });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/is not an APPROVED bind turn/);
+  });
+
+  it("cold validation rejects a runtime_report whose hashes contradict `returned`", () => {
+    const f = fixture("verified_context");
+    const { rec, t0 } = threeTurns(f);
+    // returned=true but also carries an error_hash (recorder permits it; the export must not).
+    rec.attachRuntimeReport(LOOP_ID, t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}`, error_hash: `sha256:${"b".repeat(64)}` });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/must not carry an error_hash/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {
