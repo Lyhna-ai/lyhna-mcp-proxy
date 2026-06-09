@@ -412,7 +412,10 @@ async function legCapsule(verifyDir) {
     "checkout fix written",
     "/checkout/cart.ts"
   ];
-  for (const file of ["scope-capsule.json", "continuation-capsule.json", "scope-events.json", "bundle.json", "receipts.json", "proof-card.md"]) {
+  for (const file of [
+    "scope-capsule.json", "continuation-capsule.json", "scope-events.json", "bundle.json", "receipts.json",
+    "proof-card.md", "judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"
+  ]) {
     const p = join(proofDir, file);
     if (!existsSync(p)) continue;
     const text = readFileSync(p, "utf8");
@@ -422,6 +425,32 @@ async function legCapsule(verifyDir) {
         return;
       }
     }
+  }
+
+  // (d) Capsule Gate 2: the judgment-ledger + memory-injection artifacts are present in BOTH packs,
+  // referenced by bundle.json, content-blind in Proof Mode and readable in Verified Context Mode.
+  for (const [label, dir] of [["VC", vcDir], ["Proof", proofDir]]) {
+    for (const f of ["judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"]) {
+      if (!existsSync(join(dir, f))) {
+        fail("Leg Capsule", `${label} pack is missing Capsule Gate 2 artifact ${f}`);
+        return;
+      }
+    }
+  }
+  const jbundle = JSON.parse(readFileSync(join(proofDir, "bundle.json"), "utf8"));
+  if (!jbundle.capsule?.judgment || jbundle.capsule.judgment.turn_count < 1 || !jbundle.capsule.judgment.final_turn_ref) {
+    fail("Leg Capsule", "bundle.json does not reference the judgment ledger (turn_count / final_turn_ref)");
+    return;
+  }
+  const memProof = JSON.parse(readFileSync(join(proofDir, "memory-injection.json"), "utf8"));
+  if (memProof.type !== "lyhna_verified_memory_capsule" || memProof.settled.length !== 0 || memProof.next_actions.length !== 0) {
+    fail("Leg Capsule", "Proof Mode memory-injection.json is not content-blind (settled/next_actions must be empty)");
+    return;
+  }
+  const memVc = JSON.parse(readFileSync(join(vcDir, "memory-injection.json"), "utf8"));
+  if (memVc.settled.length < 1 || !memVc.final_turn_ref) {
+    fail("Leg Capsule", "Verified Context memory-injection.json should carry folded settled state + final_turn_ref");
+    return;
   }
 
   const proofVerdict = assertCapsuleColdVerify(runVerifier(verifyDir, join(proofDir, "receipts.json")).json);
@@ -439,8 +468,9 @@ async function legCapsule(verifyDir) {
 
   ok(
     "Leg Capsule",
-    `scope gate: ${captured.summary.actionCount} in-lane actions, ${captured.summary.scopeEventCount} attested refusal(s); ` +
-      `VC + Proof packs cold-verify (structural pass + fail-by-absence); Proof Mode content-blind`
+    `scope gate: ${captured.summary.actionCount} in-lane actions, ${captured.summary.scopeEventCount} attested refusal(s), ` +
+      `${captured.summary.judgmentTurnCount} judgment turn(s); VC + Proof packs cold-verify (structural pass + ` +
+      `fail-by-absence); judgment-ledger.json + memory-injection.json emitted; Proof Mode content-blind`
   );
 }
 
