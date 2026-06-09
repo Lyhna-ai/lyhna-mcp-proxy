@@ -252,6 +252,10 @@ export class LoopSession {
   private readonly context: LoopContext;
   private priorReceiptIdValue: string | null = null;
   private actionCountValue = 0;
+  // Forwarded (executed) in-loop steps: incremented ONLY on an APPROVED bind (the only outcome that
+  // reaches the upstream). The `bounds.max_steps` execution budget is gated on THIS, not on every
+  // bind — a held (ESCALATED) or refused (REFUSED) authorization attempt must not consume the scope.
+  private forwardedCountValue = 0;
   private closedFlag = false;
   // The terminal result, cached once the loop seals. A second close() returns THIS verbatim
   // (see close()) instead of binding a duplicate terminal — additive defense-in-depth that
@@ -308,9 +312,11 @@ export class LoopSession {
         throw new Error("Loop already closed; refusing in-loop bind (fail closed).");
       }
 
-      // Authoritative step-bound check: serialized count, evaluated before any bind/forward.
-      if (maxSteps != null && this.actionCountValue >= maxSteps) {
-        throw new LoopStepBoundError(maxSteps, this.actionCountValue);
+      // Authoritative step-bound check: serialized FORWARDED count, evaluated before any bind/forward.
+      // max_steps bounds executed steps, so a prior held/refused bind (which never forwarded) does not
+      // count against it. The chain still advances and action_count still counts every in-loop bind.
+      if (maxSteps != null && this.forwardedCountValue >= maxSteps) {
+        throw new LoopStepBoundError(maxSteps, this.forwardedCountValue);
       }
 
       const prior = this.priorReceiptIdValue;
@@ -327,6 +333,10 @@ export class LoopSession {
 
       this.priorReceiptIdValue = response.receipt_id;
       this.actionCountValue += 1;
+      // Only an APPROVED bind forwards to the upstream and thus consumes the execution budget.
+      if (response.outcome === "APPROVED") {
+        this.forwardedCountValue += 1;
+      }
 
       return response;
     });

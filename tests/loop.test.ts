@@ -603,4 +603,32 @@ describe("LoopSession.bindToolCall scope stamping (Capsule Gate 1)", () => {
     expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
     expect(bind.seen).toHaveLength(1); // exactly one bind crossed the bound
   });
+
+  it("a held (ESCALATED) bind does not consume the max_steps budget (round 30)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_held", goal: "g" }));
+    // First bind is ESCALATED (held, never forwarded), then APPROVED.
+    let n = 0;
+    const outcomes: Array<BindResponse["outcome"]> = ["ESCALATED", "APPROVED", "APPROVED"];
+    const seen: BindRequest[] = [];
+    const bind = async (request: BindRequest): Promise<BindResponse> => {
+      seen.push(request);
+      const outcome = outcomes[n] ?? "APPROVED";
+      n += 1;
+      return { outcome, receipt_id: `r_${n}`, signature: "sig" };
+    };
+
+    // Step 1: ESCALATED — held, so it does NOT consume the single-step budget.
+    const r1 = await session.bindToolCall(baseRequest(), bind, scopeStamp, 1);
+    expect(r1.outcome).toBe("ESCALATED");
+    // Step 2: the next call is APPROVED and is NOT refused as over-budget (the held bind didn't count).
+    const r2 = await session.bindToolCall(baseRequest(), bind, scopeStamp, 1);
+    expect(r2.outcome).toBe("APPROVED");
+    // Step 3: now one forwarded step has been consumed, so a further call IS refused.
+    await expect(session.bindToolCall(baseRequest(), bind, scopeStamp, 1)).rejects.toBeInstanceOf(LoopStepBoundError);
+
+    // The chain advanced over all three binds (action_count counts every in-loop bind for the verifier),
+    // even though only one forwarded step was budgeted.
+    expect(session.actionCount).toBe(2); // two binds returned (r1 escalated, r2 approved); 3rd never bound
+    expect(seen).toHaveLength(2);
+  });
 });

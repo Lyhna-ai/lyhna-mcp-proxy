@@ -603,11 +603,12 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // packaged as an in-scope proof. A consequential receipt with NO scope stamp also fails closed
     // (a legacy/no-scope chain can't be dressed up with a capsule). The terminal `loop_close` is
     // exempt (it may be intentionally unstamped); if it does carry a stamp it is still re-validated.
-    // FAIL CLOSED (max_steps hard bound): count in-loop consequential steps and re-check each against
-    // its governing scope version's bounds.max_steps. The runtime enforces this in the loop mutex
-    // (loop.ts), but the export reads receipts from JSON, so a tampered/imported chain with more steps
-    // than the sealed bound allows must not be packaged as a valid scoped proof. The i-th in-loop step
-    // requires its version's max_steps >= i (mirror of the runtime's pre-bind count check).
+    // FAIL CLOSED (max_steps hard bound): count FORWARDED (executed) in-loop steps and re-check each
+    // against its governing scope version's bounds.max_steps. The runtime budgets max_steps on forwarded
+    // outcomes only — a held (ESCALATED) / refused (REFUSED) bind never reaches the upstream and does not
+    // consume the scope (loop.ts) — so the export mirrors that: only an APPROVED in-loop receipt counts.
+    // The i-th forwarded step requires its version's max_steps >= i (a tampered/imported chain that runs
+    // more executed steps than the sealed bound allows must not export as a valid scoped proof).
     let inLoopStepCount = 0;
     input.receipts.forEach((r, i) => {
       const c = r.constraints as
@@ -619,7 +620,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         | undefined;
       const isTerminal = isRecord(c?.loop_close);
       const isInLoop = isRecord(c?.loop) && !isTerminal;
-      if (isInLoop) inLoopStepCount += 1;
+      // Only a FORWARDED (APPROVED) in-loop bind consumes the execution budget — matches the runtime.
+      const isForwardedStep = isInLoop && (r as Record<string, unknown>).outcome === "APPROVED";
+      if (isForwardedStep) inLoopStepCount += 1;
       const stamp = c?.scope;
       const sref = stamp?.scope_ref;
       if (typeof sref === "string") {
@@ -646,14 +649,15 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
             );
           }
         }
-        // FAIL CLOSED (max_steps hard bound): the i-th in-loop step requires its governing scope
-        // version to permit at least i steps. A tampered/imported chain exceeding the sealed bound
-        // must not export as a valid scoped proof (it would misrepresent a violated hard bound).
-        if (isInLoop) {
+        // FAIL CLOSED (max_steps hard bound): the i-th FORWARDED in-loop step requires its governing
+        // scope version to permit at least i steps. Held/refused binds don't count (they never ran),
+        // mirroring the runtime budget. A chain that runs more executed steps than the sealed bound
+        // allows must not export as a valid scoped proof (it would misrepresent a violated hard bound).
+        if (isForwardedStep) {
           const maxSteps = version.structural.bounds?.max_steps;
           if (maxSteps != null && inLoopStepCount > maxSteps) {
             throw new Error(
-              `Receipt ${describe(r, i)} is in-loop step ${inLoopStepCount} but scope ${sref} declares ` +
+              `Receipt ${describe(r, i)} is forwarded in-loop step ${inLoopStepCount} but scope ${sref} declares ` +
                 `bounds.max_steps ${maxSteps}; the chain exceeds the sealed hard step bound (fail closed).`
             );
           }
