@@ -121,6 +121,12 @@ export type {
 } from "./judgment-ledger.js";
 export { createJudgmentRecorder } from "./judgment-recorder.js";
 export type { JudgmentLedgerRecorder, JudgmentLedgerSource } from "./judgment-recorder.js";
+export { reduceJudgmentLedger } from "./judgment-reducer.js";
+export type {
+  ReduceJudgmentLedgerInput,
+  ReducedJudgmentState,
+  RefusedStepRef
+} from "./judgment-reducer.js";
 export {
   buildContinuationCapsule,
   CONTINUATION_CAPSULE_VERSION,
