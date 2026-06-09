@@ -471,6 +471,60 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/must not carry an error_hash/);
   });
 
+  it("cold validation fails when a bind turn cites a scope_ref different from the signed stamp", () => {
+    const f = fixture("verified_context");
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: "scope_v1:FORGED", // != the signed constraints.scope.scope_ref on receipt r1
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/cites scope_ref "scope_v1:FORGED" but the signed/);
+  });
+
+  it("cold validation fails when a scope turn cites a scope_ref different from the attested event", () => {
+    const f = fixture("verified_context"); // f.event commits scope_ref f.scope_ref
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: "scope_v1:FORGED", // != the attested event's committed scope_ref
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/commits scope_ref "scope_v1:[0-9a-f]+" \(fail closed\)/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {

@@ -989,6 +989,16 @@ function buildJudgmentArtifacts(input: {
           `${t.proposed.target_descriptor ?? "—"}) does not match the signed constraints.scope stamp on receipt ${r.id} (fail closed).`
       );
     }
+    // The signed stamp also carries the authoritative scope_ref (the scope VERSION this step ran
+    // under); bind it so a tampered ledger cannot recompute turn_ref under a different scope version
+    // and have the reduced `scope_refs` misreport which version actually authorized the move.
+    const sScopeRef = typeof r.scope.scope_ref === "string" ? r.scope.scope_ref : undefined;
+    if (t.scope_ref !== sScopeRef) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} cites scope_ref ${JSON.stringify(t.scope_ref)} but the signed ` +
+          `constraints.scope stamp on receipt ${r.id} cites ${JSON.stringify(sScopeRef)} (fail closed).`
+      );
+    }
   }
 
   // 3) Scope events <-> scope_gate / loop_bound turns, by CONTENT. The event_hash commits the event's
@@ -1050,6 +1060,15 @@ function buildJudgmentArtifacts(input: {
       throw new Error(
         `Judgment turn ${t.turn_index} inherits prior_receipt_id ${JSON.stringify(t.prior_receipt_id ?? null)} but ` +
           `attested scope event ${h} is anchored to ${JSON.stringify(event.prior_receipt_id ?? null)} (fail closed).`
+      );
+    }
+    // The event_hash also commits the event's scope_ref (the scope VERSION the refusal happened
+    // under). Bind it so a tampered ledger cannot keep the real event hash while altering the turn's
+    // scope_ref to publish the refusal under a false scope version.
+    if (t.scope_ref !== event.scope_ref) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} cites scope_ref ${JSON.stringify(t.scope_ref)} but attested scope event ${h} ` +
+          `commits scope_ref ${JSON.stringify(event.scope_ref)} (fail closed).`
       );
     }
     anchoredEvents.add(h);
