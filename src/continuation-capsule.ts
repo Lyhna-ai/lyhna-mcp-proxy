@@ -192,7 +192,10 @@ export function buildContinuationCapsule(input: BuildContinuationCapsuleInput): 
     if (open_questions) capsule.open_questions = open_questions;
     if (next_actions) capsule.next_actions = next_actions;
     if (changed) capsule.changed = changed;
-    capsule.continuation_prompt = buildContinuationPrompt(capsule);
+    // The continuation prompt is a Capsule Gate 2 handoff artifact (it cites final_turn_ref / the
+    // judgment ledger), so emit it only when a reduced ledger was folded in — a Gate 1 continuation
+    // (no `reduced`) keeps its exact prior VC shape.
+    if (input.reduced) capsule.continuation_prompt = buildContinuationPrompt(capsule);
   }
   return capsule;
 }

@@ -39,7 +39,8 @@ import { deriveScopeEventHash, projectScopeEvent, type ScopeEvent } from "./scop
 import {
   diffStructural,
   projectContinuationProofMode,
-  type ContinuationCapsule
+  type ContinuationCapsule,
+  type ContinuationJudgmentSection
 } from "./continuation-capsule.js";
 import {
   JUDGMENT_LEDGER_VERSION,
@@ -1014,15 +1015,25 @@ function buildJudgmentArtifacts(input: {
     throw new Error(`Continuation final_turn_ref does not match the verified judgment ledger (fail closed).`);
   }
   if (continuation.judgment) {
-    const j = continuation.judgment;
-    const mismatch =
-      (j.final_turn_ref ?? null) !== (reduced.final_turn_ref ?? null) ||
-      j.turn_count !== reduced.turn_count ||
-      JSON.stringify(j.receipt_refs) !== JSON.stringify(reduced.receipt_refs) ||
-      JSON.stringify(j.scope_event_refs) !== JSON.stringify(reduced.scope_event_refs) ||
-      JSON.stringify(j.verdict_counts) !== JSON.stringify(reduced.verdict_counts) ||
-      JSON.stringify(j.source_counts) !== JSON.stringify(reduced.source_counts);
-    if (mismatch) {
+    // Compare the ENTIRE judgment summary the continuation will publish (continuation-capsule.json
+    // copies capsule.judgment verbatim) against the section rebuilt from the VERIFIED reduced fold —
+    // including refused_steps and the runtime hash lists, not just the counts/refs. A field-subset
+    // comparison would let a stale/tampered continuation hide a REFUSED step, flip a `corrected` flag,
+    // or fake runtime hashes while the structural totals still matched. Canonical (sorted-key) JSON so
+    // key order is irrelevant; the section is mode-independent (purely structural).
+    const expected: ContinuationJudgmentSection = {
+      judgment_ledger_version: JUDGMENT_LEDGER_VERSION,
+      final_turn_ref: reduced.final_turn_ref,
+      turn_count: reduced.turn_count,
+      verdict_counts: reduced.verdict_counts,
+      source_counts: reduced.source_counts,
+      receipt_refs: reduced.receipt_refs,
+      scope_event_refs: reduced.scope_event_refs,
+      runtime_result_hashes: reduced.runtime_result_hashes,
+      runtime_error_hashes: reduced.runtime_error_hashes,
+      refused_steps: reduced.refused_steps
+    };
+    if (canonicalScopeJson(continuation.judgment) !== canonicalScopeJson(expected)) {
       throw new Error(`Continuation judgment summary does not match the verified judgment ledger (fail closed).`);
     }
   }

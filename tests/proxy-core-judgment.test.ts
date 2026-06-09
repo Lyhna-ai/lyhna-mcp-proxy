@@ -194,6 +194,42 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
     expect(validateJudgmentChain(ledger).valid).toBe(true);
   });
 
+  it("a failing judgment runtime attach is observe-only and never breaks the forwarded result", async () => {
+    const h = harness();
+    // Simulate a recorder whose runtime attach throws (e.g. a defensive set-once failure). The
+    // agent's forwarded result must still be returned verbatim.
+    h.judgment.attachRuntimeReport = () => {
+      throw new Error("recorder boom");
+    };
+    const result = await h.proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
+    expect(result).toEqual({ ok: true, echoed: "write_file" });
+  });
+
+  it("a failing judgment runtime attach does not mask a real upstream error", async () => {
+    const up: UpstreamMcpClient = {
+      async listTools() {
+        return [{ name: "write_file" }];
+      },
+      async callTool() {
+        throw new Error("REAL upstream failure");
+      }
+    };
+    const bind = scriptedBind();
+    const judgment = createJudgmentRecorder();
+    judgment.attachRuntimeReport = () => {
+      throw new Error("recorder boom");
+    };
+    const sealed = sealScopeCapsule({ capsule: { structural: capsuleStructural, sidecar: {} } });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "g" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder: createScopeEventRecorder(), judgment }
+    });
+    await expect(proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } })).rejects.toThrow(/REAL upstream failure/);
+  });
+
   it("the existing loop receipt chain still advances (chain verification unaffected)", async () => {
     const h = harness();
     await h.proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });

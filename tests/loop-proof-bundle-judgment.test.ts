@@ -268,6 +268,33 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     expect(() => build("verified_context", { turns: rec.judgmentLedgerForLoop(LOOP_ID) })).toThrow(/not a signed in-loop receipt/);
   });
 
+  it("cold validation fails when the continuation judgment summary is tampered (hidden refused step)", () => {
+    const f = fixture("verified_context");
+    // The honest continuation summary lists the refused step; hide it while leaving counts/refs.
+    const tampered = JSON.parse(JSON.stringify(f.continuation));
+    tampered.judgment.refused_steps = [];
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: tampered, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/judgment summary does not match/);
+  });
+
+  it("cold validation fails when the continuation judgment summary fakes a runtime hash", () => {
+    const f = fixture("verified_context");
+    const tampered = JSON.parse(JSON.stringify(f.continuation));
+    tampered.judgment.runtime_result_hashes = [`sha256:${"f".repeat(64)}`];
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: tampered, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/judgment summary does not match/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {

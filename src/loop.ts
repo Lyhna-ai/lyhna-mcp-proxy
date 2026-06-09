@@ -344,7 +344,12 @@ export class LoopSession {
     bind: LoopBindFn,
     scope?: Omit<ScopeConstraint, "prior_receipt_id">,
     maxSteps?: number,
-    judgment?: JudgmentBindContext
+    judgment?: JudgmentBindContext,
+    // Capsule Gate 2: invoked INSIDE this critical section the instant a step-bound violation is
+    // detected, BEFORE the LoopStepBoundError is thrown — so the refusal's scope event + judgment
+    // turn are recorded in the same serialized section as the verdicts around it (they cannot be
+    // reordered behind a concurrently-queued bind that runs after the throw releases the mutex).
+    onStepBound?: () => void
   ): Promise<BindResponse> {
     return this.runExclusive(async () => {
       if (this.closedFlag) {
@@ -355,6 +360,7 @@ export class LoopSession {
       // max_steps bounds executed steps, so a prior held/refused bind (which never forwarded) does not
       // count against it. The chain still advances and action_count still counts every in-loop bind.
       if (maxSteps != null && this.forwardedCountValue >= maxSteps) {
+        onStepBound?.();
         throw new LoopStepBoundError(maxSteps, this.forwardedCountValue);
       }
 
