@@ -199,7 +199,19 @@ async function dispatchLine(
         const loop_id = requireString(command, "loop_id");
         const goal = requireString(command, "goal");
         // Optional Capsule Gate 1 scope material, sealed at open by this supervisor boundary.
-        const scope_capsule = command.scope_capsule as ScopeCapsule | undefined;
+        // FAIL CLOSED: a PRESENT scope_capsule / scope_class_map key must be a real object. A
+        // null/falsy/malformed value (e.g. `scope_capsule: null`) must NOT be treated as "omitted" —
+        // that would silently open an UNSCOPED baseline session and run future tools/call without the
+        // Capsule Gate (or drop a supervisor classifier override that governs enforcement).
+        if (command.scope_capsule !== undefined && !isRecord(command.scope_capsule)) {
+          return { ok: false, error: "open `scope_capsule` must be an object when present (fail closed)." };
+        }
+        if (command.scope_class_map !== undefined && !isRecord(command.scope_class_map)) {
+          return { ok: false, error: "open `scope_class_map` must be an object when present (fail closed)." };
+        }
+        const scope_capsule = isRecord(command.scope_capsule)
+          ? (command.scope_capsule as unknown as ScopeCapsule)
+          : undefined;
         const scope_class_map = isRecord(command.scope_class_map)
           ? (command.scope_class_map as Record<string, string>)
           : undefined;

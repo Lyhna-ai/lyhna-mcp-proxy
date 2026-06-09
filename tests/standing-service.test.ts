@@ -291,6 +291,26 @@ describe("standing service: registry + supervisor control channel", () => {
     ).resolves.toMatchObject({ ok: true });
   });
 
+  it("fails closed on a PRESENT-but-malformed scope_capsule rather than opening an unscoped baseline (round 31)", async () => {
+    const { socketPath } = await start();
+    // scope_capsule: null must NOT be silently treated as "omitted" (which would open unscoped).
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n1", loop_id: "loop_n1", goal: "g", scope_capsule: null })
+    ).resolves.toMatchObject({ ok: false });
+    // Other non-object values fail closed too.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n2", loop_id: "loop_n2", goal: "g", scope_capsule: "nope" })
+    ).resolves.toMatchObject({ ok: false });
+    // A present-but-malformed scope_class_map (governs enforcement once sealed) also fails closed.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n3", loop_id: "loop_n3", goal: "g", scope_class_map: null })
+    ).resolves.toMatchObject({ ok: false });
+    // The session_ids were never opened (no half-open state) — reusing one for a real open succeeds.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n1", loop_id: "loop_n1b", goal: "g" })
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   it("control TCP fallback is loopback-only: a non-loopback host fails closed (never published off-host)", async () => {
     const { client: bindClient } = recordingBindClient();
     const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 50, retryDelayMs: 5 });
