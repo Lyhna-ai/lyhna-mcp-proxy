@@ -91,6 +91,35 @@ export type {
   ScopeEventType
 } from "./scope-event-recorder.js";
 export {
+  assertValidDelta,
+  assertValidRuntimeReport,
+  deriveTurnRef,
+  JUDGMENT_LEDGER_VERSION,
+  mergeDelta,
+  normalizeDelta,
+  normalizeProposed,
+  normalizeVerdict,
+  projectTurn,
+  projectTurnProofMode,
+  projectTurnVerifiedContext,
+  renderJudgmentLedgerMarkdown,
+  turnCore,
+  validateJudgmentChain
+} from "./judgment-ledger.js";
+export type {
+  JudgmentChainVerification,
+  JudgmentDelta,
+  JudgmentProposedMove,
+  JudgmentRuntimeReport,
+  JudgmentTurn,
+  JudgmentTurnInput,
+  JudgmentVerdict,
+  JudgmentVerdictKind,
+  JudgmentVerdictSource
+} from "./judgment-ledger.js";
+export { createJudgmentRecorder } from "./judgment-recorder.js";
+export type { JudgmentLedgerRecorder, JudgmentLedgerSource } from "./judgment-recorder.js";
+export {
   buildContinuationCapsule,
   CONTINUATION_CAPSULE_VERSION,
   diffStructural,
