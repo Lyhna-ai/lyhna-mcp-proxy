@@ -91,6 +91,43 @@ export type {
   ScopeEventType
 } from "./scope-event-recorder.js";
 export {
+  assertValidDelta,
+  assertValidRuntimeReport,
+  deriveTurnRef,
+  hashRuntimeError,
+  hashRuntimeResult,
+  JUDGMENT_LEDGER_VERSION,
+  mergeDelta,
+  normalizeDelta,
+  normalizeProposed,
+  normalizeVerdict,
+  projectTurn,
+  projectTurnProofMode,
+  projectTurnVerifiedContext,
+  renderJudgmentLedgerMarkdown,
+  turnCore,
+  validateJudgmentChain
+} from "./judgment-ledger.js";
+export type {
+  JudgmentChainVerification,
+  JudgmentDelta,
+  JudgmentProposedMove,
+  JudgmentRuntimeReport,
+  JudgmentTurn,
+  JudgmentTurnInput,
+  JudgmentVerdict,
+  JudgmentVerdictKind,
+  JudgmentVerdictSource
+} from "./judgment-ledger.js";
+export { createJudgmentRecorder } from "./judgment-recorder.js";
+export type { JudgmentLedgerRecorder, JudgmentLedgerSource } from "./judgment-recorder.js";
+export { reduceJudgmentLedger } from "./judgment-reducer.js";
+export type {
+  ReduceJudgmentLedgerInput,
+  ReducedJudgmentState,
+  RefusedStepRef
+} from "./judgment-reducer.js";
+export {
   buildContinuationCapsule,
   CONTINUATION_CAPSULE_VERSION,
   diffStructural,
@@ -100,6 +137,7 @@ export {
 export type {
   BuildContinuationCapsuleInput,
   ContinuationCapsule,
+  ContinuationJudgmentSection,
   ScopeAmendmentRecord,
   ScopeEventRef
 } from "./continuation-capsule.js";
@@ -148,11 +186,14 @@ export type {
   BuiltLoopProofBundle,
   BundleCapsuleSection,
   ContentDigest,
+  JudgmentLedgerExport,
   LoopProofBundle,
   LoopSummary,
   ProofReceipt,
   TrustRoot
 } from "./loop-proof-bundle.js";
+export { buildMemoryInjection, MEMORY_INJECTION_VERSION } from "./memory-injection.js";
+export type { MemoryInjection } from "./memory-injection.js";
 export type {
   McpProxyRequestHandlers,
   StreamableHttpUpstream,

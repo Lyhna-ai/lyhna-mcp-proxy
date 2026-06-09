@@ -26,6 +26,7 @@ import {
   assertScopeCapsuleStructuralOnly,
   assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
+  canonicalScopeJson,
   deriveScopeRef,
   deriveSidecarHash,
   hashTarget,
@@ -38,8 +39,18 @@ import { deriveScopeEventHash, projectScopeEvent, type ScopeEvent } from "./scop
 import {
   diffStructural,
   projectContinuationProofMode,
-  type ContinuationCapsule
+  type ContinuationCapsule,
+  type ContinuationJudgmentSection
 } from "./continuation-capsule.js";
+import {
+  JUDGMENT_LEDGER_VERSION,
+  projectTurn,
+  renderJudgmentLedgerMarkdown,
+  validateJudgmentChain,
+  type JudgmentTurn
+} from "./judgment-ledger.js";
+import { reduceJudgmentLedger, type ReducedJudgmentState } from "./judgment-reducer.js";
+import { buildMemoryInjection, type MemoryInjection } from "./memory-injection.js";
 
 /** A signed receipt payload (loose — we read fields, never reshape them). */
 export type ProofReceipt = Record<string, unknown> & {
@@ -119,6 +130,30 @@ export type BundleCapsuleSection = {
   continuation_capsule_file: "continuation-capsule.json";
   /** Attested scope events, referenced by hash (the halt is visible/verifiable here). */
   scope_events: { count: number; event_hashes: string[] };
+  /**
+   * Capsule Gate 2 judgment ledger references (ADDITIVE; present only when judgment turns were
+   * supplied). The full middle object lives in judgment-ledger.json; the portable handoff in
+   * memory-injection.json. Turns are referenced by final_turn_ref + count (content-blind).
+   */
+  judgment?: {
+    judgment_ledger_file: "judgment-ledger.json";
+    judgment_ledger_markdown_file: "judgment-ledger.md";
+    memory_injection_file: "memory-injection.json";
+    final_turn_ref: string | null;
+    turn_count: number;
+  };
+};
+
+/** judgment-ledger.json — the full middle object: the reduced fold plus the (projected) ordered turns. */
+export type JudgmentLedgerExport = {
+  judgment_ledger_version: string;
+  loop_id: string;
+  scope_ref: string;
+  mode: ScopePrivacyMode;
+  final_turn_ref: string | null;
+  turn_count: number;
+  reduced: ReducedJudgmentState;
+  turns: JudgmentTurn[];
 };
 
 export type AuthorityContextGraphNode = {
@@ -167,6 +202,14 @@ export type BuildLoopProofBundleInput = {
     scope_history?: SealedScope[];
     continuation: ContinuationCapsule;
     scope_events?: ScopeEvent[];
+    /**
+     * Capsule Gate 2 (ADDITIVE): the ordered judgment ledger dumped for this loop. When supplied,
+     * the build validates the judgment chain, cross-checks it against the receipts (every in-loop
+     * receipt maps to a bind turn) and the scope events (every scope event maps to a scope/loop-bound
+     * turn), folds it via the reducer, and emits judgment-ledger.json/.md + memory-injection.json.
+     * Omit for a Capsule Gate 1 (judgment-less) pack — the output is then byte-for-byte unchanged.
+     */
+    judgment_turns?: JudgmentTurn[];
   };
 };
 
@@ -182,6 +225,10 @@ export type BuiltLoopProofBundle = {
   scope_events?: ScopeEvent[];
   proof_card_markdown?: string;
   verify_instructions_markdown?: string;
+  // --- Capsule Gate 2 artifacts (present only when input.capsule.judgment_turns was supplied) ---
+  judgment_ledger?: JudgmentLedgerExport;
+  judgment_ledger_markdown?: string;
+  memory_injection?: MemoryInjection;
 };
 
 const RECEIPT_VERSION = "LYHNA_RECEIPT_V2";
@@ -399,6 +446,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
   let scope_events: ScopeEvent[] | undefined;
   let proof_card_markdown: string | undefined;
   let verify_instructions_markdown: string | undefined;
+  let judgment_ledger: JudgmentLedgerExport | undefined;
+  let judgment_ledger_markdown: string | undefined;
+  let memory_injection: MemoryInjection | undefined;
 
   if (input.capsule) {
     const mode = input.capsule.mode;
@@ -778,6 +828,23 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       assertScopeCapsuleStructuralOnly(scope_capsule);
     }
 
+    // Capsule Gate 2 (ADDITIVE): when the judgment ledger was dumped, validate it against the
+    // receipts + scope events, fold it, and emit judgment-ledger.json/.md + memory-injection.json.
+    if (input.capsule.judgment_turns) {
+      const built = buildJudgmentArtifacts({
+        loop_id: loop.loop_id,
+        scope_ref: finalScope.scope_ref,
+        mode,
+        receipts: input.receipts,
+        scope_events: input.capsule.scope_events ?? [],
+        turns: input.capsule.judgment_turns,
+        continuation
+      });
+      judgment_ledger = built.ledger;
+      judgment_ledger_markdown = built.markdown;
+      memory_injection = built.memory;
+    }
+
     bundle.capsule = {
       mode,
       // Use the VERIFIED final version's scope_ref (proven equal to sealed.scope_ref above), so the
@@ -788,7 +855,18 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       scope_events: {
         count: scope_events.length,
         event_hashes: scope_events.map((e) => e.event_hash)
-      }
+      },
+      ...(judgment_ledger
+        ? {
+            judgment: {
+              judgment_ledger_file: "judgment-ledger.json" as const,
+              judgment_ledger_markdown_file: "judgment-ledger.md" as const,
+              memory_injection_file: "memory-injection.json" as const,
+              final_turn_ref: judgment_ledger.final_turn_ref,
+              turn_count: judgment_ledger.turn_count
+            }
+          }
+        : {})
     };
 
     proof_card_markdown = renderProofCardMarkdown(bundle, continuation_capsule);
@@ -807,8 +885,322 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     continuation_capsule,
     scope_events,
     proof_card_markdown,
-    verify_instructions_markdown
+    verify_instructions_markdown,
+    judgment_ledger,
+    judgment_ledger_markdown,
+    memory_injection
   };
+}
+
+/** A structural runtime hash must be sha256-shaped (no plaintext, never an interpreted verdict). */
+const RUNTIME_HASH = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Capsule Gate 2 export validation + fold. Validates the dumped judgment ledger as an append-only,
+ * contiguous, hash-linked chain and cross-checks it against the signed receipts and attested scope
+ * events, then folds it (reducer) and projects the privacy-mode artifacts. Fail-closed throughout:
+ * a chain break, an unanchored verdict, or a receipt/scope-event that does NOT map to a judgment
+ * turn (or vice versa) rejects the export.
+ */
+function buildJudgmentArtifacts(input: {
+  loop_id: string;
+  scope_ref: string;
+  mode: ScopePrivacyMode;
+  receipts: ProofReceipt[];
+  scope_events: ScopeEvent[];
+  turns: JudgmentTurn[];
+  continuation: ContinuationCapsule;
+}): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
+  const { loop_id, scope_ref, mode, turns, continuation } = input;
+
+  // 1) Append-only / contiguous / hash-linked chain (no duplicate / missing turn_ref).
+  const chain = validateJudgmentChain(turns);
+  if (!chain.valid) {
+    throw new Error(`Judgment ledger is not a valid chain: ${chain.reason} (fail closed).`);
+  }
+  if (chain.loop_id !== null && chain.loop_id !== loop_id) {
+    throw new Error(`Judgment ledger loop_id ${chain.loop_id} does not match the receipts loop_id ${loop_id} (fail closed).`);
+  }
+
+  // 2) Receipts <-> bind turns, POSITIONALLY and by outcome. The in-loop receipts are in chain
+  // order (the receipt recorder captures each bind in order); the bind judgment turns are appended
+  // in that SAME order (in-mutex, right after each chain advance). So the i-th bind turn must anchor
+  // the i-th in-loop receipt AND its verdict.kind must equal the signed receipt outcome. A set/count
+  // check alone would let a stale/tampered ledger swap r1/r2 or relabel an APPROVED receipt REFUSED.
+  const inLoopReceipts: { id: string; outcome: unknown; scope: Record<string, unknown> | undefined }[] = [];
+  input.receipts.forEach((r, i) => {
+    const c = r.constraints;
+    const isTerminal = isRecord(c?.loop_close);
+    const isInLoop = isRecord(c?.loop) && !isTerminal;
+    if (isInLoop) {
+      if (typeof r.receipt_id !== "string") {
+        throw new Error(`In-loop receipt ${describe(r, i)} is missing a string receipt_id (fail closed).`);
+      }
+      inLoopReceipts.push({
+        id: r.receipt_id,
+        outcome: (r as Record<string, unknown>).outcome,
+        scope: isRecord((c as { scope?: unknown }).scope) ? ((c as { scope: Record<string, unknown> }).scope) : undefined
+      });
+    }
+  });
+  const bindTurns = turns.filter((t) => t.verdict.source === "bind");
+  if (bindTurns.length !== inLoopReceipts.length) {
+    throw new Error(
+      `Bind judgment turn count (${bindTurns.length}) does not match in-loop receipt count ` +
+        `(${inLoopReceipts.length}); every in-loop receipt must map to exactly one bind turn (fail closed).`
+    );
+  }
+  for (let i = 0; i < bindTurns.length; i += 1) {
+    const t = bindTurns[i]!;
+    const r = inLoopReceipts[i]!;
+    if (!t.verdict.receipt_id) {
+      throw new Error(`Bind judgment turn ${t.turn_index} has no signed receipt anchor (fail closed).`);
+    }
+    if (t.verdict.receipt_id !== r.id) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} anchors receipt ${t.verdict.receipt_id} but the in-loop receipt at ` +
+          `chain position ${i} is ${r.id}; the judgment order diverges from the signed receipt order (fail closed).`
+      );
+    }
+    if (t.verdict.kind !== r.outcome) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} verdict ${t.verdict.kind} does not match signed receipt ${r.id} ` +
+          `outcome ${JSON.stringify(r.outcome)} (fail closed).`
+      );
+    }
+    // Bind the turn's proposed descriptor to the SIGNED constraints.scope stamp on the receipt. The
+    // stamp (action_class / tool_name / target hash) is part of the signed bind request, so a tampered
+    // ledger cannot recompute turn_ref with a different proposed move and still pass: the signed
+    // receipt commits what action was actually authorized. (Scoped in-loop receipts always carry the
+    // stamp — the Capsule Gate 1 per-receipt check above already enforced its presence.)
+    if (!r.scope) {
+      throw new Error(`In-loop receipt ${r.id} has no signed constraints.scope stamp to bind its bind turn descriptor to (fail closed).`);
+    }
+    const sAction = typeof r.scope.action_class === "string" ? r.scope.action_class : undefined;
+    const sTool = typeof r.scope.tool_name === "string" ? r.scope.tool_name : undefined;
+    const sTarget = typeof r.scope.target_descriptor === "string" ? r.scope.target_descriptor : null;
+    if (
+      t.proposed.action_class !== sAction ||
+      t.proposed.tool_name !== sTool ||
+      (t.proposed.target_descriptor ?? null) !== sTarget
+    ) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} proposed descriptor (${t.proposed.action_class}/${t.proposed.tool_name}/` +
+          `${t.proposed.target_descriptor ?? "—"}) does not match the signed constraints.scope stamp on receipt ${r.id} (fail closed).`
+      );
+    }
+    // The signed stamp also carries the authoritative scope_ref (the scope VERSION this step ran
+    // under); bind it so a tampered ledger cannot recompute turn_ref under a different scope version
+    // and have the reduced `scope_refs` misreport which version actually authorized the move.
+    const sScopeRef = typeof r.scope.scope_ref === "string" ? r.scope.scope_ref : undefined;
+    if (t.scope_ref !== sScopeRef) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} cites scope_ref ${JSON.stringify(t.scope_ref)} but the signed ` +
+          `constraints.scope stamp on receipt ${r.id} cites ${JSON.stringify(sScopeRef)} (fail closed).`
+      );
+    }
+    // For multi-target tools the signed stamp carries the authoritative per-target hash list
+    // (`target_descriptors`), which is ALSO part of the turn's proposed move (and thus turn_ref).
+    // Bind it canonically (order-independent) so a tampered ledger cannot alter the individual target
+    // hashes for the authorized move while the receipt proves a different list. Both absent is a match.
+    const canonTargets = (v: unknown): string | undefined =>
+      Array.isArray(v) ? JSON.stringify([...(v as unknown[])].map((x) => String(x)).sort()) : undefined;
+    if (canonTargets(r.scope.target_descriptors) !== canonTargets(t.proposed.target_descriptors)) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} proposed target_descriptors do not match the signed constraints.scope ` +
+          `stamp's per-target hash list on receipt ${r.id} (fail closed).`
+      );
+    }
+  }
+
+  // 3) Scope events <-> scope_gate / loop_bound turns, by CONTENT. The event_hash commits the event's
+  // decision, event_type, matched_rule, and attempted descriptor (deriveScopeEventHash), so anchoring a
+  // hash is not enough: the turn's verdict kind/source/reason_code and proposed descriptor must match
+  // the attested event — else a turn could anchor a real REFUSED event but claim APPROVED, or label a
+  // max_steps (loop_bound) halt as scope_gate. Each attested event must be anchored by exactly one turn.
+  const eventHashes = input.scope_events.map((e) => e.event_hash);
+  const eventByHash = new Map(input.scope_events.map((e) => [e.event_hash, e]));
+  const anchoredEvents = new Set<string>();
+  for (const t of turns) {
+    if (t.verdict.source !== "scope_gate" && t.verdict.source !== "loop_bound") continue;
+    const h = t.verdict.scope_event_hash;
+    if (!h) {
+      throw new Error(`Scope/loop-bound judgment turn ${t.turn_index} has no scope_event_hash anchor (fail closed).`);
+    }
+    const event = eventByHash.get(h);
+    if (!event) {
+      throw new Error(`Judgment turn ${t.turn_index} anchors scope_event_hash ${h}, which is not an attested scope event (fail closed).`);
+    }
+    if (anchoredEvents.has(h)) {
+      throw new Error(`Attested scope event ${h} is anchored by more than one judgment turn (fail closed).`);
+    }
+    if (t.verdict.kind !== event.decision) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} verdict ${t.verdict.kind} does not match attested scope event ${h} decision ` +
+          `${event.decision} (fail closed).`
+      );
+    }
+    // A max_steps event is a loop_bound halt; every other attested scope event is a scope_gate refusal.
+    const expectedSource = event.matched_rule === "max_steps" ? "loop_bound" : "scope_gate";
+    if (t.verdict.source !== expectedSource) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} source ${t.verdict.source} does not match attested scope event ${h} ` +
+          `(matched_rule ${JSON.stringify(event.matched_rule)} implies ${expectedSource}); fail closed.`
+      );
+    }
+    if ((t.verdict.reason_code ?? null) !== (event.matched_rule ?? null)) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} reason_code ${JSON.stringify(t.verdict.reason_code)} does not match attested ` +
+          `scope event ${h} matched_rule ${JSON.stringify(event.matched_rule)} (fail closed).`
+      );
+    }
+    if (
+      t.proposed.action_class !== event.attempted.action_class ||
+      t.proposed.tool_name !== event.attempted.tool_name ||
+      (t.proposed.target_descriptor ?? null) !== (event.attempted.target_descriptor ?? null)
+    ) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} proposed descriptor does not match the descriptor committed by attested ` +
+          `scope event ${h} (fail closed).`
+      );
+    }
+    // The event_hash also commits the event's prior_receipt_id, and the live path records the event +
+    // turn in one serialized section (same predecessor). Require the turn's inherited prior to equal
+    // the attested event's anchor, so a tampered ledger cannot reposition a scope-gate turn against a
+    // predecessor different from the one the attested event was anchored to.
+    if ((t.prior_receipt_id ?? null) !== (event.prior_receipt_id ?? null)) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} inherits prior_receipt_id ${JSON.stringify(t.prior_receipt_id ?? null)} but ` +
+          `attested scope event ${h} is anchored to ${JSON.stringify(event.prior_receipt_id ?? null)} (fail closed).`
+      );
+    }
+    // The event_hash also commits the event's scope_ref (the scope VERSION the refusal happened
+    // under). Bind it so a tampered ledger cannot keep the real event hash while altering the turn's
+    // scope_ref to publish the refusal under a false scope version.
+    if (t.scope_ref !== event.scope_ref) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} cites scope_ref ${JSON.stringify(t.scope_ref)} but attested scope event ${h} ` +
+          `commits scope_ref ${JSON.stringify(event.scope_ref)} (fail closed).`
+      );
+    }
+    anchoredEvents.add(h);
+  }
+  for (const h of eventHashes) {
+    if (!anchoredEvents.has(h)) {
+      throw new Error(`Attested scope event ${h} has no matching judgment turn (fail closed).`);
+    }
+  }
+
+  // 4) Runtime reports exist on EXACTLY the FORWARDED calls — i.e. every APPROVED bind turn, and
+  // nothing else (decideForward forwards on APPROVED only):
+  //   - REQUIRED on every APPROVED bind turn. Runtime hashing is TOTAL at the adapter (cycles,
+  //     BigInt, Errors, etc. reduce to a deterministic tagged form), so "runtime outputs/errors are
+  //     hashed but not interpreted" is unconditional — a forwarded turn with no runtime_report is a
+  //     stale/tampered ledger, not an accepted gap (fail closed).
+  //   - FORBIDDEN anywhere else. Since runtime_report is excluded from turn_ref, a tampered ledger
+  //     could otherwise bolt a result/error hash onto a REFUSED / ESCALATED / scope-gate /
+  //     loop-bound turn and have the reducer publish a runtime result that never happened.
+  //   - Shape-bound: `returned` is a boolean and EXACTLY the hash matching `returned` is present
+  //     (returned=true => result_hash only; false => error_hash only), sha256-shaped.
+  for (const t of turns) {
+    const rr = t.runtime_report;
+    if (!rr) {
+      if (t.verdict.source === "bind" && t.verdict.kind === "APPROVED") {
+        throw new Error(
+          `Judgment turn ${t.turn_index} is an APPROVED (forwarded) bind turn but carries no runtime_report; ` +
+            `every forwarded call must anchor its hashed runtime result/error (fail closed).`
+        );
+      }
+      continue;
+    }
+    if (t.verdict.source !== "bind" || t.verdict.kind !== "APPROVED") {
+      throw new Error(
+        `Judgment turn ${t.turn_index} carries a runtime_report but is not an APPROVED bind turn; only a forwarded ` +
+          `call returns a runtime result/error (fail closed).`
+      );
+    }
+    if (typeof rr.returned !== "boolean") {
+      throw new Error(`Judgment turn ${t.turn_index} runtime_report.returned must be a boolean (fail closed).`);
+    }
+    if (rr.returned) {
+      if (typeof rr.result_hash !== "string" || !RUNTIME_HASH.test(rr.result_hash)) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=true requires a structural result_hash (fail closed).`);
+      }
+      if (rr.error_hash !== undefined) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=true must not carry an error_hash (fail closed).`);
+      }
+    } else {
+      if (typeof rr.error_hash !== "string" || !RUNTIME_HASH.test(rr.error_hash)) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=false requires a structural error_hash (fail closed).`);
+      }
+      if (rr.result_hash !== undefined) {
+        throw new Error(`Judgment turn ${t.turn_index} runtime_report returned=false must not carry a result_hash (fail closed).`);
+      }
+    }
+  }
+
+  // 5) Fold + project under the privacy mode.
+  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode });
+  const projectedTurns = turns.map((t) => projectTurn(t, mode));
+
+  // Proof Mode is content-blind: no projected turn may carry a plaintext delta.
+  if (mode === "proof") {
+    for (const t of projectedTurns) {
+      if (t.declared_delta !== undefined) {
+        throw new Error(`Proof Mode judgment turn ${t.turn_index} carries a plaintext declared_delta (fail closed).`);
+      }
+    }
+  }
+
+  // FAIL CLOSED (continuation binding): when the continuation carries a judgment summary, it must
+  // match the VERIFIED reduced fold — so a tampered/stale continuation cannot under-report verdicts,
+  // refs, or the final turn while the pack carries the real ledger.
+  if (continuation.final_turn_ref !== undefined && (continuation.final_turn_ref ?? null) !== (reduced.final_turn_ref ?? null)) {
+    throw new Error(`Continuation final_turn_ref does not match the verified judgment ledger (fail closed).`);
+  }
+  if (continuation.judgment) {
+    // Compare the ENTIRE judgment summary the continuation will publish (continuation-capsule.json
+    // copies capsule.judgment verbatim) against the section rebuilt from the VERIFIED reduced fold —
+    // including refused_steps and the runtime hash lists, not just the counts/refs. A field-subset
+    // comparison would let a stale/tampered continuation hide a REFUSED step, flip a `corrected` flag,
+    // or fake runtime hashes while the structural totals still matched. Canonical (sorted-key) JSON so
+    // key order is irrelevant; the section is mode-independent (purely structural).
+    const expected: ContinuationJudgmentSection = {
+      judgment_ledger_version: JUDGMENT_LEDGER_VERSION,
+      final_turn_ref: reduced.final_turn_ref,
+      turn_count: reduced.turn_count,
+      verdict_counts: reduced.verdict_counts,
+      source_counts: reduced.source_counts,
+      receipt_refs: reduced.receipt_refs,
+      scope_event_refs: reduced.scope_event_refs,
+      runtime_result_hashes: reduced.runtime_result_hashes,
+      runtime_error_hashes: reduced.runtime_error_hashes,
+      refused_steps: reduced.refused_steps
+    };
+    if (canonicalScopeJson(continuation.judgment) !== canonicalScopeJson(expected)) {
+      throw new Error(`Continuation judgment summary does not match the verified judgment ledger (fail closed).`);
+    }
+  }
+
+  const ledger: JudgmentLedgerExport = {
+    judgment_ledger_version: JUDGMENT_LEDGER_VERSION,
+    loop_id,
+    scope_ref,
+    mode,
+    final_turn_ref: reduced.final_turn_ref,
+    turn_count: projectedTurns.length,
+    reduced,
+    turns: projectedTurns
+  };
+  const markdown = renderJudgmentLedgerMarkdown(loop_id, projectedTurns, mode);
+  const capsule_ref = deriveContinuationRef(continuation);
+  const memory = buildMemoryInjection({ loop_id, capsule_ref, scope_ref, reduced });
+  return { ledger, markdown, memory };
+}
+
+/** Content-blind, mode-independent identity of a continuation capsule (over its structural projection). */
+function deriveContinuationRef(continuation: ContinuationCapsule): string {
+  return `cap_v1:${sha256Hex(canonicalScopeJson(projectContinuationProofMode(continuation)))}`;
 }
 
 /** Authority Context Graph node describing this one verified loop. */
@@ -934,6 +1326,16 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `- \`continuation-capsule.json\` — settled / open / next + what changed, inheriting \`scope_ref\`.`,
       `- Scope refusals/escalations are attested by \`event_hash\` under \`bundle.json\` ->`,
       `  \`capsule.scope_events.event_hashes\` (${bundle.capsule.scope_events.count} event(s)).`,
+      ...(bundle.capsule.judgment
+        ? [
+            `- \`judgment-ledger.json\` — the verified judgment path (Capsule Gate 2): ${bundle.capsule.judgment.turn_count}`,
+            `  ordered turn(s), final_turn_ref \`${bundle.capsule.judgment.final_turn_ref ?? "—"}\`. Each turn is`,
+            `  hash-linked (prior_turn_ref) and anchored to a signed receipt (bind verdicts) or an attested`,
+            `  scope event (scope/loop-bound refusals). Runtime results are HASHED, never interpreted.`,
+            `  \`judgment-ledger.md\` is the human-readable projection; \`memory-injection.json\` is the portable`,
+            `  handoff object. In Proof Mode all three are content-blind (no plaintext deltas).`
+          ]
+        : []),
       ``,
       `### Target-lane guarantees (what this proof does and does not assert)`,
       ``,

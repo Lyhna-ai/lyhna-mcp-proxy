@@ -105,13 +105,16 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
     createSyntheticDemoBindClient,
     createReceiptRecorder,
     createScopeEventRecorder,
-    buildContinuationCapsule
+    createJudgmentRecorder,
+    buildContinuationCapsule,
+    reduceJudgmentLedger
   } = lib;
 
   const recorder = createReceiptRecorder();
   const scopeEvents = createScopeEventRecorder();
+  const judgment = createJudgmentRecorder();
   const bindClient = recorder.wrap(createSyntheticDemoBindClient());
-  const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 2000, retryDelayMs: 50 }, scopeEvents);
+  const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 2000, retryDelayMs: 50 }, scopeEvents, judgment);
 
   const standing = await serveStandingHttpProxy({
     upstream: syntheticUpstream(),
@@ -126,8 +129,8 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
   const socketPath = join(tmpdir(), `lyhna-capsule-control-${process.pid}-${Date.now()}.sock`);
   const control = await serveControlChannel(
     onWindows
-      ? { transport: "tcp", host: "127.0.0.1", port: 0, registry, receiptSource: recorder, scopeEventSource: scopeEvents }
-      : { transport: "unix", socketPath, registry, receiptSource: recorder, scopeEventSource: scopeEvents }
+      ? { transport: "tcp", host: "127.0.0.1", port: 0, registry, receiptSource: recorder, scopeEventSource: scopeEvents, judgmentRecorder: judgment }
+      : { transport: "unix", socketPath, registry, receiptSource: recorder, scopeEventSource: scopeEvents, judgmentRecorder: judgment }
   );
   const connectControl = onWindows
     ? () => {
@@ -173,36 +176,75 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
         log(`  [agent] out-of-scope write_file /billing/migrations/2026_ledger.sql -> BLOCKED pre-execution (attested)`);
       }
 
-      // 2c) Corrected in-lane action — forwarded.
+      // 2c) Corrected in-lane action — a second write to the same allowed target — forwarded.
+      await agent.client.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts", contents: "// corrected fix" } });
+      log(`  [agent] corrected write_file /checkout/cart.ts -> APPROVED & forwarded`);
+
+      // 2d) Final in-lane action — forwarded.
       await agent.client.callTool({ toolName: "run_tests", arguments: { suite: "checkout" } });
-      log(`  [agent] corrected run_tests checkout -> APPROVED & forwarded`);
+      log(`  [agent] in-lane  run_tests checkout -> APPROVED & forwarded`);
     } finally {
       await agent.close().catch(() => undefined);
     }
     if (!blockedAttempt) throw new Error("expected the out-of-scope attempt to be blocked, but it was not");
+
+    // 2.5) SUPERVISOR records state deltas on the relevant approved turns (the agent CANNOT — this
+    // is a control-channel verb). Read the live judgment ledger to find the approved turn_refs.
+    const preJudgment = await sendControl(connectControl, { cmd: "dump_judgment", loop_id: LOOP_ID, mode: "verified-context" });
+    if (!preJudgment.ok || !Array.isArray(preJudgment.turns)) throw new Error(`dump_judgment failed: ${JSON.stringify(preJudgment)}`);
+    const approvedTurns = preJudgment.turns.filter((t) => t.verdict.source === "bind" && t.verdict.kind === "APPROVED");
+    if (approvedTurns.length < 2) throw new Error(`expected >=2 approved bind turns, got ${approvedTurns.length}`);
+    const firstWrite = approvedTurns[0];
+    const testsTurn = approvedTurns[approvedTurns.length - 1];
+    const d1 = await sendControl(connectControl, {
+      cmd: "record_delta",
+      loop_id: LOOP_ID,
+      turn_ref: firstWrite.turn_ref,
+      delta: { settled: ["checkout fix written to /checkout/cart.ts"], changed: ["/checkout/cart.ts"] }
+    });
+    const d2 = await sendControl(connectControl, {
+      cmd: "record_delta",
+      loop_id: LOOP_ID,
+      turn_ref: testsTurn.turn_ref,
+      delta: {
+        settled: ["checkout tests run"],
+        open_questions: ["does the cart total rounding need a separate fix?"],
+        next_actions: ["land the checkout fix", "open follow-up if rounding recurs"]
+      }
+    });
+    if (!d1.ok || !d2.ok) throw new Error(`supervisor record_delta failed: ${JSON.stringify({ d1, d2 })}`);
+    log(`  [supervisor] record_delta on ${approvedTurns.length} approved turn(s)`);
 
     // 3) SUPERVISOR closes the loop.
     const closed = await sendControl(connectControl, { cmd: "close", session_id: SESSION_ID, outcome: "COMPLETED", reason: "capsule_demo_done" });
     if (!closed.ok || closed.sealed !== true) throw new Error(`supervisor close did not seal: ${JSON.stringify(closed)}`);
     log(`  [supervisor] close session=${SESSION_ID} sealed=true receipt=${closed.receipt_id}`);
 
-    // 4) SUPERVISOR dumps the sealed chain + the scope history / attested scope events.
+    // 4) SUPERVISOR dumps the sealed chain + scope history/events + the JUDGMENT LEDGER.
     const dumped = await sendControl(connectControl, { cmd: "dump", loop_id: LOOP_ID });
     if (!dumped.ok || !Array.isArray(dumped.receipts)) throw new Error(`dump failed: ${JSON.stringify(dumped)}`);
     const dumpedScope = await sendControl(connectControl, { cmd: "dump_scope", loop_id: LOOP_ID });
     if (!dumpedScope.ok) throw new Error(`dump_scope failed: ${JSON.stringify(dumpedScope)}`);
-    log(`  [supervisor] dump  loop=${LOOP_ID} receipts=${dumped.count} scope_events=${dumpedScope.scope_events.length}`);
+    const dumpedJudgment = await sendControl(connectControl, { cmd: "dump_judgment", loop_id: LOOP_ID, mode: "verified-context" });
+    if (!dumpedJudgment.ok || !Array.isArray(dumpedJudgment.turns)) throw new Error(`dump_judgment failed: ${JSON.stringify(dumpedJudgment)}`);
+    log(`  [supervisor] dump  loop=${LOOP_ID} receipts=${dumped.count} scope_events=${dumpedScope.scope_events.length} judgment_turns=${dumpedJudgment.turns.length}`);
 
-    // 5) SUPERVISOR builds the Continuation Capsule (settled/open/next come from the supervisor).
+    // 5) SUPERVISOR folds the judgment ledger and builds the Continuation Capsule from the reduced
+    // state (settled/open/next now come from the supervisor-declared deltas, folded over the turns).
     const sealedScope = dumpedScope.scope_history[dumpedScope.scope_history.length - 1];
+    const judgmentTurns = dumpedJudgment.turns;
+    const reduced = reduceJudgmentLedger({
+      loop_id: LOOP_ID,
+      scope_ref: sealedScope.scope_ref,
+      turns: judgmentTurns,
+      mode: "verified_context"
+    });
     const continuation = buildContinuationCapsule({
       scope_history: dumpedScope.scope_history,
       scope_events: dumpedScope.scope_events,
       loop: { loop_id: LOOP_ID, goal_hash: sealedScope.structural.goal_hash, sealed: true, action_count: dumped.count - 1 },
-      settled: ["checkout fix written to /checkout/cart.ts", "checkout tests run"],
-      open_questions: ["does the cart total rounding need a separate fix?"],
-      next_actions: ["land the checkout fix", "open follow-up if rounding recurs"],
-      mode: "verified_context"
+      mode: "verified_context",
+      reduced
     });
 
     return {
@@ -211,14 +253,17 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
         sealedScope,
         scopeHistory: dumpedScope.scope_history,
         continuation,
-        scopeEvents: dumpedScope.scope_events
+        scopeEvents: dumpedScope.scope_events,
+        judgmentTurns
       },
       summary: {
         loopId: LOOP_ID,
         scopeRef: opened.scope_ref,
         actionCount: dumped.count - 1,
         receiptCount: dumped.count,
-        scopeEventCount: dumpedScope.scope_events.length
+        scopeEventCount: dumpedScope.scope_events.length,
+        judgmentTurnCount: judgmentTurns.length,
+        finalTurnRef: reduced.final_turn_ref
       }
     };
   } finally {
@@ -240,17 +285,21 @@ export function exportCapsulePack({ material, outDir, mode = "verified-context",
     const historyPath = join(srcDir, "scope-history.json");
     const continuationPath = join(srcDir, "continuation.json");
     const eventsPath = join(srcDir, "events.json");
+    const judgmentPath = join(srcDir, "judgment.json");
     writeFileSync(receiptsPath, material.receiptsText);
     writeFileSync(scopePath, JSON.stringify(material.sealedScope, null, 2));
     writeFileSync(historyPath, JSON.stringify(material.scopeHistory ?? [material.sealedScope], null, 2));
     writeFileSync(continuationPath, JSON.stringify(material.continuation, null, 2));
     writeFileSync(eventsPath, JSON.stringify(material.scopeEvents, null, 2));
+    const judgmentArgs = material.judgmentTurns
+      ? ["--judgment", (writeFileSync(judgmentPath, JSON.stringify(material.judgmentTurns, null, 2)), judgmentPath)]
+      : [];
     execFileSync(
       "node",
       [
         exportCli, receiptsPath, "--out", outDir, "--source-env", "demo-capsule-gate",
         "--scope-capsule", scopePath, "--scope-history", historyPath, "--continuation", continuationPath,
-        "--scope-events", eventsPath, "--mode", mode
+        "--scope-events", eventsPath, ...judgmentArgs, "--mode", mode
       ],
       { stdio: "pipe" }
     );
@@ -379,6 +428,7 @@ async function main() {
     }
     log(`  ✓ DEMO cold-verify: ${verdict.detail}`);
     log(`  ✓ scope_ref=${produced.scopeRef}  attested scope events=${produced.scopeEventCount}  action_count=${produced.actionCount}`);
+    log(`  ✓ judgment turns=${produced.judgmentTurnCount}  final_turn_ref=${produced.finalTurnRef}`);
     log("");
     log(`Proof Pack written to: ${outDir}  (preserved after exit)`);
     log(`  scope-capsule.json        — sealed Scope Capsule (Verified Context: structural + sidecar)`);
@@ -386,8 +436,10 @@ async function main() {
     log(`  receipts.json             — the verifier input (bare receipt array)`);
     log(`  bundle.json               — additive envelope (+ capsule refs by hash)`);
     log(`  graph-node.json / .md     — Authority Context Graph node`);
-    log(`  continuation-capsule.json — settled/open/next + what changed`);
+    log(`  continuation-capsule.json — settled/open/next + what changed + judgment summary`);
     log(`  scope-events.json         — attested scope refusal(s)`);
+    log(`  judgment-ledger.json/.md  — the verified judgment path (Capsule Gate 2 middle)`);
+    log(`  memory-injection.json     — portable verified-memory capsule for the next agent`);
     log(`  verify-instructions.md    — how to cold-verify`);
   } finally {
     rmSync(scratch, { recursive: true, force: true });

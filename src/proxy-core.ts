@@ -2,6 +2,13 @@ import type { BindClient, BindRequest, BindResponse } from "./bind.js";
 import { buildBindRequest } from "./bind.js";
 import { decideForward, type ForwardDecision } from "./enforcement.js";
 import { LoopStepBoundError, mergeScopeConstraint, type LoopSession, type ScopeConstraint } from "./loop.js";
+import {
+  hashRuntimeError,
+  hashRuntimeResult,
+  type JudgmentProposedMove,
+  type JudgmentTurn
+} from "./judgment-ledger.js";
+import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 import {
   checkScopeStructural,
@@ -23,6 +30,10 @@ export type ProxyScopeContext = {
   mode: ScopePrivacyMode;
   recorder: ScopeEventRecorder;
   classMap?: Record<string, string>;
+  // Capsule Gate 2 (optional): the append-only judgment-ledger recorder. When present (and a loop
+  // session is in play), every consequential verdict — scope refusal, step-bound refusal, and bind
+  // outcome — is captured as an ordered judgment turn, serialized against the receipt chain.
+  judgment?: JudgmentLedgerRecorder;
 };
 
 export type ProxyCoreOptions = {
@@ -95,6 +106,14 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       // bindToolCall) so it always cites the same predecessor as constraints.loop — never a stale
       // value under concurrent scoped calls.
       let scopeStamp: Omit<ScopeConstraint, "prior_receipt_id"> | undefined;
+      // Capsule Gate 2: the structural move proposed this turn (action_class / tool_name / target
+      // HASH), derived from the SAME scope decision the gate made — never plaintext, never inferred.
+      let proposed: JudgmentProposedMove | undefined;
+      // Judgment capture is engaged only on the serialized loop path (the mutex that orders the
+      // receipt chain). Absent a loop session there is no chain to serialize against, so turns would
+      // have no defined order — skip recording rather than produce an unordered ledger.
+      const judgmentRecorder = options.loopSession ? options.scope?.judgment : undefined;
+
       if (options.scope) {
         const { sealed, mode, recorder } = options.scope;
         const decision = checkScopeStructural(call, sealed, {
@@ -103,23 +122,47 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         });
 
         if (decision.decision !== "IN_SCOPE") {
-          const event = recorder.record({
-            event_type: decision.decision === "ESCALATED" ? "scope_escalation" : "scope_refusal",
-            loop_id: sealed.structural.loop_id,
-            scope_ref: sealed.scope_ref,
-            attempted: {
-              action_class: decision.descriptor.action_class,
-              tool_name: decision.descriptor.tool_name,
-              target_descriptor: decision.descriptor.target_descriptor,
-              // Verified Context Mode only: plaintext target is retained in the sidecar event
-              // (Proof Mode resolves no plaintext, so this is naturally absent).
-              ...(decision.target_plaintext !== undefined ? { target: decision.target_plaintext } : {})
-            },
-            matched_rule: decision.matched_rule,
-            decision: decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED",
-            // Best-effort anchor for the (off-chain) attestation: the last receipt the loop saw.
-            prior_receipt_id: options.loopSession?.priorReceiptId ?? sealed.structural.prior_receipt_ref ?? null
-          });
+          const eventDecision = decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED";
+          // Record the attested scope event AND its judgment turn anchored to the SAME predecessor.
+          // When there is a loop, do BOTH inside one serialized section (runInLoopOrder) so the
+          // event's prior_receipt_id and the turn's inherited prior_receipt_id cannot diverge under a
+          // concurrent bind's chain advance — the event anchor and the ledger position stay coherent.
+          const recordRefusal = (prior_receipt_id: string | null): ScopeEvent => {
+            const e = recorder.record({
+              event_type: decision.decision === "ESCALATED" ? "scope_escalation" : "scope_refusal",
+              loop_id: sealed.structural.loop_id,
+              scope_ref: sealed.scope_ref,
+              attempted: {
+                action_class: decision.descriptor.action_class,
+                tool_name: decision.descriptor.tool_name,
+                target_descriptor: decision.descriptor.target_descriptor,
+                // Verified Context Mode only: plaintext target is retained in the sidecar event
+                // (Proof Mode resolves no plaintext, so this is naturally absent).
+                ...(decision.target_plaintext !== undefined ? { target: decision.target_plaintext } : {})
+              },
+              matched_rule: decision.matched_rule,
+              decision: eventDecision,
+              prior_receipt_id
+            });
+            if (judgmentRecorder) {
+              judgmentRecorder.append({
+                loop_id: sealed.structural.loop_id,
+                scope_ref: sealed.scope_ref,
+                prior_receipt_id,
+                proposed: proposedFrom(decision.descriptor),
+                verdict: {
+                  kind: eventDecision,
+                  source: "scope_gate",
+                  scope_event_hash: e.event_hash,
+                  ...(decision.matched_rule !== undefined ? { reason_code: decision.matched_rule } : {})
+                }
+              });
+            }
+            return e;
+          };
+          const event = options.loopSession
+            ? await options.loopSession.runInLoopOrder(recordRefusal)
+            : recordRefusal(sealed.structural.prior_receipt_ref ?? null);
           // Refuse before execution: bind is never called, the tool never runs.
           throw new ScopeGateError(decision, event);
         }
@@ -131,6 +174,7 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
           target_descriptor: decision.descriptor.target_descriptor,
           ...(decision.descriptor.target_descriptors ? { target_descriptors: decision.descriptor.target_descriptors } : {})
         };
+        proposed = proposedFrom(decision.descriptor);
       }
 
       let bindResponse: BindResponse;
@@ -148,6 +192,47 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         );
       }
 
+      // Capsule Gate 2: capture the bind judgment turn appended INSIDE the loop mutex (so it sits in
+      // receipt order). Held here so the post-forward runtime report can be attached by its turn_ref.
+      let boundTurn: JudgmentTurn | undefined;
+
+      // Capsule Gate 2: a step-bound refusal is DECIDED inside the loop mutex. Record its scope event
+      // and its loop_bound judgment turn IN that same critical section (via onStepBound) — so they sit
+      // in order with the surrounding verdicts and can never be reordered behind a concurrently-queued
+      // bind that runs after the throw releases the mutex. The event is read back here for the
+      // ScopeGateError. onStepBound runs inside runExclusive, so it appends synchronously (no
+      // re-entrant mutex acquisition) and reads the predecessor at decision time.
+      let stepBoundEvent: ScopeEvent | undefined;
+      const onStepBound =
+        options.scope && scopeStamp
+          ? () => {
+              const { sealed, recorder } = options.scope!;
+              const event = recorder.record({
+                event_type: "scope_refusal",
+                loop_id: sealed.structural.loop_id,
+                scope_ref: sealed.scope_ref,
+                attempted: {
+                  action_class: scopeStamp!.action_class,
+                  tool_name: scopeStamp!.tool_name,
+                  target_descriptor: scopeStamp!.target_descriptor
+                },
+                matched_rule: "max_steps",
+                decision: "REFUSED",
+                prior_receipt_id: options.loopSession?.priorReceiptId ?? null
+              });
+              stepBoundEvent = event;
+              if (judgmentRecorder && proposed) {
+                judgmentRecorder.append({
+                  loop_id: sealed.structural.loop_id,
+                  scope_ref: sealed.scope_ref,
+                  prior_receipt_id: options.loopSession?.priorReceiptId ?? null,
+                  proposed,
+                  verdict: { kind: "REFUSED", source: "loop_bound", scope_event_hash: event.event_hash, reason_code: "max_steps" }
+                });
+              }
+            }
+          : undefined;
+
       try {
         bindResponse = options.loopSession
           ? // Loop path: bindToolCall stamps constraints.loop AND constraints.scope under one
@@ -157,7 +242,18 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
               bindRequest,
               (request) => options.bindClient.bind(request),
               scopeStamp,
-              maxSteps
+              maxSteps,
+              judgmentRecorder && proposed
+                ? {
+                    recorder: judgmentRecorder,
+                    scope_ref: options.scope!.sealed.scope_ref,
+                    proposed,
+                    onTurn: (turn) => {
+                      boundTurn = turn;
+                    }
+                  }
+                : undefined,
+              onStepBound
             )
           : // No-loop path: no chain to advance, so stamp the scope anchor from the declared
             // prior reference (if any) and bind directly.
@@ -170,10 +266,11 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
                 : bindRequest
             );
       } catch (error) {
-        // A step-bound violation is a SCOPE refusal discovered under the mutex: attest it as a
-        // sidecar scope event and surface it as a ScopeGateError (the tool never executed).
+        // A step-bound violation is a SCOPE refusal discovered under the mutex: its scope event +
+        // loop_bound judgment turn were recorded IN-MUTEX by onStepBound (above); surface it as a
+        // ScopeGateError (the tool never executed).
         if (error instanceof LoopStepBoundError && options.scope && scopeStamp) {
-          const { sealed, recorder } = options.scope;
+          const { sealed } = options.scope;
           const stepDecision: ScopeDecision = {
             decision: "REFUSED",
             reason: error.message,
@@ -184,19 +281,18 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
               target_descriptor: scopeStamp.target_descriptor ?? null
             }
           };
-          const event = recorder.record({
-            event_type: "scope_refusal",
-            loop_id: sealed.structural.loop_id,
-            scope_ref: sealed.scope_ref,
-            attempted: {
-              action_class: scopeStamp.action_class,
-              tool_name: scopeStamp.tool_name,
-              target_descriptor: scopeStamp.target_descriptor
-            },
-            matched_rule: "max_steps",
-            decision: "REFUSED",
-            prior_receipt_id: options.loopSession?.priorReceiptId ?? null
-          });
+          // Reuse the in-mutex event; defensively record one only if onStepBound somehow did not run.
+          const event =
+            stepBoundEvent ??
+            options.scope.recorder.record({
+              event_type: "scope_refusal",
+              loop_id: sealed.structural.loop_id,
+              scope_ref: sealed.scope_ref,
+              attempted: { action_class: scopeStamp.action_class, tool_name: scopeStamp.tool_name, target_descriptor: scopeStamp.target_descriptor },
+              matched_rule: "max_steps",
+              decision: "REFUSED",
+              prior_receipt_id: options.loopSession?.priorReceiptId ?? null
+            });
           throw new ScopeGateError(stepDecision, event);
         }
         throw new BindGateError(
@@ -210,7 +306,27 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       const decision = decideForward(bindResponse);
 
       if (decision === "FORWARD") {
-        return options.upstream.callTool(call);
+        // Forward the EXACT payload (never mutated). Capsule Gate 2: hash the runtime result/error
+        // and attach it to the approved bind turn (additive; does not change turn_ref). The result
+        // is HASHED, never interpreted as true and never stored raw — so a Proof Mode pack carries
+        // no runtime plaintext. Hashing reads a copy; the result returned to the agent is unchanged.
+        //
+        // The upstream call is the ONLY thing that decides what the agent sees: its result is
+        // returned and its error is thrown VERBATIM. The judgment-ledger attach is OBSERVE-ONLY
+        // bookkeeping isolated below so it can never replace a completed result nor mask the real
+        // upstream error (recordRuntimeReport swallows its own failure — a missing hash only omits
+        // an optional anchor, it must not break the gate path).
+        let result: McpToolResult;
+        try {
+          result = await options.upstream.callTool(call);
+        } catch (error) {
+          // Pass the RAW error; recordRuntimeReport hashes it inside its own swallow so a
+          // non-canonicalizable throw (BigInt / cyclic object) cannot mask the real upstream error.
+          recordRuntimeReport(judgmentRecorder, boundTurn, { returned: false, error });
+          throw error;
+        }
+        recordRuntimeReport(judgmentRecorder, boundTurn, { returned: true, result });
+        return result;
       }
 
       if (decision === "HOLD_AWAIT_RESOLUTION") {
@@ -227,5 +343,44 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         bindResponse
       );
     }
+  };
+}
+
+/**
+ * Hash a forwarded call's runtime result/error and attach it to a captured bind turn — OBSERVE-ONLY
+ * bookkeeping. Runtime hashing is TOTAL (hashRuntimeResult / hashRuntimeError never throw: cycles,
+ * BigInt, Errors, undefined, functions, and symbols all reduce to a deterministic tagged form), so
+ * EVERY forwarded call carries a runtime hash — "hashed, never interpreted" holds unconditionally,
+ * and the export REQUIRES a runtime_report on every APPROVED bind turn. The try/catch remains as the
+ * last-resort guard around the ATTACH itself: the judgment ledger must never break or mask the
+ * agent-facing forward. No-op when there is no turn / recorder.
+ */
+function recordRuntimeReport(
+  recorder: JudgmentLedgerRecorder | undefined,
+  turn: JudgmentTurn | undefined,
+  outcome: { returned: true; result: unknown } | { returned: false; error: unknown }
+): void {
+  if (!recorder || !turn) return;
+  try {
+    const report = outcome.returned
+      ? { returned: true as const, result_hash: hashRuntimeResult(outcome.result) }
+      : { returned: false as const, error_hash: hashRuntimeError(outcome.error) };
+    recorder.attachRuntimeReport(turn.loop_id, turn.turn_ref, report);
+  } catch {
+    // Observe-only: a hashing or attach failure must not affect the forwarded result/error.
+  }
+}
+
+/**
+ * Derive the Capsule Gate 2 proposed-move descriptor from the gate's structural scope descriptor.
+ * Carries only structural fields / target HASHES — never plaintext (the gate already hashed the
+ * target; the plaintext, if any, stays in the Verified-Context sidecar scope event, not here).
+ */
+function proposedFrom(descriptor: ScopeDecision["descriptor"]): JudgmentProposedMove {
+  return {
+    action_class: descriptor.action_class,
+    tool_name: descriptor.tool_name,
+    target_descriptor: descriptor.target_descriptor ?? null,
+    ...(descriptor.target_descriptors ? { target_descriptors: descriptor.target_descriptors } : {})
   };
 }

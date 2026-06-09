@@ -15,7 +15,10 @@
 //
 // NON-NEGOTIABLE (self-attestation guard): the agent's MCP path has no open/close verb
 // and never reaches this listener. Agent path and control path are topologically
-// distinct. If the agent could close its own loop here, the whole proof collapses.
+// distinct. If the agent could close its own loop here, the whole proof collapses. The
+// Capsule Gate 2 verbs `dump_judgment` (read the ordered judgment ledger) and `record_delta`
+// (attach a supervisor-declared, Verified-Context-only state delta to a turn) live ONLY here
+// for the same reason — the agent can neither read the ledger nor forge settled/open/next state.
 //
 // Wire protocol: newline-delimited JSON. One request object per line; one response
 // object per line. Deliberately NOT HTTP and NOT MCP — there is no shared routing
@@ -33,8 +36,10 @@ import { chmod, unlink } from "node:fs/promises";
 
 import type { ReceiptSource } from "./receipt-recorder.js";
 import type { LoopSessionRegistry } from "./session-registry.js";
-import type { ScopeCapsule } from "./scope-capsule.js";
+import type { ScopeCapsule, ScopePrivacyMode } from "./scope-capsule.js";
 import type { ScopeEventSource } from "./scope-event-recorder.js";
+import { projectTurn } from "./judgment-ledger.js";
+import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 
 export type ControlChannelLogger = (line: string) => void;
 
@@ -53,6 +58,12 @@ export type ControlChannelOptions =
        * omitted, `dump_scope` returns scope history only. Never on the agent path.
        */
       scopeEventSource?: ScopeEventSource;
+      /**
+       * Optional judgment-ledger recorder backing the supervisor `dump_judgment` and `record_delta`
+       * verbs (Capsule Gate 2). When omitted, those verbs fail closed. Supervisor-only: it lives on
+       * the control channel, which the agent's MCP path never reaches.
+       */
+      judgmentRecorder?: JudgmentLedgerRecorder;
       logger?: ControlChannelLogger;
     }
   | {
@@ -62,6 +73,7 @@ export type ControlChannelOptions =
       registry: LoopSessionRegistry;
       receiptSource?: ReceiptSource;
       scopeEventSource?: ScopeEventSource;
+      judgmentRecorder?: JudgmentLedgerRecorder;
       logger?: ControlChannelLogger;
     };
 
@@ -81,7 +93,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, log);
+    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, options.judgmentRecorder, log);
   });
 
   if (options.transport === "unix") {
@@ -135,6 +147,7 @@ function handleConnection(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
+  judgmentRecorder: JudgmentLedgerRecorder | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
@@ -156,7 +169,7 @@ function handleConnection(
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
         queue = queue.then(async () => {
-          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, log);
+          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, judgmentRecorder, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -179,6 +192,7 @@ async function dispatchLine(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
+  judgmentRecorder: JudgmentLedgerRecorder | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;
@@ -288,12 +302,104 @@ async function dispatchLine(
         return { ok: true, loop_id, count: receipts.length, receipts };
       }
 
+      case "dump_judgment": {
+        // Read-only supervisor verb (Capsule Gate 2): hand back the ordered judgment ledger for a
+        // loop so the supervisor can package the Continuation Capsule / Proof Pack judgment artifacts.
+        // Supervisor-only by construction — this verb lives on the control channel, which the agent's
+        // MCP path never reaches. Addressable by loop_id OR session_id (the loop survives close).
+        //
+        // MODE CONTRACT: turns are projected under the loop's SEALED privacy_mode by default. A
+        // verified_context projection (which may expose plaintext deltas) is granted ONLY when BOTH
+        // the requested mode and the sealed scope are verified_context; otherwise it downgrades to
+        // Proof Mode (strictly more restrictive — always safe), so a proof-mode loop can never leak
+        // a plaintext delta through this verb.
+        if (!judgmentRecorder) {
+          return { ok: false, error: "Judgment dump is not enabled on this control channel." };
+        }
+        const loop_id = resolveJudgmentLoopId(command, registry);
+        if (!loop_id) {
+          return { ok: false, error: "dump_judgment requires a `loop_id`, or a `session_id` for a known loop." };
+        }
+        const sealedMode = registry.privacyModeForLoop(loop_id) ?? "proof";
+        const requested = normalizeProjectionMode(command.mode) ?? sealedMode;
+        const mode: ScopePrivacyMode =
+          requested === "verified_context" && sealedMode === "verified_context" ? "verified_context" : "proof";
+        const turns = judgmentRecorder.judgmentLedgerForLoop(loop_id).map((t) => projectTurn(t, mode));
+        return { ok: true, loop_id, mode, count: turns.length, turns };
+      }
+
+      case "record_delta": {
+        // SUPERVISOR-ONLY (Capsule Gate 2): attach a declared state delta to an existing judgment
+        // turn. Control-channel only; never on the agent path (so the agent cannot forge
+        // settled/open/next state). The delta is a PLAINTEXT sidecar — Verified Context Mode ONLY:
+        // a proof-mode loop fails closed (deltas never enter a content-blind loop). It is additive,
+        // attaches by turn_ref (fail-closed on an unknown turn_ref), and never enters
+        // bind/core/gate/signing/canonicalization.
+        if (!judgmentRecorder) {
+          return { ok: false, error: "record_delta is not enabled on this control channel." };
+        }
+        const turn_ref = requireString(command, "turn_ref");
+        const loop_id = resolveJudgmentLoopId(command, registry);
+        if (!loop_id) {
+          return { ok: false, error: "record_delta requires a `loop_id`, or a `session_id` for a known loop." };
+        }
+        // DURING-RUN ONLY (checked before anything else): the Verified Context sidecar is sealed
+        // when the loop is sealed. A delta attached after close — and folded into the continuation —
+        // would be exactly the post-hoc reconstruction the capsule claims not to be. Close means
+        // close: a closed/sealed loop (including one resolved via the retained post-close
+        // scope/session lookup) fails closed. There is no post-close annotation mode in this gate.
+        if (!registry.isLoopOpen(loop_id)) {
+          return {
+            ok: false,
+            error: `record_delta is during-run only; loop ${loop_id} is closed/sealed — the sidecar is sealed when the loop is sealed (fail closed).`
+          };
+        }
+        const sealedMode = registry.privacyModeForLoop(loop_id);
+        if (sealedMode !== "verified_context") {
+          return {
+            ok: false,
+            error: `record_delta is Verified Context Mode only; loop ${loop_id} is ${JSON.stringify(sealedMode ?? null)} (fail closed).`
+          };
+        }
+        if (!isRecord(command.delta)) {
+          return { ok: false, error: "record_delta requires a `delta` object (settled/open_questions/next_actions/changed)." };
+        }
+        // attachDelta validates the delta (fail-closed on a malformed/unknown field) and fail-closes
+        // on an unknown turn_ref; its throw is caught below and returned as { ok:false, error }.
+        const turn = judgmentRecorder.attachDelta(loop_id, turn_ref, command.delta as never);
+        log(`[control] record_delta loop=${loop_id} turn_ref=${turn_ref}`);
+        return { ok: true, loop_id, turn_ref, declared_delta: turn.declared_delta ?? {} };
+      }
+
       default:
         return { ok: false, error: `Unknown control command: ${command.cmd}` };
     }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Control command failed." };
   }
+}
+
+/**
+ * Resolve the loop_id a judgment verb addresses: an explicit `loop_id`, else the loop the
+ * supervisor opened for a `session_id` (which survives close). Returns undefined when neither
+ * resolves, so the caller fails closed.
+ */
+function resolveJudgmentLoopId(command: Record<string, unknown>, registry: LoopSessionRegistry): string | undefined {
+  if (typeof command.loop_id === "string" && command.loop_id.length > 0) {
+    return command.loop_id;
+  }
+  if (typeof command.session_id === "string" && command.session_id.length > 0) {
+    return registry.loopIdForSession(command.session_id);
+  }
+  return undefined;
+}
+
+/** Normalize an optional projection mode argument; undefined when absent, throws on a bad value. */
+function normalizeProjectionMode(value: unknown): ScopePrivacyMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "verified_context" || value === "verified-context") return "verified_context";
+  if (value === "proof") return "proof";
+  throw new Error(`mode must be "proof" or "verified-context", received ${JSON.stringify(value)}.`);
 }
 
 function requireString(record: Record<string, unknown>, key: string): string {

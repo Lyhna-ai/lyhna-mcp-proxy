@@ -12,6 +12,7 @@ import {
 import { createProxyCore } from "../proxy-core.js";
 import { createReceiptRecorder, type ReceiptSource } from "../receipt-recorder.js";
 import { createScopeEventRecorder, type ScopeEventSource } from "../scope-event-recorder.js";
+import { createJudgmentRecorder, type JudgmentLedgerRecorder } from "../judgment-recorder.js";
 import { LoopSessionRegistry } from "../session-registry.js";
 import { connectUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
 import { serveStandingHttpProxy } from "../transport/standing-http.js";
@@ -41,10 +42,14 @@ async function runStandingService(): Promise<void> {
   const recordingBind = recorder.wrap(config.bindClient);
   // Capsule Gate 1: supervisor-only scope-event store for attested scope refusals/escalations.
   const scopeEvents = createScopeEventRecorder();
+  // Capsule Gate 2: supervisor-only judgment-ledger store for ordered judgment turns. Like the
+  // receipt + scope-event stores, it is read back ONLY through the control channel.
+  const judgment = createJudgmentRecorder();
   const registry = new LoopSessionRegistry(
     (request) => recordingBind.bind(request),
     closeTuning,
-    scopeEvents
+    scopeEvents,
+    judgment
   );
 
   const standing = await serveStandingHttpProxy({
@@ -57,7 +62,7 @@ async function runStandingService(): Promise<void> {
     serverInfo: { name: "lyhna-mcp-proxy-standing", version: "0.1.0" }
   });
 
-  const control = await startControlChannel(registry, recorder, scopeEvents);
+  const control = await startControlChannel(registry, recorder, scopeEvents, judgment);
 
   process.stderr.write(
     `[lyhna-mcp-proxy] STANDING service: mcp=${standing.url}/<session_id>; ` +
@@ -161,13 +166,14 @@ function isStandingMode(env: NodeJS.ProcessEnv): boolean {
 function startControlChannel(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource,
-  scopeEventSource: ScopeEventSource
+  scopeEventSource: ScopeEventSource,
+  judgmentRecorder: JudgmentLedgerRecorder
 ): Promise<ControlChannelHandle> {
   const socketPath = process.env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   const logger = (line: string) => process.stderr.write(`${line}\n`);
 
   if (socketPath) {
-    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, scopeEventSource, logger });
+    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, scopeEventSource, judgmentRecorder, logger });
   }
 
   return serveControlChannel({
@@ -179,6 +185,7 @@ function startControlChannel(
     registry,
     receiptSource,
     scopeEventSource,
+    judgmentRecorder,
     logger
   });
 }
