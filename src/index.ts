@@ -137,6 +137,7 @@ export {
 export type {
   BuildContinuationCapsuleInput,
   ContinuationCapsule,
+  ContinuationJudgmentSection,
   ScopeAmendmentRecord,
   ScopeEventRef
 } from "./continuation-capsule.js";
