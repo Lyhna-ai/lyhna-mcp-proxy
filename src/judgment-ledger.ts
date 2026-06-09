@@ -173,6 +173,31 @@ export function deriveTurnRef(turn: Parameters<typeof turnCore>[0]): string {
   return `turn_v1:${createHash("sha256").update(canonicalScopeJson(turnCore(turn)), "utf8").digest("hex")}`;
 }
 
+// --- runtime hashing (linked, NEVER interpreted) -----------------------------
+
+/**
+ * Deterministically hash a FORWARDED call's runtime RESULT. Lyhna links what the runtime
+ * returned but makes NO claim it is true/correct — only its content-addressed hash is kept
+ * (the raw result is never stored, so a Proof Mode pack carries no runtime plaintext). The
+ * hash reads a copy; the forwarded payload returned to the agent is never mutated.
+ */
+export function hashRuntimeResult(result: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalScopeJson(result ?? null), "utf8").digest("hex")}`;
+}
+
+/**
+ * Deterministically hash a FORWARDED call's runtime ERROR. Reduced to a stable structural
+ * projection ({name,message} for an Error, else a canonical value) and hashed — never stored
+ * raw, never interpreted as a truth signal about the run.
+ */
+export function hashRuntimeError(error: unknown): string {
+  const projection =
+    error instanceof Error
+      ? { kind: "error", name: error.name, message: error.message }
+      : { kind: "value", value: typeof error === "string" ? error : canonicalScopeJson(error ?? null) };
+  return `sha256:${createHash("sha256").update(canonicalScopeJson(projection), "utf8").digest("hex")}`;
+}
+
 // --- delta / runtime validation ----------------------------------------------
 
 /** Fail-closed validation that a supervisor delta carries ONLY the closed string-array keys. */

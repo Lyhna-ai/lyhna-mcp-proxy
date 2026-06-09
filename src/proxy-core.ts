@@ -2,7 +2,12 @@ import type { BindClient, BindRequest, BindResponse } from "./bind.js";
 import { buildBindRequest } from "./bind.js";
 import { decideForward, type ForwardDecision } from "./enforcement.js";
 import { LoopStepBoundError, mergeScopeConstraint, type LoopSession, type ScopeConstraint } from "./loop.js";
-import type { JudgmentProposedMove, JudgmentTurn } from "./judgment-ledger.js";
+import {
+  hashRuntimeError,
+  hashRuntimeResult,
+  type JudgmentProposedMove,
+  type JudgmentTurn
+} from "./judgment-ledger.js";
 import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 import {
@@ -266,10 +271,28 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       const decision = decideForward(bindResponse);
 
       if (decision === "FORWARD") {
-        // Forward the EXACT payload (never mutated). Capsule Gate 2 / Checkpoint 3 will attach the
-        // hashed runtime result/error to `boundTurn` here — for now the turn is captured in order.
-        void boundTurn;
-        return options.upstream.callTool(call);
+        // Forward the EXACT payload (never mutated). Capsule Gate 2: hash the runtime result/error
+        // and attach it to the approved bind turn (additive; does not change turn_ref). The result
+        // is HASHED, never interpreted as true and never stored raw — so a Proof Mode pack carries
+        // no runtime plaintext. Hashing reads a copy; the result returned to the agent is unchanged.
+        try {
+          const result = await options.upstream.callTool(call);
+          if (boundTurn && judgmentRecorder) {
+            judgmentRecorder.attachRuntimeReport(boundTurn.loop_id, boundTurn.turn_ref, {
+              returned: true,
+              result_hash: hashRuntimeResult(result)
+            });
+          }
+          return result;
+        } catch (error) {
+          if (boundTurn && judgmentRecorder) {
+            judgmentRecorder.attachRuntimeReport(boundTurn.loop_id, boundTurn.turn_ref, {
+              returned: false,
+              error_hash: hashRuntimeError(error)
+            });
+          }
+          throw error;
+        }
       }
 
       if (decision === "HOLD_AWAIT_RESOLUTION") {

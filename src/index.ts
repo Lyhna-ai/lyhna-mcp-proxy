@@ -94,6 +94,8 @@ export {
   assertValidDelta,
   assertValidRuntimeReport,
   deriveTurnRef,
+  hashRuntimeError,
+  hashRuntimeResult,
   JUDGMENT_LEDGER_VERSION,
   mergeDelta,
   normalizeDelta,

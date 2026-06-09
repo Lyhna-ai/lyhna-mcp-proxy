@@ -5,7 +5,10 @@ import {
   createLoopContext,
   createProxyCore,
   createScopeEventRecorder,
+  hashRuntimeError,
+  hashRuntimeResult,
   LoopSession,
+  projectTurnProofMode,
   sealScopeCapsule,
   validateJudgmentChain,
   type BindClient,
@@ -197,5 +200,98 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
     await h.proxy.callTool({ toolName: "run_tests", arguments: { suite: "checkout" } });
     expect(h.session.actionCount).toBe(2);
     expect(h.session.priorReceiptId).toBe("r_2");
+  });
+});
+
+describe("Capsule Gate 2 — runtime result/error hashing (linked, not interpreted)", () => {
+  it("an approved forwarded result records runtime_report.result_hash (deterministic)", async () => {
+    const h = harness();
+    await h.proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
+    const turn = h.judgment.judgmentLedgerForLoop("loop-1")[0]!;
+    expect(turn.runtime_report).toBeDefined();
+    expect(turn.runtime_report!.returned).toBe(true);
+    expect(turn.runtime_report!.result_hash).toMatch(/^sha256:/);
+    expect(turn.runtime_report!.error_hash).toBeUndefined();
+    // The upstream returns { ok, echoed }; the same input hashes identically (deterministic).
+    expect(hashRuntimeResult({ ok: true, echoed: "write_file" })).toBe(turn.runtime_report!.result_hash);
+    // Key order does not matter (canonical sorted-key hashing).
+    expect(hashRuntimeResult({ echoed: "write_file", ok: true })).toBe(turn.runtime_report!.result_hash);
+  });
+
+  it("a forwarded error records runtime_report.error_hash (returned=false, deterministic)", async () => {
+    const up: UpstreamMcpClient = {
+      async listTools() {
+        return [{ name: "write_file" }];
+      },
+      async callTool() {
+        throw new Error("upstream boom");
+      }
+    };
+    const bind = scriptedBind();
+    const scopeRecorder = createScopeEventRecorder();
+    const judgment = createJudgmentRecorder();
+    const sealed = sealScopeCapsule({ capsule: { structural: capsuleStructural, sidecar: {} } });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "g" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder: scopeRecorder, judgment }
+    });
+    await proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } }).catch(() => undefined);
+    const turn = judgment.judgmentLedgerForLoop("loop-1")[0]!;
+    expect(turn.runtime_report).toMatchObject({ returned: false });
+    expect(turn.runtime_report!.error_hash).toMatch(/^sha256:/);
+    expect(turn.runtime_report!.result_hash).toBeUndefined();
+    expect(hashRuntimeError(new Error("upstream boom"))).toBe(turn.runtime_report!.error_hash);
+  });
+
+  it("the raw runtime result never appears in the Proof Mode judgment export", async () => {
+    const up: UpstreamMcpClient = {
+      async listTools() {
+        return [{ name: "write_file" }];
+      },
+      async callTool() {
+        return { secret_runtime_value: "TOP-SECRET-RESULT-BODY" };
+      }
+    };
+    const bind = scriptedBind();
+    const judgment = createJudgmentRecorder();
+    const sealed = sealScopeCapsule({ capsule: { structural: capsuleStructural, sidecar: {} } });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "g" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder: createScopeEventRecorder(), judgment }
+    });
+    await proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
+    const turn = judgment.judgmentLedgerForLoop("loop-1")[0]!;
+    const proofJson = JSON.stringify(projectTurnProofMode(turn));
+    expect(proofJson).not.toContain("TOP-SECRET-RESULT-BODY");
+    // Only the structural runtime_report (booleans + hashes) survives.
+    expect(JSON.parse(proofJson).runtime_report).toEqual({ returned: true, result_hash: turn.runtime_report!.result_hash });
+  });
+
+  it("the forwarded payload and returned result are unchanged (no mutation, no truth claim)", async () => {
+    const up = upstream();
+    const bind = scriptedBind();
+    const judgment = createJudgmentRecorder();
+    const sealed = sealScopeCapsule({ capsule: { structural: capsuleStructural, sidecar: {} } });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "g" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder: createScopeEventRecorder(), judgment }
+    });
+    const call: McpToolCall = { toolName: "write_file", arguments: { path: "/checkout/cart.ts", contents: "// fix" } };
+    const result = await proxy.callTool(call);
+    // Upstream saw the exact call; the returned result is exactly what upstream produced.
+    expect(up.calls[0]).toEqual(call);
+    expect(result).toEqual({ ok: true, echoed: "write_file" });
+    // The runtime_report carries ONLY structural keys — no interpreted success/failure verdict.
+    const rr = judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report!;
+    expect(Object.keys(rr).sort()).toEqual(["result_hash", "returned"]);
   });
 });
