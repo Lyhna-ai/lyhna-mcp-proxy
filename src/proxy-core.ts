@@ -320,10 +320,12 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         try {
           result = await options.upstream.callTool(call);
         } catch (error) {
-          recordRuntimeReport(judgmentRecorder, boundTurn, { returned: false, error_hash: hashRuntimeError(error) });
+          // Pass the RAW error; recordRuntimeReport hashes it inside its own swallow so a
+          // non-canonicalizable throw (BigInt / cyclic object) cannot mask the real upstream error.
+          recordRuntimeReport(judgmentRecorder, boundTurn, { returned: false, error });
           throw error;
         }
-        recordRuntimeReport(judgmentRecorder, boundTurn, { returned: true, result_hash: hashRuntimeResult(result) });
+        recordRuntimeReport(judgmentRecorder, boundTurn, { returned: true, result });
         return result;
       }
 
@@ -345,20 +347,25 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
 }
 
 /**
- * Attach a runtime report to a captured bind turn — OBSERVE-ONLY bookkeeping. Swallows its own
- * failure: the judgment ledger must never break or mask the agent-facing forward (a missing hash
- * only omits an optional anchor). No-op when there is no turn / recorder.
+ * Hash a forwarded call's runtime result/error and attach it to a captured bind turn — OBSERVE-ONLY
+ * bookkeeping. The HASHING happens inside the swallow, so a non-canonicalizable result/error (e.g. a
+ * BigInt or a cyclic object) cannot throw out of the gate path: the judgment ledger must never break
+ * or mask the agent-facing forward (a missing hash only omits an optional anchor). No-op when there
+ * is no turn / recorder.
  */
 function recordRuntimeReport(
   recorder: JudgmentLedgerRecorder | undefined,
   turn: JudgmentTurn | undefined,
-  report: { returned: boolean; result_hash?: string; error_hash?: string }
+  outcome: { returned: true; result: unknown } | { returned: false; error: unknown }
 ): void {
   if (!recorder || !turn) return;
   try {
+    const report = outcome.returned
+      ? { returned: true as const, result_hash: hashRuntimeResult(outcome.result) }
+      : { returned: false as const, error_hash: hashRuntimeError(outcome.error) };
     recorder.attachRuntimeReport(turn.loop_id, turn.turn_ref, report);
   } catch {
-    // Observe-only: a bookkeeping failure must not affect the forwarded result/error.
+    // Observe-only: a hashing or attach failure must not affect the forwarded result/error.
   }
 }
 

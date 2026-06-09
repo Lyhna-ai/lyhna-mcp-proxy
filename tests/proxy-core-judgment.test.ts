@@ -230,6 +230,54 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
     await expect(proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } })).rejects.toThrow(/REAL upstream failure/);
   });
 
+  function scopedProxy(up: UpstreamMcpClient) {
+    const bind = scriptedBind();
+    const judgment = createJudgmentRecorder();
+    const sealed = sealScopeCapsule({ capsule: { structural: capsuleStructural, sidecar: {} } });
+    const session = new LoopSession(createLoopContext({ loop_id: "loop-1", goal: "g" }));
+    const proxy = createProxyCore({
+      upstream: up,
+      bindClient: bind,
+      loopSession: session,
+      scope: { sealed, mode: "verified_context", recorder: createScopeEventRecorder(), judgment }
+    });
+    return { proxy, judgment };
+  }
+
+  it("a non-canonicalizable upstream throw is propagated verbatim (hashing never masks it)", async () => {
+    const { proxy, judgment } = scopedProxy({
+      async listTools() {
+        return [{ name: "write_file" }];
+      },
+      async callTool() {
+        throw 10n; // a BigInt — not JSON-canonicalizable, so hashRuntimeError would throw
+      }
+    });
+    let caught: unknown;
+    await proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } }).catch((e) => {
+      caught = e;
+    });
+    expect(caught).toBe(10n); // the ORIGINAL throw, not a hashing error
+    // The hash failed inside the swallow, so no runtime_report was attached (optional anchor omitted).
+    expect(judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report).toBeUndefined();
+  });
+
+  it("a non-canonicalizable upstream RESULT is returned verbatim (hashing never breaks the forward)", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic; // cyclic — sortDeep would overflow the stack
+    const { proxy, judgment } = scopedProxy({
+      async listTools() {
+        return [{ name: "write_file" }];
+      },
+      async callTool() {
+        return cyclic;
+      }
+    });
+    const result = await proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
+    expect(result).toBe(cyclic);
+    expect(judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report).toBeUndefined();
+  });
+
   it("the existing loop receipt chain still advances (chain verification unaffected)", async () => {
     const h = harness();
     await h.proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
