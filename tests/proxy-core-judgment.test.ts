@@ -13,6 +13,7 @@ import {
   type BindRequest,
   type McpToolCall,
   type ScopeCapsule,
+  type ScopeStructuralProjection,
   type UpstreamMcpClient
 } from "../src/index.js";
 
@@ -56,7 +57,7 @@ const capsuleStructural = {
   targetless_action_classes: ["run_tests"]
 };
 
-function harness(opts: { outcomes?: BindOutcome[]; structuralOverride?: Partial<typeof capsuleStructural> } = {}) {
+function harness(opts: { outcomes?: BindOutcome[]; structuralOverride?: Partial<ScopeStructuralProjection> } = {}) {
   const up = upstream();
   const bind = scriptedBind(opts.outcomes);
   const scopeRecorder = createScopeEventRecorder();
