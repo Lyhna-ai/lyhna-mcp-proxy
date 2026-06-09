@@ -154,6 +154,31 @@ describe("LoopSessionRegistry lifecycle", () => {
     );
   });
 
+  it("does not inherit a prior closed loop's scope when a session_id is reused for a new unscoped loop (round 27)", async () => {
+    const { bind } = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const registry = new LoopSessionRegistry(bind, TUNING, recorder);
+    const scope: ScopeCapsule = {
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop_scoped",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "proof",
+        allowed_targets: ["/checkout/**"]
+      }
+    };
+    // 1) A scoped loop: getScope resolves its sealed scope.
+    registry.openLoop({ session_id: "reuse", loop_id: "loop_scoped", goal: "g", scope_capsule: scope });
+    expect(registry.getScope("reuse")).toBeDefined();
+    await registry.closeLoop({ session_id: "reuse", outcome: "COMPLETED", reason: "done" });
+
+    // 2) Reopen the SAME session_id with a NEW, UNSCOPED loop — it must resolve as baseline (ungated),
+    // NEVER inheriting the closed loop's stale scope_ref / loop identity.
+    registry.openLoop({ session_id: "reuse", loop_id: "loop_unscoped", goal: "g2" });
+    expect(registry.getScope("reuse")).toBeUndefined();
+  });
+
   it("rejects open with missing identity fields", () => {
     const { bind } = recordingBind();
     const registry = new LoopSessionRegistry(bind, TUNING);

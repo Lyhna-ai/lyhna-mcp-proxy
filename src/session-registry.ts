@@ -161,6 +161,14 @@ export class LoopSessionRegistry {
     if (scopeState) {
       this.scopeBySession.set(sessionId, scopeState);
       this.scopeByLoop.set(input.loop_id, scopeState);
+    } else {
+      // FAIL CLOSED (no stale-scope inheritance): a NEW unscoped loop may reuse a session_id (only
+      // ACTIVE sessions are refused; a closed session_id is free to reopen). If we left the prior
+      // scoped loop's entry, getScope(session_id) would attach that sealed scope to this new loop,
+      // stamping or refusing calls under a stale scope_ref / loop identity. Clear the session-keyed
+      // scope so this loop resolves as baseline (ungated). (loop_id is globally single-use, so the
+      // loop-keyed map can never collide for a new loop and needs no clearing.)
+      this.scopeBySession.delete(sessionId);
     }
     return session;
   }
