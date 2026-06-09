@@ -17,6 +17,12 @@
 //   <out>/proof-card.md             one-page human summary
 //   <out>/verify-instructions.md    how to cold-verify the pack
 //
+// CAPSULE GATE 2 (additive, optional). When --judgment is also supplied, ALSO writes:
+//
+//   <out>/judgment-ledger.json      the full middle object (reduced fold + projected ordered turns)
+//   <out>/judgment-ledger.md        human-readable judgment path (respects privacy mode)
+//   <out>/memory-injection.json     portable verified-memory capsule for external memory systems
+//
 // Usage:
 //   export-loop-proof <receipts.json> --out <dir> [--source-env <env>]
 //                     [--verdict <lyhna-verify-json>] [--exported-at <iso>]
@@ -33,6 +39,7 @@ import { buildLoopProofBundle, type ProofReceipt } from "../loop-proof-bundle.js
 import type { ContinuationCapsule } from "../continuation-capsule.js";
 import type { ScopePrivacyMode, SealedScope } from "../scope-capsule.js";
 import type { ScopeEvent } from "../scope-event-recorder.js";
+import type { JudgmentTurn } from "../judgment-ledger.js";
 
 type Args = {
   receiptsPath?: string;
@@ -44,6 +51,7 @@ type Args = {
   scopeHistoryPath?: string;
   continuationPath?: string;
   scopeEventsPath?: string;
+  judgmentPath?: string;
   mode: ScopePrivacyMode;
 };
 
@@ -59,6 +67,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--scope-history") args.scopeHistoryPath = argv[++i];
     else if (a === "--continuation") args.continuationPath = argv[++i];
     else if (a === "--scope-events") args.scopeEventsPath = argv[++i];
+    else if (a === "--judgment") args.judgmentPath = argv[++i];
     else if (a === "--mode") args.mode = normalizeMode(argv[++i]);
     else if (a && !a.startsWith("-")) args.receiptsPath = a;
   }
@@ -81,7 +90,7 @@ function main(): void {
     process.stderr.write(
       "usage: export-loop-proof <receipts.json> --out <dir> [--source-env <env>] [--verdict <json>] " +
         "[--exported-at <iso>] [--scope-capsule <json>] [--continuation <json>] [--scope-events <json>] " +
-        "[--mode proof|verified-context]\n"
+        "[--judgment <judgment-turns.json>] [--mode proof|verified-context]\n"
     );
     process.exit(1);
   }
@@ -108,7 +117,8 @@ function main(): void {
     const scope_history = args.scopeHistoryPath ? readJson<SealedScope[]>(args.scopeHistoryPath) : undefined;
     const continuation = readJson<ContinuationCapsule>(args.continuationPath);
     const scope_events = args.scopeEventsPath ? readJson<ScopeEvent[]>(args.scopeEventsPath) : [];
-    capsule = { mode: args.mode, sealed_scope, scope_history, continuation, scope_events };
+    const judgment_turns = args.judgmentPath ? readJson<JudgmentTurn[]>(args.judgmentPath) : undefined;
+    capsule = { mode: args.mode, sealed_scope, scope_history, continuation, scope_events, judgment_turns };
   }
 
   const built = buildLoopProofBundle({
@@ -148,6 +158,16 @@ function main(): void {
     }
     if (built.verify_instructions_markdown) {
       writeFileSync(path.join(args.out, "verify-instructions.md"), built.verify_instructions_markdown);
+    }
+    // Capsule Gate 2 artifacts (present only when --judgment was supplied).
+    if (built.judgment_ledger) {
+      writeFileSync(path.join(args.out, "judgment-ledger.json"), JSON.stringify(built.judgment_ledger, null, 2) + "\n");
+    }
+    if (built.judgment_ledger_markdown) {
+      writeFileSync(path.join(args.out, "judgment-ledger.md"), built.judgment_ledger_markdown);
+    }
+    if (built.memory_injection) {
+      writeFileSync(path.join(args.out, "memory-injection.json"), JSON.stringify(built.memory_injection, null, 2) + "\n");
     }
     capsuleNote =
       `  capsule: scope_ref=${built.bundle.capsule?.scope_ref} mode=${built.bundle.capsule?.mode} ` +

@@ -26,6 +26,7 @@ import {
   assertScopeCapsuleStructuralOnly,
   assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
+  canonicalScopeJson,
   deriveScopeRef,
   deriveSidecarHash,
   hashTarget,
@@ -40,6 +41,15 @@ import {
   projectContinuationProofMode,
   type ContinuationCapsule
 } from "./continuation-capsule.js";
+import {
+  JUDGMENT_LEDGER_VERSION,
+  projectTurn,
+  renderJudgmentLedgerMarkdown,
+  validateJudgmentChain,
+  type JudgmentTurn
+} from "./judgment-ledger.js";
+import { reduceJudgmentLedger, type ReducedJudgmentState } from "./judgment-reducer.js";
+import { buildMemoryInjection, type MemoryInjection } from "./memory-injection.js";
 
 /** A signed receipt payload (loose — we read fields, never reshape them). */
 export type ProofReceipt = Record<string, unknown> & {
@@ -119,6 +129,30 @@ export type BundleCapsuleSection = {
   continuation_capsule_file: "continuation-capsule.json";
   /** Attested scope events, referenced by hash (the halt is visible/verifiable here). */
   scope_events: { count: number; event_hashes: string[] };
+  /**
+   * Capsule Gate 2 judgment ledger references (ADDITIVE; present only when judgment turns were
+   * supplied). The full middle object lives in judgment-ledger.json; the portable handoff in
+   * memory-injection.json. Turns are referenced by final_turn_ref + count (content-blind).
+   */
+  judgment?: {
+    judgment_ledger_file: "judgment-ledger.json";
+    judgment_ledger_markdown_file: "judgment-ledger.md";
+    memory_injection_file: "memory-injection.json";
+    final_turn_ref: string | null;
+    turn_count: number;
+  };
+};
+
+/** judgment-ledger.json — the full middle object: the reduced fold plus the (projected) ordered turns. */
+export type JudgmentLedgerExport = {
+  judgment_ledger_version: string;
+  loop_id: string;
+  scope_ref: string;
+  mode: ScopePrivacyMode;
+  final_turn_ref: string | null;
+  turn_count: number;
+  reduced: ReducedJudgmentState;
+  turns: JudgmentTurn[];
 };
 
 export type AuthorityContextGraphNode = {
@@ -167,6 +201,14 @@ export type BuildLoopProofBundleInput = {
     scope_history?: SealedScope[];
     continuation: ContinuationCapsule;
     scope_events?: ScopeEvent[];
+    /**
+     * Capsule Gate 2 (ADDITIVE): the ordered judgment ledger dumped for this loop. When supplied,
+     * the build validates the judgment chain, cross-checks it against the receipts (every in-loop
+     * receipt maps to a bind turn) and the scope events (every scope event maps to a scope/loop-bound
+     * turn), folds it via the reducer, and emits judgment-ledger.json/.md + memory-injection.json.
+     * Omit for a Capsule Gate 1 (judgment-less) pack — the output is then byte-for-byte unchanged.
+     */
+    judgment_turns?: JudgmentTurn[];
   };
 };
 
@@ -182,6 +224,10 @@ export type BuiltLoopProofBundle = {
   scope_events?: ScopeEvent[];
   proof_card_markdown?: string;
   verify_instructions_markdown?: string;
+  // --- Capsule Gate 2 artifacts (present only when input.capsule.judgment_turns was supplied) ---
+  judgment_ledger?: JudgmentLedgerExport;
+  judgment_ledger_markdown?: string;
+  memory_injection?: MemoryInjection;
 };
 
 const RECEIPT_VERSION = "LYHNA_RECEIPT_V2";
@@ -399,6 +445,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
   let scope_events: ScopeEvent[] | undefined;
   let proof_card_markdown: string | undefined;
   let verify_instructions_markdown: string | undefined;
+  let judgment_ledger: JudgmentLedgerExport | undefined;
+  let judgment_ledger_markdown: string | undefined;
+  let memory_injection: MemoryInjection | undefined;
 
   if (input.capsule) {
     const mode = input.capsule.mode;
@@ -778,6 +827,23 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       assertScopeCapsuleStructuralOnly(scope_capsule);
     }
 
+    // Capsule Gate 2 (ADDITIVE): when the judgment ledger was dumped, validate it against the
+    // receipts + scope events, fold it, and emit judgment-ledger.json/.md + memory-injection.json.
+    if (input.capsule.judgment_turns) {
+      const built = buildJudgmentArtifacts({
+        loop_id: loop.loop_id,
+        scope_ref: finalScope.scope_ref,
+        mode,
+        receipts: input.receipts,
+        scope_events: input.capsule.scope_events ?? [],
+        turns: input.capsule.judgment_turns,
+        continuation
+      });
+      judgment_ledger = built.ledger;
+      judgment_ledger_markdown = built.markdown;
+      memory_injection = built.memory;
+    }
+
     bundle.capsule = {
       mode,
       // Use the VERIFIED final version's scope_ref (proven equal to sealed.scope_ref above), so the
@@ -788,7 +854,18 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       scope_events: {
         count: scope_events.length,
         event_hashes: scope_events.map((e) => e.event_hash)
-      }
+      },
+      ...(judgment_ledger
+        ? {
+            judgment: {
+              judgment_ledger_file: "judgment-ledger.json" as const,
+              judgment_ledger_markdown_file: "judgment-ledger.md" as const,
+              memory_injection_file: "memory-injection.json" as const,
+              final_turn_ref: judgment_ledger.final_turn_ref,
+              turn_count: judgment_ledger.turn_count
+            }
+          }
+        : {})
     };
 
     proof_card_markdown = renderProofCardMarkdown(bundle, continuation_capsule);
@@ -807,8 +884,168 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     continuation_capsule,
     scope_events,
     proof_card_markdown,
-    verify_instructions_markdown
+    verify_instructions_markdown,
+    judgment_ledger,
+    judgment_ledger_markdown,
+    memory_injection
   };
+}
+
+/** A structural runtime hash must be sha256-shaped (no plaintext, never an interpreted verdict). */
+const RUNTIME_HASH = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Capsule Gate 2 export validation + fold. Validates the dumped judgment ledger as an append-only,
+ * contiguous, hash-linked chain and cross-checks it against the signed receipts and attested scope
+ * events, then folds it (reducer) and projects the privacy-mode artifacts. Fail-closed throughout:
+ * a chain break, an unanchored verdict, or a receipt/scope-event that does NOT map to a judgment
+ * turn (or vice versa) rejects the export.
+ */
+function buildJudgmentArtifacts(input: {
+  loop_id: string;
+  scope_ref: string;
+  mode: ScopePrivacyMode;
+  receipts: ProofReceipt[];
+  scope_events: ScopeEvent[];
+  turns: JudgmentTurn[];
+  continuation: ContinuationCapsule;
+}): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
+  const { loop_id, scope_ref, mode, turns, continuation } = input;
+
+  // 1) Append-only / contiguous / hash-linked chain (no duplicate / missing turn_ref).
+  const chain = validateJudgmentChain(turns);
+  if (!chain.valid) {
+    throw new Error(`Judgment ledger is not a valid chain: ${chain.reason} (fail closed).`);
+  }
+  if (chain.loop_id !== null && chain.loop_id !== loop_id) {
+    throw new Error(`Judgment ledger loop_id ${chain.loop_id} does not match the receipts loop_id ${loop_id} (fail closed).`);
+  }
+
+  // 2) Receipts <-> bind turns. Collect in-loop receipt ids (constraints.loop, not loop_close).
+  const inLoopReceiptIds: string[] = [];
+  input.receipts.forEach((r, i) => {
+    const c = r.constraints;
+    const isTerminal = isRecord(c?.loop_close);
+    const isInLoop = isRecord(c?.loop) && !isTerminal;
+    if (isInLoop) {
+      if (typeof r.receipt_id !== "string") {
+        throw new Error(`In-loop receipt ${describe(r, i)} is missing a string receipt_id (fail closed).`);
+      }
+      inLoopReceiptIds.push(r.receipt_id);
+    }
+  });
+  const bindReceiptIds = turns
+    .filter((t) => t.verdict.source === "bind")
+    .map((t) => {
+      if (!t.verdict.receipt_id) {
+        throw new Error(`Bind judgment turn ${t.turn_index} has no signed receipt anchor (fail closed).`);
+      }
+      return t.verdict.receipt_id;
+    });
+  const inLoopSet = new Set(inLoopReceiptIds);
+  for (const id of bindReceiptIds) {
+    if (!inLoopSet.has(id)) {
+      throw new Error(`Bind judgment turn anchors receipt ${id}, which is not a signed in-loop receipt (fail closed).`);
+    }
+  }
+  const bindSet = new Set(bindReceiptIds);
+  for (const id of inLoopReceiptIds) {
+    if (!bindSet.has(id)) {
+      throw new Error(`In-loop receipt ${id} has no matching judgment turn (fail closed).`);
+    }
+  }
+  if (bindReceiptIds.length !== inLoopReceiptIds.length) {
+    throw new Error(
+      `Bind judgment turn count (${bindReceiptIds.length}) does not match in-loop receipt count (${inLoopReceiptIds.length}) (fail closed).`
+    );
+  }
+
+  // 3) Scope events <-> scope_gate / loop_bound turns (anchored by event_hash, both directions).
+  const eventHashes = input.scope_events.map((e) => e.event_hash);
+  const scopeTurnHashes = turns
+    .filter((t) => t.verdict.source === "scope_gate" || t.verdict.source === "loop_bound")
+    .map((t) => {
+      if (!t.verdict.scope_event_hash) {
+        throw new Error(`Scope/loop-bound judgment turn ${t.turn_index} has no scope_event_hash anchor (fail closed).`);
+      }
+      return t.verdict.scope_event_hash;
+    });
+  const eventSet = new Set(eventHashes);
+  for (const h of scopeTurnHashes) {
+    if (!eventSet.has(h)) {
+      throw new Error(`Judgment turn anchors scope_event_hash ${h}, which is not an attested scope event (fail closed).`);
+    }
+  }
+  const scopeTurnSet = new Set(scopeTurnHashes);
+  for (const h of eventHashes) {
+    if (!scopeTurnSet.has(h)) {
+      throw new Error(`Attested scope event ${h} has no matching judgment turn (fail closed).`);
+    }
+  }
+
+  // 4) Runtime hashes are structural only (sha256-shaped) — never interpreted, never plaintext.
+  for (const t of turns) {
+    const rr = t.runtime_report;
+    if (rr?.result_hash && !RUNTIME_HASH.test(rr.result_hash)) {
+      throw new Error(`Judgment turn ${t.turn_index} runtime result_hash is not a structural sha256 hash (fail closed).`);
+    }
+    if (rr?.error_hash && !RUNTIME_HASH.test(rr.error_hash)) {
+      throw new Error(`Judgment turn ${t.turn_index} runtime error_hash is not a structural sha256 hash (fail closed).`);
+    }
+  }
+
+  // 5) Fold + project under the privacy mode.
+  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode });
+  const projectedTurns = turns.map((t) => projectTurn(t, mode));
+
+  // Proof Mode is content-blind: no projected turn may carry a plaintext delta.
+  if (mode === "proof") {
+    for (const t of projectedTurns) {
+      if (t.declared_delta !== undefined) {
+        throw new Error(`Proof Mode judgment turn ${t.turn_index} carries a plaintext declared_delta (fail closed).`);
+      }
+    }
+  }
+
+  // FAIL CLOSED (continuation binding): when the continuation carries a judgment summary, it must
+  // match the VERIFIED reduced fold — so a tampered/stale continuation cannot under-report verdicts,
+  // refs, or the final turn while the pack carries the real ledger.
+  if (continuation.final_turn_ref !== undefined && (continuation.final_turn_ref ?? null) !== (reduced.final_turn_ref ?? null)) {
+    throw new Error(`Continuation final_turn_ref does not match the verified judgment ledger (fail closed).`);
+  }
+  if (continuation.judgment) {
+    const j = continuation.judgment;
+    const mismatch =
+      (j.final_turn_ref ?? null) !== (reduced.final_turn_ref ?? null) ||
+      j.turn_count !== reduced.turn_count ||
+      JSON.stringify(j.receipt_refs) !== JSON.stringify(reduced.receipt_refs) ||
+      JSON.stringify(j.scope_event_refs) !== JSON.stringify(reduced.scope_event_refs) ||
+      JSON.stringify(j.verdict_counts) !== JSON.stringify(reduced.verdict_counts) ||
+      JSON.stringify(j.source_counts) !== JSON.stringify(reduced.source_counts);
+    if (mismatch) {
+      throw new Error(`Continuation judgment summary does not match the verified judgment ledger (fail closed).`);
+    }
+  }
+
+  const ledger: JudgmentLedgerExport = {
+    judgment_ledger_version: JUDGMENT_LEDGER_VERSION,
+    loop_id,
+    scope_ref,
+    mode,
+    final_turn_ref: reduced.final_turn_ref,
+    turn_count: projectedTurns.length,
+    reduced,
+    turns: projectedTurns
+  };
+  const markdown = renderJudgmentLedgerMarkdown(loop_id, projectedTurns, mode);
+  const capsule_ref = deriveContinuationRef(continuation);
+  const memory = buildMemoryInjection({ loop_id, capsule_ref, scope_ref, reduced });
+  return { ledger, markdown, memory };
+}
+
+/** Content-blind, mode-independent identity of a continuation capsule (over its structural projection). */
+function deriveContinuationRef(continuation: ContinuationCapsule): string {
+  return `cap_v1:${sha256Hex(canonicalScopeJson(projectContinuationProofMode(continuation)))}`;
 }
 
 /** Authority Context Graph node describing this one verified loop. */
@@ -934,6 +1171,16 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `- \`continuation-capsule.json\` — settled / open / next + what changed, inheriting \`scope_ref\`.`,
       `- Scope refusals/escalations are attested by \`event_hash\` under \`bundle.json\` ->`,
       `  \`capsule.scope_events.event_hashes\` (${bundle.capsule.scope_events.count} event(s)).`,
+      ...(bundle.capsule.judgment
+        ? [
+            `- \`judgment-ledger.json\` — the verified judgment path (Capsule Gate 2): ${bundle.capsule.judgment.turn_count}`,
+            `  ordered turn(s), final_turn_ref \`${bundle.capsule.judgment.final_turn_ref ?? "—"}\`. Each turn is`,
+            `  hash-linked (prior_turn_ref) and anchored to a signed receipt (bind verdicts) or an attested`,
+            `  scope event (scope/loop-bound refusals). Runtime results are HASHED, never interpreted.`,
+            `  \`judgment-ledger.md\` is the human-readable projection; \`memory-injection.json\` is the portable`,
+            `  handoff object. In Proof Mode all three are content-blind (no plaintext deltas).`
+          ]
+        : []),
       ``,
       `### Target-lane guarantees (what this proof does and does not assert)`,
       ``,
