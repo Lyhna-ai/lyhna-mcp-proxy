@@ -922,8 +922,12 @@ function buildJudgmentArtifacts(input: {
     throw new Error(`Judgment ledger loop_id ${chain.loop_id} does not match the receipts loop_id ${loop_id} (fail closed).`);
   }
 
-  // 2) Receipts <-> bind turns. Collect in-loop receipt ids (constraints.loop, not loop_close).
-  const inLoopReceiptIds: string[] = [];
+  // 2) Receipts <-> bind turns, POSITIONALLY and by outcome. The in-loop receipts are in chain
+  // order (the receipt recorder captures each bind in order); the bind judgment turns are appended
+  // in that SAME order (in-mutex, right after each chain advance). So the i-th bind turn must anchor
+  // the i-th in-loop receipt AND its verdict.kind must equal the signed receipt outcome. A set/count
+  // check alone would let a stale/tampered ledger swap r1/r2 or relabel an APPROVED receipt REFUSED.
+  const inLoopReceipts: { id: string; outcome: unknown }[] = [];
   input.receipts.forEach((r, i) => {
     const c = r.constraints;
     const isTerminal = isRecord(c?.loop_close);
@@ -932,54 +936,91 @@ function buildJudgmentArtifacts(input: {
       if (typeof r.receipt_id !== "string") {
         throw new Error(`In-loop receipt ${describe(r, i)} is missing a string receipt_id (fail closed).`);
       }
-      inLoopReceiptIds.push(r.receipt_id);
+      inLoopReceipts.push({ id: r.receipt_id, outcome: (r as Record<string, unknown>).outcome });
     }
   });
-  const bindReceiptIds = turns
-    .filter((t) => t.verdict.source === "bind")
-    .map((t) => {
-      if (!t.verdict.receipt_id) {
-        throw new Error(`Bind judgment turn ${t.turn_index} has no signed receipt anchor (fail closed).`);
-      }
-      return t.verdict.receipt_id;
-    });
-  const inLoopSet = new Set(inLoopReceiptIds);
-  for (const id of bindReceiptIds) {
-    if (!inLoopSet.has(id)) {
-      throw new Error(`Bind judgment turn anchors receipt ${id}, which is not a signed in-loop receipt (fail closed).`);
-    }
-  }
-  const bindSet = new Set(bindReceiptIds);
-  for (const id of inLoopReceiptIds) {
-    if (!bindSet.has(id)) {
-      throw new Error(`In-loop receipt ${id} has no matching judgment turn (fail closed).`);
-    }
-  }
-  if (bindReceiptIds.length !== inLoopReceiptIds.length) {
+  const bindTurns = turns.filter((t) => t.verdict.source === "bind");
+  if (bindTurns.length !== inLoopReceipts.length) {
     throw new Error(
-      `Bind judgment turn count (${bindReceiptIds.length}) does not match in-loop receipt count (${inLoopReceiptIds.length}) (fail closed).`
+      `Bind judgment turn count (${bindTurns.length}) does not match in-loop receipt count ` +
+        `(${inLoopReceipts.length}); every in-loop receipt must map to exactly one bind turn (fail closed).`
     );
   }
-
-  // 3) Scope events <-> scope_gate / loop_bound turns (anchored by event_hash, both directions).
-  const eventHashes = input.scope_events.map((e) => e.event_hash);
-  const scopeTurnHashes = turns
-    .filter((t) => t.verdict.source === "scope_gate" || t.verdict.source === "loop_bound")
-    .map((t) => {
-      if (!t.verdict.scope_event_hash) {
-        throw new Error(`Scope/loop-bound judgment turn ${t.turn_index} has no scope_event_hash anchor (fail closed).`);
-      }
-      return t.verdict.scope_event_hash;
-    });
-  const eventSet = new Set(eventHashes);
-  for (const h of scopeTurnHashes) {
-    if (!eventSet.has(h)) {
-      throw new Error(`Judgment turn anchors scope_event_hash ${h}, which is not an attested scope event (fail closed).`);
+  for (let i = 0; i < bindTurns.length; i += 1) {
+    const t = bindTurns[i]!;
+    const r = inLoopReceipts[i]!;
+    if (!t.verdict.receipt_id) {
+      throw new Error(`Bind judgment turn ${t.turn_index} has no signed receipt anchor (fail closed).`);
+    }
+    if (t.verdict.receipt_id !== r.id) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} anchors receipt ${t.verdict.receipt_id} but the in-loop receipt at ` +
+          `chain position ${i} is ${r.id}; the judgment order diverges from the signed receipt order (fail closed).`
+      );
+    }
+    if (t.verdict.kind !== r.outcome) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} verdict ${t.verdict.kind} does not match signed receipt ${r.id} ` +
+          `outcome ${JSON.stringify(r.outcome)} (fail closed).`
+      );
     }
   }
-  const scopeTurnSet = new Set(scopeTurnHashes);
+
+  // 3) Scope events <-> scope_gate / loop_bound turns, by CONTENT. The event_hash commits the event's
+  // decision, event_type, matched_rule, and attempted descriptor (deriveScopeEventHash), so anchoring a
+  // hash is not enough: the turn's verdict kind/source/reason_code and proposed descriptor must match
+  // the attested event — else a turn could anchor a real REFUSED event but claim APPROVED, or label a
+  // max_steps (loop_bound) halt as scope_gate. Each attested event must be anchored by exactly one turn.
+  const eventHashes = input.scope_events.map((e) => e.event_hash);
+  const eventByHash = new Map(input.scope_events.map((e) => [e.event_hash, e]));
+  const anchoredEvents = new Set<string>();
+  for (const t of turns) {
+    if (t.verdict.source !== "scope_gate" && t.verdict.source !== "loop_bound") continue;
+    const h = t.verdict.scope_event_hash;
+    if (!h) {
+      throw new Error(`Scope/loop-bound judgment turn ${t.turn_index} has no scope_event_hash anchor (fail closed).`);
+    }
+    const event = eventByHash.get(h);
+    if (!event) {
+      throw new Error(`Judgment turn ${t.turn_index} anchors scope_event_hash ${h}, which is not an attested scope event (fail closed).`);
+    }
+    if (anchoredEvents.has(h)) {
+      throw new Error(`Attested scope event ${h} is anchored by more than one judgment turn (fail closed).`);
+    }
+    if (t.verdict.kind !== event.decision) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} verdict ${t.verdict.kind} does not match attested scope event ${h} decision ` +
+          `${event.decision} (fail closed).`
+      );
+    }
+    // A max_steps event is a loop_bound halt; every other attested scope event is a scope_gate refusal.
+    const expectedSource = event.matched_rule === "max_steps" ? "loop_bound" : "scope_gate";
+    if (t.verdict.source !== expectedSource) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} source ${t.verdict.source} does not match attested scope event ${h} ` +
+          `(matched_rule ${JSON.stringify(event.matched_rule)} implies ${expectedSource}); fail closed.`
+      );
+    }
+    if ((t.verdict.reason_code ?? null) !== (event.matched_rule ?? null)) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} reason_code ${JSON.stringify(t.verdict.reason_code)} does not match attested ` +
+          `scope event ${h} matched_rule ${JSON.stringify(event.matched_rule)} (fail closed).`
+      );
+    }
+    if (
+      t.proposed.action_class !== event.attempted.action_class ||
+      t.proposed.tool_name !== event.attempted.tool_name ||
+      (t.proposed.target_descriptor ?? null) !== (event.attempted.target_descriptor ?? null)
+    ) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} proposed descriptor does not match the descriptor committed by attested ` +
+          `scope event ${h} (fail closed).`
+      );
+    }
+    anchoredEvents.add(h);
+  }
   for (const h of eventHashes) {
-    if (!scopeTurnSet.has(h)) {
+    if (!anchoredEvents.has(h)) {
       throw new Error(`Attested scope event ${h} has no matching judgment turn (fail closed).`);
     }
   }

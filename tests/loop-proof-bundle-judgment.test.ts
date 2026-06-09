@@ -197,10 +197,10 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
   });
 
   it("cold validation fails when an in-loop receipt has no matching judgment turn", () => {
-    // Drop the last bind turn (for r2); the chain stays valid (2 contiguous turns) but r2 is unmapped.
+    // Drop the last bind turn (for r2); the chain stays valid (2 contiguous turns) but a receipt is unmapped.
     const f = fixture("verified_context");
     const turns = f.turns.slice(0, 2);
-    expect(() => build("verified_context", { turns })).toThrow(/In-loop receipt r2 has no matching judgment turn/);
+    expect(() => build("verified_context", { turns })).toThrow(/does not match in-loop receipt count/);
   });
 
   it("cold validation fails when a scope event has no matching judgment turn", () => {
@@ -265,7 +265,76 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
       proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
       verdict: { kind: "APPROVED", source: "bind", receipt_id: "r_GHOST" }
     });
-    expect(() => build("verified_context", { turns: rec.judgmentLedgerForLoop(LOOP_ID) })).toThrow(/not a signed in-loop receipt/);
+    expect(() => build("verified_context", { turns: rec.judgmentLedgerForLoop(LOOP_ID) })).toThrow(/chain position/);
+  });
+
+  // Helper: build a 3-turn ledger (bind, scope-refusal, bind) with caller-chosen verdicts, so each
+  // tamper test exercises one binding (order / outcome / scope content) against the same fixture.
+  function tamperedTurns(f: ReturnType<typeof fixture>, opts: {
+    bind0?: { kind?: "APPROVED" | "ESCALATED" | "REFUSED"; receipt_id?: string };
+    bind2?: { kind?: "APPROVED" | "ESCALATED" | "REFUSED"; receipt_id?: string };
+    scope?: { kind?: "APPROVED" | "ESCALATED" | "REFUSED"; source?: "scope_gate" | "loop_bound" };
+  }): JudgmentTurn[] {
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: opts.bind0?.kind ?? "APPROVED", source: "bind", receipt_id: opts.bind0?.receipt_id ?? "r1" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: {
+        kind: opts.scope?.kind ?? "REFUSED",
+        source: opts.scope?.source ?? "scope_gate",
+        scope_event_hash: f.event.event_hash,
+        reason_code: "forbidden_targets"
+      }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: opts.bind2?.kind ?? "APPROVED", source: "bind", receipt_id: opts.bind2?.receipt_id ?? "r2" }
+    });
+    return rec.judgmentLedgerForLoop(LOOP_ID);
+  }
+
+  // Build the bundle from ONE fixture (so the tampered turns anchor the SAME scope-event hash the
+  // pack carries) with caller-tampered turns.
+  function buildTampered(opts: Parameters<typeof tamperedTurns>[1]) {
+    const f = fixture("verified_context");
+    const turns = tamperedTurns(f, opts);
+    return () =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: turns }
+      });
+  }
+
+  it("cold validation fails when bind turns are swapped out of signed-receipt order", () => {
+    // Anchor r2 at chain position 0 and r1 at position 2 — a contiguous, hash-valid chain whose
+    // bind order diverges from the signed receipt chain.
+    expect(buildTampered({ bind0: { receipt_id: "r2" }, bind2: { receipt_id: "r1" } })).toThrow(/diverges from the signed receipt order/);
+  });
+
+  it("cold validation fails when a bind turn relabels an APPROVED receipt as REFUSED", () => {
+    expect(buildTampered({ bind0: { kind: "REFUSED" } })).toThrow(/does not match signed receipt r1 outcome/);
+  });
+
+  it("cold validation fails when a scope turn claims APPROVED over an attested REFUSED event", () => {
+    expect(buildTampered({ scope: { kind: "APPROVED" } })).toThrow(/does not match attested scope event .* decision REFUSED/);
+  });
+
+  it("cold validation fails when a scope turn mislabels its source vs the attested event", () => {
+    // The attested event's matched_rule is "forbidden_targets" -> source must be scope_gate, not loop_bound.
+    expect(buildTampered({ scope: { source: "loop_bound" } })).toThrow(/source loop_bound does not match attested scope event/);
   });
 
   it("cold validation fails when the continuation judgment summary is tampered (hidden refused step)", () => {
