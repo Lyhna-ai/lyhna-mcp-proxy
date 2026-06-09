@@ -472,3 +472,47 @@ describe("projectScopeCapsuleForExport", () => {
     expect(exported.sidecar?.goal_summary).toBe("fix checkout bug");
   });
 });
+
+describe("class_map sealing (round 29: classifier is hash-bound and gate-authoritative)", () => {
+  const base = (overrides: Partial<ScopeStructuralProjection> = {}): ScopeStructuralProjection =>
+    structural({
+      privacy_mode: "proof",
+      allowed_action_classes: ["read"],
+      allowed_targets: undefined,
+      forbidden_targets: undefined,
+      ...overrides
+    });
+
+  it("seals class_map into scope_ref and the gate classifies from the SEALED map (no external classMap)", () => {
+    const withMap = sealScopeCapsule({ capsule: { structural: base({ class_map: { shell: "read" } }) } });
+    const withoutMap = sealScopeCapsule({ capsule: { structural: base() } });
+    // class_map is part of the hashed structural projection.
+    expect(withMap.scope_ref).not.toBe(withoutMap.scope_ref);
+    // The gate derives the action class from the sealed map even when NO external classMap is supplied:
+    // shell -> read -> within the read lane -> IN_SCOPE.
+    const d = checkScopeStructural({ toolName: "shell", arguments: {} }, withMap, { mode: "proof" });
+    expect(d.decision).toBe("IN_SCOPE");
+    expect(d.descriptor.action_class).toBe("read");
+    // Without the sealed map, "shell" falls back to the built-in classifier -> "other" -> refused.
+    const d2 = checkScopeStructural({ toolName: "shell", arguments: {} }, withoutMap, { mode: "proof" });
+    expect(d2.decision).toBe("REFUSED");
+  });
+
+  it("a sealed external classMap cannot override the sealed map (sealed map wins)", () => {
+    const withMap = sealScopeCapsule({ capsule: { structural: base({ class_map: { shell: "read" } }) } });
+    // Even if a caller passes a DIFFERENT external classMap, the sealed map governs.
+    const d = checkScopeStructural({ toolName: "shell", arguments: {} }, withMap, { mode: "proof", classMap: { shell: "write" } });
+    expect(d.descriptor.action_class).toBe("read");
+  });
+
+  it("exports the classifier in the verified scope projection (content-blind)", () => {
+    const sealed = sealScopeCapsule({ capsule: { structural: base({ class_map: { shell: "read" } }) } });
+    expect(projectScopeCapsuleForExport(sealed, "proof").structural.class_map).toEqual({ shell: "read" });
+  });
+
+  it("fails closed at seal when class_map is not a flat string->string map", () => {
+    expect(() =>
+      sealScopeCapsule({ capsule: { structural: base({ class_map: { shell: ["read"] } as unknown as Record<string, string> }) } })
+    ).toThrow(/class_map.*flat object|flat object.*class_map/);
+  });
+});

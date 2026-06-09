@@ -63,6 +63,14 @@ export type ScopeStructuralProjection = {
   targetless_action_classes?: string[];
   /** Pre-hashed target descriptors for content-blind (Proof Mode) membership checks. */
   target_descriptor_hashes?: string[];
+  /**
+   * Classifier override: tool_name -> action_class. SEALED into scope_ref so the exact classifier
+   * that governed `deriveActionClass()` at the gate is hash-bound and surfaces in the verified scope
+   * history (a supervisor-supplied `shell -> read` remap can no longer silently allow a step without
+   * appearing in the proof). Content-blind: keys are tool names, values are action-class identifiers
+   * — structural, never plaintext plan content.
+   */
+  class_map?: Record<string, string>;
   bounds?: ScopeBounds;
   prior_receipt_ref?: string | null;
   prior_proof_bundle_ref?: string;
@@ -134,6 +142,7 @@ const STRUCTURAL_ALLOWED_KEYS = new Set([
   "target_arg_keys",
   "targetless_action_classes",
   "target_descriptor_hashes",
+  "class_map",
   "bounds",
   "prior_receipt_ref",
   "prior_proof_bundle_ref",
@@ -171,6 +180,15 @@ export function assertScopeStructuralClosed(structural: ScopeStructuralProjectio
     const v = (structural as Record<string, unknown>)[key];
     if (v !== undefined && (!Array.isArray(v) || v.some((x) => typeof x !== "string"))) {
       throw new Error(`Scope structural projection field "${key}" must be an array of strings (fail closed).`);
+    }
+  }
+  // class_map is a FLAT tool_name -> action_class map: a non-null, non-array object whose values are
+  // all strings. A nested object / array value could smuggle non-structural content into the hashed,
+  // exported projection, so reject anything that isn't a flat string->string map (fail closed).
+  const cm = (structural as Record<string, unknown>).class_map;
+  if (cm !== undefined) {
+    if (cm === null || typeof cm !== "object" || Array.isArray(cm) || Object.values(cm).some((x) => typeof x !== "string")) {
+      throw new Error(`Scope structural projection field "class_map" must be a flat object of tool_name -> action_class strings (fail closed).`);
     }
   }
 }
@@ -589,7 +607,11 @@ export function checkScopeStructural(
   options: { mode: ScopePrivacyMode; classMap?: Record<string, string> }
 ): ScopeDecision {
   const s = sealed.structural;
-  const action_class = deriveActionClass(call, options.classMap);
+  // Derive the action class with the SEALED classifier (hash-bound into scope_ref), so the classifier
+  // that governs enforcement is exactly the one the proof exports. `options.classMap` is a legacy/test
+  // fallback only used when the sealed scope declares none; production wiring sources it from the
+  // sealed projection, so the gate can never enforce an unsealed/unbound classifier.
+  const action_class = deriveActionClass(call, s.class_map ?? options.classMap);
 
   // 1) Tool allow-list (structural, both modes).
   if (s.allowed_tools && s.allowed_tools.length > 0 && !s.allowed_tools.includes(call.toolName)) {

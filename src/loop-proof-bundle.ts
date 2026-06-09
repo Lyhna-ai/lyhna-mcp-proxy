@@ -940,6 +940,21 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `- Content-blind export can prove exact hash membership, NOT arbitrary glob semantics over`,
       `  plaintext it no longer holds — so an export-verifiable target lane requires`,
       `  \`target_descriptor_hashes\`; a globs-only scope fails closed at export.`,
+      ``,
+      `### Trust boundary (what governs enforcement, and what this proof does NOT assert)`,
+      ``,
+      `- The classifier (\`class_map\`: tool_name -> action_class) is SEALED into \`scope_ref\` and`,
+      `  appears in the verified scope history, so the exact policy that governed \`deriveActionClass()\``,
+      `  at the gate is hash-bound and auditable in this pack.`,
+      `- Capsule Gate 1 trusts the **adapter** as the supervisor-side enforcement point. The adapter`,
+      `  derives each step's descriptor (action_class / tool_name / target hash) from the live payload`,
+      `  pre-bind and the hosted bind service signs that stamp. The content-blind pack does NOT carry`,
+      `  the plaintext \`action_payload\`, and the signed receipt commits no payload hash, so this proof`,
+      `  does NOT independently re-bind a stamp to its \`action_payload\`. Such a binding would require a`,
+      `  core-signed payload commitment (a canonical-receipt change) or carrying plaintext payload`,
+      `  (weakening content-blind Proof Mode) — both outside Capsule Gate 1's scope. The gate defends`,
+      `  the agent, continuation, export, and tampered-JSON paths; a malicious adapter forging its own`,
+      `  stamps is outside this threat model.`,
       ``
     );
   }

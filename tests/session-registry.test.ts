@@ -179,6 +179,28 @@ describe("LoopSessionRegistry lifecycle", () => {
     expect(registry.getScope("reuse")).toBeUndefined();
   });
 
+  it("seals scope_class_map into the sealed scope and sources the gate classifier from it (round 29)", () => {
+    const { bind } = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const registry = new LoopSessionRegistry(bind, TUNING, recorder);
+    const scope: ScopeCapsule = {
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop_cm",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "proof",
+        allowed_action_classes: ["read"]
+      }
+    };
+    registry.openLoop({ session_id: "cm", loop_id: "loop_cm", goal: "g", scope_capsule: scope, scope_class_map: { shell: "read" } });
+    const ctx = registry.getScope("cm")!;
+    // The classifier override is folded INTO the sealed structural projection (hash-bound)...
+    expect(ctx.sealed.structural.class_map).toEqual({ shell: "read" });
+    // ...and the gate classifier is sourced from that sealed projection, not a separate unsealed field.
+    expect(ctx.classMap).toEqual({ shell: "read" });
+  });
+
   it("rejects open with missing identity fields", () => {
     const { bind } = recordingBind();
     const registry = new LoopSessionRegistry(bind, TUNING);

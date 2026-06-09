@@ -44,12 +44,12 @@ export type OpenLoopInput = {
   scope_class_map?: Record<string, string>;
 };
 
-/** Per-session scope state: the sealed scope seal-history (original + amendments) + class map. */
+/** Per-session scope state: the sealed scope seal-history (original + amendments). The classifier
+ * override lives INSIDE each sealed structural projection (hash-bound), not as a separate field. */
 type SessionScopeState = {
   session_id: string;
   loop_id: string;
   history: SealedScope[];
-  classMap?: Record<string, string>;
 };
 
 export type CloseLoopInput = {
@@ -141,17 +141,22 @@ export class LoopSessionRegistry {
     // resolve as scoped-but-ungated. Registry writes below are atomic w.r.t. seal success.
     let scopeState: SessionScopeState | undefined;
     if (input.scope_capsule) {
+      // Fold any supervisor-supplied classifier override INTO the structural projection so it is
+      // sealed (hash-bound into scope_ref) and surfaces in the verified scope history. The classifier
+      // that governs deriveActionClass() at the gate is then exactly the one the proof exports — a
+      // `shell -> read` remap can no longer allow a step without appearing in the pack. An explicit
+      // `class_map` already in the capsule structural is honored when no override is supplied.
       const structural = {
         ...input.scope_capsule.structural,
         loop_id: input.loop_id,
-        goal_hash: context.goal_hash
+        goal_hash: context.goal_hash,
+        ...(input.scope_class_map ? { class_map: input.scope_class_map } : {})
       };
       const sealed = sealScopeCapsule({ capsule: { structural, sidecar: input.scope_capsule.sidecar } });
       scopeState = {
         session_id: sessionId,
         loop_id: input.loop_id,
-        history: [sealed],
-        classMap: input.scope_class_map
+        history: [sealed]
       };
     }
 
@@ -185,7 +190,8 @@ export class LoopSessionRegistry {
       sealed,
       mode: sealed.structural.privacy_mode,
       recorder: this.scopeEventRecorder,
-      classMap: state.classMap
+      // The classifier is read from the SEALED projection (hash-bound), not a separate unsealed field.
+      classMap: sealed.structural.class_map
     };
   }
 
