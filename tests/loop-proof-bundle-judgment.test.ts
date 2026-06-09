@@ -583,6 +583,35 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     ).toThrow(/per-target hash list/);
   });
 
+  it("cold validation fails on a turn with an unknown verdict.source (dodging the source-keyed checks)", () => {
+    const f = fixture("verified_context");
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    // A hash-valid turn whose source is neither bind nor scope_gate/loop_bound: it would otherwise be
+    // skipped by every source-keyed cross-check while still folded by the reducer.
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "spoof" as never, scope_event_hash: f.event.event_hash }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/unknown verdict.source/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {

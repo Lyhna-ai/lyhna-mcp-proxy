@@ -309,6 +309,12 @@ function buildProjectedTurn(turn: JudgmentTurn, withDelta: boolean): JudgmentTur
 
 // --- chain validation --------------------------------------------------------
 
+/** The closed sets of verdict kind / source. A ledger loaded from JSON is untyped, so the chain
+ * validator enforces these at runtime — an unknown source would otherwise dodge the export's
+ * source-keyed cross-checks (bind vs scope/loop-bound) yet still be folded by the reducer. */
+const KNOWN_VERDICT_KINDS = new Set<JudgmentVerdictKind>(["APPROVED", "ESCALATED", "REFUSED"]);
+const KNOWN_VERDICT_SOURCES = new Set<JudgmentVerdictSource>(["bind", "scope_gate", "loop_bound"]);
+
 export type JudgmentChainVerification =
   | { valid: true; loop_id: string | null; turn_count: number; final_turn_ref: string | null }
   | { valid: false; reason: string };
@@ -343,6 +349,17 @@ export function validateJudgmentChain(turns: readonly JudgmentTurn[]): JudgmentC
     }
     if (typeof turn.turn_ref !== "string" || turn.turn_ref.length === 0) {
       return { valid: false, reason: `missing turn_ref at turn ${i}` };
+    }
+    // Fail closed on an unknown verdict kind / source (a JSON-loaded ledger is untyped). An unknown
+    // source would otherwise slip past the export's source-keyed cross-checks while still being folded.
+    if (!turn.verdict || typeof turn.verdict !== "object") {
+      return { valid: false, reason: `missing verdict at turn ${i}` };
+    }
+    if (!KNOWN_VERDICT_KINDS.has(turn.verdict.kind)) {
+      return { valid: false, reason: `unknown verdict.kind ${JSON.stringify(turn.verdict.kind)} at turn ${i}` };
+    }
+    if (!KNOWN_VERDICT_SOURCES.has(turn.verdict.source)) {
+      return { valid: false, reason: `unknown verdict.source ${JSON.stringify(turn.verdict.source)} at turn ${i}` };
     }
     if (seen.has(turn.turn_ref)) {
       return { valid: false, reason: `duplicate turn_ref at turn ${i}` };

@@ -141,6 +141,36 @@ describe("chain validation", () => {
     if (!v.valid) expect(v.reason).toMatch(/does not match its judgment core/);
   });
 
+  it("rejects an unknown verdict.source (untyped JSON-loaded ledger)", () => {
+    const rec = createJudgmentRecorder();
+    // Append with a bogus source; the recorder derives a turn_ref over it, so the chain is hash-valid
+    // — only the closed-set check should reject it.
+    rec.append({
+      loop_id: "L",
+      scope_ref: "scope_v1:abc",
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "spoof" as never, scope_event_hash: "sha256:evt" }
+    });
+    const v = validateJudgmentChain(rec.judgmentLedgerForLoop("L"));
+    expect(v.valid).toBe(false);
+    if (!v.valid) expect(v.reason).toMatch(/unknown verdict.source/);
+  });
+
+  it("rejects an unknown verdict.kind", () => {
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: "L",
+      scope_ref: "scope_v1:abc",
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "MAYBE" as never, source: "bind", receipt_id: "r1" }
+    });
+    const v = validateJudgmentChain(rec.judgmentLedgerForLoop("L"));
+    expect(v.valid).toBe(false);
+    if (!v.valid) expect(v.reason).toMatch(/unknown verdict.kind/);
+  });
+
   it("rejects a duplicate turn_ref", () => {
     const turns = build();
     // Force a duplicate: copy turn 0 into position 1 but keep contiguous index + prior chain.
