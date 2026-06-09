@@ -343,6 +343,17 @@ async function dispatchLine(
         if (!loop_id) {
           return { ok: false, error: "record_delta requires a `loop_id`, or a `session_id` for a known loop." };
         }
+        // DURING-RUN ONLY (checked before anything else): the Verified Context sidecar is sealed
+        // when the loop is sealed. A delta attached after close — and folded into the continuation —
+        // would be exactly the post-hoc reconstruction the capsule claims not to be. Close means
+        // close: a closed/sealed loop (including one resolved via the retained post-close
+        // scope/session lookup) fails closed. There is no post-close annotation mode in this gate.
+        if (!registry.isLoopOpen(loop_id)) {
+          return {
+            ok: false,
+            error: `record_delta is during-run only; loop ${loop_id} is closed/sealed — the sidecar is sealed when the loop is sealed (fail closed).`
+          };
+        }
         const sealedMode = registry.privacyModeForLoop(loop_id);
         if (sealedMode !== "verified_context") {
           return {

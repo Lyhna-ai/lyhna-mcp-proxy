@@ -1091,15 +1091,28 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
-  // 4) Runtime reports may ONLY exist on a FORWARDED call, i.e. an APPROVED bind turn (decideForward
-  // forwards on APPROVED only). Since runtime_report is excluded from turn_ref, a tampered ledger
-  // could otherwise bolt a result/error hash onto a REFUSED / ESCALATED / scope-gate / loop-bound
-  // turn and have the reducer publish it as a runtime result that never happened. Fail closed unless:
-  // the carrier is an APPROVED bind turn, `returned` is a boolean, and EXACTLY the hash that matches
-  // `returned` is present (returned=true => result_hash only; false => error_hash only), sha256-shaped.
+  // 4) Runtime reports exist on EXACTLY the FORWARDED calls — i.e. every APPROVED bind turn, and
+  // nothing else (decideForward forwards on APPROVED only):
+  //   - REQUIRED on every APPROVED bind turn. Runtime hashing is TOTAL at the adapter (cycles,
+  //     BigInt, Errors, etc. reduce to a deterministic tagged form), so "runtime outputs/errors are
+  //     hashed but not interpreted" is unconditional — a forwarded turn with no runtime_report is a
+  //     stale/tampered ledger, not an accepted gap (fail closed).
+  //   - FORBIDDEN anywhere else. Since runtime_report is excluded from turn_ref, a tampered ledger
+  //     could otherwise bolt a result/error hash onto a REFUSED / ESCALATED / scope-gate /
+  //     loop-bound turn and have the reducer publish a runtime result that never happened.
+  //   - Shape-bound: `returned` is a boolean and EXACTLY the hash matching `returned` is present
+  //     (returned=true => result_hash only; false => error_hash only), sha256-shaped.
   for (const t of turns) {
     const rr = t.runtime_report;
-    if (!rr) continue;
+    if (!rr) {
+      if (t.verdict.source === "bind" && t.verdict.kind === "APPROVED") {
+        throw new Error(
+          `Judgment turn ${t.turn_index} is an APPROVED (forwarded) bind turn but carries no runtime_report; ` +
+            `every forwarded call must anchor its hashed runtime result/error (fail closed).`
+        );
+      }
+      continue;
+    }
     if (t.verdict.source !== "bind" || t.verdict.kind !== "APPROVED") {
       throw new Error(
         `Judgment turn ${t.turn_index} carries a runtime_report but is not an APPROVED bind turn; only a forwarded ` +

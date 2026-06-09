@@ -119,13 +119,15 @@ function fixture(mode: ScopePrivacyMode) {
     proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
     verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: event.event_hash, reason_code: "forbidden_targets" }
   });
-  rec.append({
+  const t2 = rec.append({
     loop_id: LOOP_ID,
     scope_ref,
     prior_receipt_id: "r1",
     proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
     verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
   });
+  // Every APPROVED (forwarded) bind turn carries a runtime report (required at export).
+  rec.attachRuntimeReport(LOOP_ID, t2.turn_ref, { returned: true, result_hash: `sha256:${"d".repeat(64)}` });
   const turns = rec.judgmentLedgerForLoop(LOOP_ID);
 
   const reduced = reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref, turns, mode });
@@ -430,7 +432,9 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
   });
 
   // A 3-turn ledger (bind r1, scope refusal, bind r2) with valid turn_refs, returned for tampering.
-  function threeTurns(f: ReturnType<typeof fixture>) {
+  // APPROVED bind turns carry valid runtime reports by default (required at export); pass
+  // `skipT0Report` so a test can attach its own (e.g. contradictory) report to t0.
+  function threeTurns(f: ReturnType<typeof fixture>, opts: { skipT0Report?: boolean } = {}) {
     const rec = createJudgmentRecorder();
     const t0 = rec.append({
       loop_id: LOOP_ID,
@@ -439,6 +443,9 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
       proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
       verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
     });
+    if (!opts.skipT0Report) {
+      rec.attachRuntimeReport(LOOP_ID, t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}` });
+    }
     const scopeTurn = rec.append({
       loop_id: LOOP_ID,
       scope_ref: f.scope_ref,
@@ -446,13 +453,14 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
       proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
       verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
     });
-    rec.append({
+    const t2 = rec.append({
       loop_id: LOOP_ID,
       scope_ref: f.scope_ref,
       prior_receipt_id: "r1",
       proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
       verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
     });
+    rec.attachRuntimeReport(LOOP_ID, t2.turn_ref, { returned: true, result_hash: `sha256:${"d".repeat(64)}` });
     return { rec, t0, scopeTurn };
   }
 
@@ -465,10 +473,17 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
 
   it("cold validation rejects a runtime_report whose hashes contradict `returned`", () => {
     const f = fixture("verified_context");
-    const { rec, t0 } = threeTurns(f);
+    const { rec, t0 } = threeTurns(f, { skipT0Report: true });
     // returned=true but also carries an error_hash (recorder permits it; the export must not).
     rec.attachRuntimeReport(LOOP_ID, t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}`, error_hash: `sha256:${"b".repeat(64)}` });
     expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/must not carry an error_hash/);
+  });
+
+  it("cold validation fails when an APPROVED (forwarded) bind turn lacks a runtime_report", () => {
+    const f = fixture("verified_context");
+    // Valid through steps 1–3, but t0 (an APPROVED bind turn) carries no runtime report.
+    const { rec } = threeTurns(f, { skipT0Report: true });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/carries no runtime_report/);
   });
 
   it("cold validation fails when a bind turn cites a scope_ref different from the signed stamp", () => {

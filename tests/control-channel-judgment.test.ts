@@ -161,6 +161,33 @@ describe("Capsule Gate 2 — supervisor-only dump_judgment / record_delta", () =
     expect(t0.declared_delta).toEqual({ settled: ["checkout fix written"], next_actions: ["open follow-up"] });
   });
 
+  it("record_delta is during-run only: it fails closed after the supervisor closes the loop", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    // Before close: a delta attaches (during-run sidecar).
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    const turnRef = (dump.turns as Array<Record<string, unknown>>)[0]!.turn_ref as string;
+    const before = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: turnRef, delta: { settled: ["during-run delta"] } });
+    expect(before.ok).toBe(true);
+
+    // Supervisor closes/seals the loop.
+    const closed = await sendControl(r.address, { cmd: "close", session_id: r.sessionId, outcome: "COMPLETED", reason: "done" });
+    expect(closed).toMatchObject({ ok: true, sealed: true });
+
+    // After close: the sidecar is sealed with the loop. A delta on a VALID prior turn_ref is
+    // refused — addressed by loop_id AND by the retained post-close session lookup.
+    const afterByLoop = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: turnRef, delta: { settled: ["POST-CLOSE-DELTA"] } });
+    expect(afterByLoop.ok).toBe(false);
+    expect(String(afterByLoop.error)).toMatch(/during-run only/);
+    const afterBySession = await sendControl(r.address, { cmd: "record_delta", session_id: r.sessionId, turn_ref: turnRef, delta: { settled: ["POST-CLOSE-DELTA"] } });
+    expect(afterBySession.ok).toBe(false);
+
+    // The ledger the export consumes carries ONLY the during-run delta — no post-close mutation.
+    const vc = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId, mode: "verified-context" });
+    expect(JSON.stringify(vc.turns)).not.toContain("POST-CLOSE-DELTA");
+    const t0 = (vc.turns as Array<Record<string, unknown>>)[0]!;
+    expect(t0.declared_delta).toEqual({ settled: ["during-run delta"] });
+  });
+
   it("record_delta fails closed for an unknown turn_ref and a malformed delta", async () => {
     const r = await rig({ privacy: "verified_context" });
     const unknown = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: "turn_v1:nope", delta: { settled: ["x"] } });

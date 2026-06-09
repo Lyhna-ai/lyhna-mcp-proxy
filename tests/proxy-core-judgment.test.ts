@@ -244,13 +244,13 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
     return { proxy, judgment };
   }
 
-  it("a non-canonicalizable upstream throw is propagated verbatim (hashing never masks it)", async () => {
+  it("a non-canonicalizable upstream throw is propagated verbatim AND still hashed (total hashing)", async () => {
     const { proxy, judgment } = scopedProxy({
       async listTools() {
         return [{ name: "write_file" }];
       },
       async callTool() {
-        throw 10n; // a BigInt — not JSON-canonicalizable, so hashRuntimeError would throw
+        throw 10n; // a BigInt — not JSON-canonicalizable; the total fallback still hashes it
       }
     });
     let caught: unknown;
@@ -258,13 +258,16 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
       caught = e;
     });
     expect(caught).toBe(10n); // the ORIGINAL throw, not a hashing error
-    // The hash failed inside the swallow, so no runtime_report was attached (optional anchor omitted).
-    expect(judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report).toBeUndefined();
+    // Runtime hashing is TOTAL: the report is present with a deterministic fallback error_hash.
+    const rr = judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report!;
+    expect(rr).toMatchObject({ returned: false });
+    expect(rr.error_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(hashRuntimeError(10n)).toBe(rr.error_hash); // deterministic
   });
 
-  it("a non-canonicalizable upstream RESULT is returned verbatim (hashing never breaks the forward)", async () => {
+  it("a non-canonicalizable upstream RESULT is returned verbatim AND still hashed (total hashing)", async () => {
     const cyclic: Record<string, unknown> = {};
-    cyclic.self = cyclic; // cyclic — sortDeep would overflow the stack
+    cyclic.self = cyclic; // cyclic — canonical JSON would overflow; the total fallback marks the cycle
     const { proxy, judgment } = scopedProxy({
       async listTools() {
         return [{ name: "write_file" }];
@@ -274,8 +277,11 @@ describe("Capsule Gate 2 — live-path judgment capture", () => {
       }
     });
     const result = await proxy.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts" } });
-    expect(result).toBe(cyclic);
-    expect(judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report).toBeUndefined();
+    expect(result).toBe(cyclic); // same reference — never mutated, never replaced
+    const rr = judgment.judgmentLedgerForLoop("loop-1")[0]!.runtime_report!;
+    expect(rr).toMatchObject({ returned: true });
+    expect(rr.result_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(hashRuntimeResult(cyclic)).toBe(rr.result_hash); // deterministic
   });
 
   it("the existing loop receipt chain still advances (chain verification unaffected)", async () => {

@@ -173,28 +173,85 @@ export function deriveTurnRef(turn: Parameters<typeof turnCore>[0]): string {
   return `turn_v1:${createHash("sha256").update(canonicalScopeJson(turnCore(turn)), "utf8").digest("hex")}`;
 }
 
-// --- runtime hashing (linked, NEVER interpreted) -----------------------------
+// --- runtime hashing (TOTAL, linked, NEVER interpreted) -----------------------
 
 /**
- * Deterministically hash a FORWARDED call's runtime RESULT. Lyhna links what the runtime
- * returned but makes NO claim it is true/correct — only its content-addressed hash is kept
- * (the raw result is never stored, so a Proof Mode pack carries no runtime plaintext). The
- * hash reads a copy; the forwarded payload returned to the agent is never mutated.
+ * TOTAL, deterministic serialization fallback for values canonical JSON cannot express. The
+ * runtime hash must exist for EVERY forwarded call ("hashed, never interpreted" is unconditional),
+ * so cycles, BigInt, undefined, functions, symbols, and Errors all serialize to a stable tagged
+ * form instead of throwing. Sorted keys + cycle markers keep it deterministic; nothing is read
+ * beyond structure (no interpretation).
  */
-export function hashRuntimeResult(result: unknown): string {
-  return `sha256:${createHash("sha256").update(canonicalScopeJson(result ?? null), "utf8").digest("hex")}`;
+function totalSerialize(value: unknown, seen: Set<unknown> = new Set()): string {
+  if (value === null) return "null";
+  if (value === undefined) return "#undefined";
+  const t = typeof value;
+  if (t === "string") return JSON.stringify(value);
+  if (t === "number" || t === "boolean") return String(value);
+  if (t === "bigint") return `#bigint:${String(value)}`;
+  if (t === "function") return `#function:${(value as { name?: string }).name ?? ""}`;
+  if (t === "symbol") return `#symbol:${String(value)}`;
+  if (value instanceof Error) {
+    return `#error:${JSON.stringify({ name: value.name, message: value.message })}`;
+  }
+  if (seen.has(value)) return "#cycle";
+  seen.add(value);
+  let out: string;
+  if (Array.isArray(value)) {
+    out = `[${value.map((v) => totalSerialize(v, seen)).join(",")}]`;
+  } else {
+    const record = value as Record<string, unknown>;
+    out = `{${Object.keys(record)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${totalSerialize(record[k], seen)}`)
+      .join(",")}}`;
+  }
+  seen.delete(value);
+  return out;
 }
 
 /**
- * Deterministically hash a FORWARDED call's runtime ERROR. Reduced to a stable structural
- * projection ({name,message} for an Error, else a canonical value) and hashed — never stored
- * raw, never interpreted as a truth signal about the run.
+ * Serialize ANY value deterministically without throwing: the canonical sorted-key JSON when the
+ * value is canonicalizable (hash-stable with prior packs), the total tagged fallback otherwise,
+ * and a constant marker as the last resort (e.g. pathological nesting depth) — still deterministic
+ * for the same input. Same input -> same string, always.
+ */
+function safeSerialize(value: unknown): string {
+  try {
+    const canonical = canonicalScopeJson(value);
+    // JSON.stringify returns undefined (not a string) for bare undefined/function/symbol.
+    if (typeof canonical === "string") return canonical;
+  } catch {
+    // Not canonicalizable (cycle / BigInt / overflow) — fall through to the total form.
+  }
+  try {
+    return totalSerialize(value);
+  } catch {
+    return "#unserializable";
+  }
+}
+
+/**
+ * Deterministically hash a FORWARDED call's runtime RESULT — TOTAL: it never throws, so every
+ * forwarded call carries a runtime hash unconditionally. Lyhna links what the runtime returned but
+ * makes NO claim it is true/correct — only its content-addressed hash is kept (the raw result is
+ * never stored, so a Proof Mode pack carries no runtime plaintext). The hash reads a copy; the
+ * forwarded payload returned to the agent is never mutated.
+ */
+export function hashRuntimeResult(result: unknown): string {
+  return `sha256:${createHash("sha256").update(safeSerialize(result ?? null), "utf8").digest("hex")}`;
+}
+
+/**
+ * Deterministically hash a FORWARDED call's runtime ERROR — TOTAL: it never throws. Reduced to a
+ * stable structural projection ({name,message} for an Error, else a safely-serialized value) and
+ * hashed — never stored raw, never interpreted as a truth signal about the run.
  */
 export function hashRuntimeError(error: unknown): string {
   const projection =
     error instanceof Error
       ? { kind: "error", name: error.name, message: error.message }
-      : { kind: "value", value: typeof error === "string" ? error : canonicalScopeJson(error ?? null) };
+      : { kind: "value", value: typeof error === "string" ? error : safeSerialize(error ?? null) };
   return `sha256:${createHash("sha256").update(canonicalScopeJson(projection), "utf8").digest("hex")}`;
 }
 

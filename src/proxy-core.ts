@@ -348,10 +348,12 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
 
 /**
  * Hash a forwarded call's runtime result/error and attach it to a captured bind turn — OBSERVE-ONLY
- * bookkeeping. The HASHING happens inside the swallow, so a non-canonicalizable result/error (e.g. a
- * BigInt or a cyclic object) cannot throw out of the gate path: the judgment ledger must never break
- * or mask the agent-facing forward (a missing hash only omits an optional anchor). No-op when there
- * is no turn / recorder.
+ * bookkeeping. Runtime hashing is TOTAL (hashRuntimeResult / hashRuntimeError never throw: cycles,
+ * BigInt, Errors, undefined, functions, and symbols all reduce to a deterministic tagged form), so
+ * EVERY forwarded call carries a runtime hash — "hashed, never interpreted" holds unconditionally,
+ * and the export REQUIRES a runtime_report on every APPROVED bind turn. The try/catch remains as the
+ * last-resort guard around the ATTACH itself: the judgment ledger must never break or mask the
+ * agent-facing forward. No-op when there is no turn / recorder.
  */
 function recordRuntimeReport(
   recorder: JudgmentLedgerRecorder | undefined,

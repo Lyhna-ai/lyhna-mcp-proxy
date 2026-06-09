@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveTurnRef,
+  hashRuntimeError,
+  hashRuntimeResult,
   normalizeDelta,
   projectTurnProofMode,
   projectTurnVerifiedContext,
@@ -231,5 +233,40 @@ describe("projections", () => {
 
   it("normalizeDelta drops empty arrays", () => {
     expect(normalizeDelta({ settled: [], next_actions: ["a"] })).toEqual({ next_actions: ["a"] });
+  });
+});
+
+describe("runtime hashing is TOTAL and deterministic (hashed, never interpreted — unconditionally)", () => {
+  it("hashes a cyclic value without throwing, deterministically", () => {
+    const a: Record<string, unknown> = { x: 1 };
+    a.self = a;
+    const h1 = hashRuntimeResult(a);
+    const b: Record<string, unknown> = { x: 1 };
+    b.self = b;
+    expect(h1).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(hashRuntimeResult(b)).toBe(h1); // same structure -> same hash
+  });
+
+  it("hashes BigInt / Error / undefined / function / symbol without throwing, deterministically", () => {
+    const cases: unknown[] = [10n, new Error("boom"), undefined, () => 1, Symbol("s"), { k: 10n, e: new Error("x") }];
+    for (const value of cases) {
+      const h1 = hashRuntimeResult(value);
+      const h2 = hashRuntimeResult(value);
+      expect(h1).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(h2).toBe(h1);
+      const e1 = hashRuntimeError(value);
+      expect(e1).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(hashRuntimeError(value)).toBe(e1);
+    }
+  });
+
+  it("keeps the canonical hash for plain JSON values (hash-stable with prior packs)", () => {
+    // A canonicalizable value must hash identically whether or not the fallback exists.
+    expect(hashRuntimeResult({ ok: true, n: 1 })).toBe(hashRuntimeResult({ n: 1, ok: true })); // key order
+  });
+
+  it("distinguishes different non-canonicalizable values", () => {
+    expect(hashRuntimeResult(10n)).not.toBe(hashRuntimeResult(11n));
+    expect(hashRuntimeError(new Error("a"))).not.toBe(hashRuntimeError(new Error("b")));
   });
 });

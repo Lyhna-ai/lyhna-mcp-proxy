@@ -247,6 +247,21 @@ export class LoopSessionRegistry {
   }
 
   /**
+   * Whether the loop is still OPEN (an active, unsealed session exists for it). Capsule Gate 2 uses
+   * this to make `record_delta` during-run only: the Verified Context sidecar is sealed when the
+   * loop is sealed, so a delta may attach ONLY while the loop is open. A closed/sealed loop (the
+   * session was removed on sealed close, or is marked closed) — and any loop_id resolved through the
+   * RETAINED post-close scope/session lookup — must fail closed rather than allow post-hoc mutation
+   * of the folded continuation state.
+   */
+  isLoopOpen(loop_id: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.loopId === loop_id) return !session.closed;
+    }
+    return false;
+  }
+
+  /**
    * Resolve the loop_id the supervisor opened for a session_id (active OR already-closed). Read
    * from the retained scope state first (survives close), falling back to a live session. Lets the
    * supervisor address judgment verbs by either session_id or loop_id.
