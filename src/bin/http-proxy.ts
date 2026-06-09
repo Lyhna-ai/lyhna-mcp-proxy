@@ -167,13 +167,13 @@ function startControlChannel(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource,
   scopeEventSource: ScopeEventSource,
-  judgmentSource: JudgmentLedgerRecorder
+  judgmentRecorder: JudgmentLedgerRecorder
 ): Promise<ControlChannelHandle> {
   const socketPath = process.env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   const logger = (line: string) => process.stderr.write(`${line}\n`);
 
   if (socketPath) {
-    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, scopeEventSource, judgmentSource, logger });
+    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, scopeEventSource, judgmentRecorder, logger });
   }
 
   return serveControlChannel({
@@ -185,7 +185,7 @@ function startControlChannel(
     registry,
     receiptSource,
     scopeEventSource,
-    judgmentSource,
+    judgmentRecorder,
     logger
   });
 }

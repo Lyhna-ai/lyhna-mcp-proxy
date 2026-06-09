@@ -29,6 +29,7 @@ import {
   amendScope,
   sealScopeCapsule,
   type ScopeCapsule,
+  type ScopePrivacyMode,
   type SealedScope
 } from "./scope-capsule.js";
 import type { ScopeEventRecorder } from "./scope-event-recorder.js";
@@ -231,6 +232,27 @@ export class LoopSessionRegistry {
   scopeHistoryForLoop(loop_id: string): SealedScope[] {
     const state = this.scopeByLoop.get(loop_id);
     return state ? [...state.history] : [];
+  }
+
+  /**
+   * The sealed privacy_mode governing a loop (the FINAL scope version), or undefined when the loop
+   * has no sealed scope. Used by the supervisor judgment verbs to enforce the mode contract:
+   * Verified Context plaintext (record_delta / a VC dump) is permitted ONLY for a verified_context
+   * loop; a proof-mode loop fails closed. Retained past close (like the scope history).
+   */
+  privacyModeForLoop(loop_id: string): ScopePrivacyMode | undefined {
+    const state = this.scopeByLoop.get(loop_id);
+    if (!state || state.history.length === 0) return undefined;
+    return state.history[state.history.length - 1]!.structural.privacy_mode;
+  }
+
+  /**
+   * Resolve the loop_id the supervisor opened for a session_id (active OR already-closed). Read
+   * from the retained scope state first (survives close), falling back to a live session. Lets the
+   * supervisor address judgment verbs by either session_id or loop_id.
+   */
+  loopIdForSession(session_id: string): string | undefined {
+    return this.scopeBySession.get(session_id)?.loop_id ?? this.sessions.get(session_id)?.loopId;
   }
 
   /**

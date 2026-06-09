@@ -1,0 +1,225 @@
+import { connect as netConnect } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  connectStreamableHttpUpstream,
+  createJudgmentRecorder,
+  createReceiptRecorder,
+  createScopeEventRecorder,
+  createSyntheticDemoBindClient,
+  LoopSessionRegistry,
+  serveControlChannel,
+  serveStandingHttpProxy,
+  type ControlChannelHandle,
+  type ScopeCapsule,
+  type StandingHttpProxy
+} from "../src/index.js";
+
+function syntheticUpstream() {
+  return {
+    async listTools() {
+      return [
+        { name: "write_file", inputSchema: { type: "object" } },
+        { name: "run_tests", inputSchema: { type: "object" } }
+      ];
+    },
+    async callTool(call: { toolName: string }) {
+      return { content: [{ type: "text", text: `ok:${call.toolName}` }] };
+    }
+  };
+}
+
+function scopeCapsule(privacy_mode: "proof" | "verified_context"): ScopeCapsule {
+  return {
+    structural: {
+      capsule_type: "scope_capsule",
+      capsule_version: "scope-capsule/v1",
+      loop_id: "", // set at open
+      goal_hash: "",
+      privacy_mode,
+      allowed_action_classes: ["read", "write", "run_tests"],
+      allowed_targets: ["/checkout/**"],
+      forbidden_targets: ["/billing/**"],
+      target_descriptor_hashes: [],
+      targetless_action_classes: ["run_tests"]
+    },
+    sidecar: { goal_summary: "fix checkout bug" }
+  };
+}
+
+function sendControl(address: string, command: unknown): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const i = address.lastIndexOf(":");
+    const socket = netConnect(Number(address.slice(i + 1)), address.slice(0, i));
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(JSON.stringify(command) + "\n"));
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const nl = buffer.indexOf("\n");
+      if (nl !== -1) {
+        socket.end();
+        resolve(JSON.parse(buffer.slice(0, nl)));
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
+const SCOPE_CLASS_MAP = { write_file: "write", run_tests: "run_tests" };
+
+type Rig = {
+  standing: StandingHttpProxy;
+  control: ControlChannelHandle;
+  judgment: ReturnType<typeof createJudgmentRecorder>;
+};
+
+const rigs: Rig[] = [];
+afterEach(async () => {
+  for (const r of rigs.splice(0)) {
+    await r.control.close().catch(() => undefined);
+    await r.standing.close().catch(() => undefined);
+  }
+});
+
+async function rig(opts: { privacy: "proof" | "verified_context"; withJudgmentVerbs?: boolean } = { privacy: "verified_context" }): Promise<
+  Rig & { address: string; sessionId: string; loopId: string }
+> {
+  const recorder = createReceiptRecorder();
+  const scopeEvents = createScopeEventRecorder();
+  const judgment = createJudgmentRecorder();
+  const bindClient = recorder.wrap(createSyntheticDemoBindClient());
+  const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 1000, retryDelayMs: 25 }, scopeEvents, judgment);
+  const standing = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, host: "127.0.0.1", port: 0, path: "/mcp" });
+  const control = await serveControlChannel({
+    transport: "tcp",
+    host: "127.0.0.1",
+    port: 0,
+    registry,
+    receiptSource: recorder,
+    scopeEventSource: scopeEvents,
+    judgmentRecorder: opts.withJudgmentVerbs === false ? undefined : judgment
+  });
+  const out = { standing, control, judgment, address: control.address, sessionId: "s1", loopId: "loop-cc-judgment" };
+  rigs.push(out);
+
+  const opened = await sendControl(control.address, {
+    cmd: "open",
+    session_id: out.sessionId,
+    loop_id: out.loopId,
+    goal: "fix checkout bug",
+    scope_capsule: scopeCapsule(opts.privacy),
+    scope_class_map: SCOPE_CLASS_MAP
+  });
+  expect(opened.ok).toBe(true);
+
+  // Drive the AGENT path to generate judgment turns: one in-lane approved, one out-of-lane refused.
+  const agent = await connectStreamableHttpUpstream(standing.sessionUrl(out.sessionId));
+  try {
+    // In Proof Mode an allowed-glob target with no declared hashes is (correctly) refused, so both
+    // calls may throw; the rig only needs the turns they append. In VC mode the first is approved.
+    await agent.client.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts", contents: "// fix" } }).catch(() => undefined);
+    await agent.client.callTool({ toolName: "write_file", arguments: { path: "/billing/secret.sql", contents: "x" } }).catch(() => undefined);
+  } finally {
+    await agent.close().catch(() => undefined);
+  }
+  return out;
+}
+
+describe("Capsule Gate 2 — supervisor-only dump_judgment / record_delta", () => {
+  it("dump_judgment returns the ordered ledger (by loop_id and by session_id)", async () => {
+    const r = await rig();
+    const byLoop = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    expect(byLoop.ok).toBe(true);
+    expect(byLoop.count).toBe(2);
+    const turns = byLoop.turns as Array<Record<string, unknown>>;
+    expect((turns[0]!.verdict as Record<string, unknown>).source).toBe("bind");
+    expect((turns[1]!.verdict as Record<string, unknown>).source).toBe("scope_gate");
+
+    const bySession = await sendControl(r.address, { cmd: "dump_judgment", session_id: r.sessionId });
+    expect(bySession.ok).toBe(true);
+    expect(bySession.count).toBe(2);
+  });
+
+  it("a supervisor can attach a delta to an existing turn in Verified Context Mode", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    const turnRef = (dump.turns as Array<Record<string, unknown>>)[0]!.turn_ref as string;
+
+    const rec = await sendControl(r.address, {
+      cmd: "record_delta",
+      loop_id: r.loopId,
+      turn_ref: turnRef,
+      delta: { settled: ["checkout fix written"], next_actions: ["open follow-up"] }
+    });
+    expect(rec.ok).toBe(true);
+    expect(rec.declared_delta).toEqual({ settled: ["checkout fix written"], next_actions: ["open follow-up"] });
+
+    // It surfaces in a Verified Context dump.
+    const vc = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId, mode: "verified-context" });
+    const t0 = (vc.turns as Array<Record<string, unknown>>)[0]!;
+    expect(t0.declared_delta).toEqual({ settled: ["checkout fix written"], next_actions: ["open follow-up"] });
+  });
+
+  it("record_delta fails closed for an unknown turn_ref and a malformed delta", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const unknown = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: "turn_v1:nope", delta: { settled: ["x"] } });
+    expect(unknown.ok).toBe(false);
+
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    const turnRef = (dump.turns as Array<Record<string, unknown>>)[0]!.turn_ref as string;
+    const malformed = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: turnRef, delta: { bogus_field: ["x"] } });
+    expect(malformed.ok).toBe(false);
+  });
+
+  it("record_delta is refused on a Proof Mode loop (Verified Context only)", async () => {
+    const r = await rig({ privacy: "proof" });
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    const turnRef = (dump.turns as Array<Record<string, unknown>>)[0]!.turn_ref as string;
+    const rec = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: turnRef, delta: { settled: ["x"] } });
+    expect(rec.ok).toBe(false);
+    expect(String(rec.error)).toMatch(/Verified Context Mode only/);
+  });
+
+  it("a Proof Mode dump exposes no plaintext deltas even when a VC loop recorded one", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    const turnRef = (dump.turns as Array<Record<string, unknown>>)[0]!.turn_ref as string;
+    await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: turnRef, delta: { settled: ["SENSITIVE-PLAINTEXT"] } });
+
+    // A proof-mode projection (explicitly requested, or the default for a proof loop) strips deltas.
+    const proof = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId, mode: "proof" });
+    expect(proof.mode).toBe("proof");
+    expect(JSON.stringify(proof.turns)).not.toContain("SENSITIVE-PLAINTEXT");
+    for (const t of proof.turns as Array<Record<string, unknown>>) {
+      expect(t.declared_delta).toBeUndefined();
+    }
+  });
+
+  it("the verbs fail closed when no judgment recorder is configured", async () => {
+    const r = await rig({ privacy: "verified_context", withJudgmentVerbs: false });
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    expect(dump.ok).toBe(false);
+    const rec = await sendControl(r.address, { cmd: "record_delta", loop_id: r.loopId, turn_ref: "turn_v1:x", delta: { settled: ["x"] } });
+    expect(rec.ok).toBe(false);
+  });
+
+  it("the agent MCP path can neither dump_judgment nor record_delta (they are control-channel verbs only)", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    // The agent holds ONLY the per-session MCP URL. Its surface is tools/list + tools/call; there is
+    // no record_delta / dump_judgment verb on it, and it never reaches the control socket. We assert
+    // the agent's only effect on the ledger was APPENDING turns it cannot itself read or mutate.
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const tools = await agent.client.listTools();
+      const names = tools.map((t) => t.name);
+      expect(names).not.toContain("dump_judgment");
+      expect(names).not.toContain("record_delta");
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    // The ledger is reachable only via the control channel.
+    const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
+    expect(dump.ok).toBe(true);
+  });
+});
