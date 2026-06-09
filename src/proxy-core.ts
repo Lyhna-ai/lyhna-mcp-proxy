@@ -122,37 +122,47 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         });
 
         if (decision.decision !== "IN_SCOPE") {
-          const event = recorder.record({
-            event_type: decision.decision === "ESCALATED" ? "scope_escalation" : "scope_refusal",
-            loop_id: sealed.structural.loop_id,
-            scope_ref: sealed.scope_ref,
-            attempted: {
-              action_class: decision.descriptor.action_class,
-              tool_name: decision.descriptor.tool_name,
-              target_descriptor: decision.descriptor.target_descriptor,
-              // Verified Context Mode only: plaintext target is retained in the sidecar event
-              // (Proof Mode resolves no plaintext, so this is naturally absent).
-              ...(decision.target_plaintext !== undefined ? { target: decision.target_plaintext } : {})
-            },
-            matched_rule: decision.matched_rule,
-            decision: decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED",
-            // Best-effort anchor for the (off-chain) attestation: the last receipt the loop saw.
-            prior_receipt_id: options.loopSession?.priorReceiptId ?? sealed.structural.prior_receipt_ref ?? null
-          });
-          // Capsule Gate 2: capture the refused/escalated move as a judgment turn, anchored to the
-          // attested scope-event hash (source "scope_gate"). Serialized inside the loop mutex so its
-          // turn_index sits in order with the receipt-anchored turns; no chain advance (no bind ran).
-          if (judgmentRecorder && options.loopSession) {
-            await options.loopSession.appendScopeRefusalTurn({
-              recorder: judgmentRecorder,
+          const eventDecision = decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED";
+          // Record the attested scope event AND its judgment turn anchored to the SAME predecessor.
+          // When there is a loop, do BOTH inside one serialized section (runInLoopOrder) so the
+          // event's prior_receipt_id and the turn's inherited prior_receipt_id cannot diverge under a
+          // concurrent bind's chain advance — the event anchor and the ledger position stay coherent.
+          const recordRefusal = (prior_receipt_id: string | null): ScopeEvent => {
+            const e = recorder.record({
+              event_type: decision.decision === "ESCALATED" ? "scope_escalation" : "scope_refusal",
+              loop_id: sealed.structural.loop_id,
               scope_ref: sealed.scope_ref,
-              proposed: proposedFrom(decision.descriptor),
-              kind: decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED",
-              source: "scope_gate",
-              scope_event_hash: event.event_hash,
-              reason_code: decision.matched_rule
+              attempted: {
+                action_class: decision.descriptor.action_class,
+                tool_name: decision.descriptor.tool_name,
+                target_descriptor: decision.descriptor.target_descriptor,
+                // Verified Context Mode only: plaintext target is retained in the sidecar event
+                // (Proof Mode resolves no plaintext, so this is naturally absent).
+                ...(decision.target_plaintext !== undefined ? { target: decision.target_plaintext } : {})
+              },
+              matched_rule: decision.matched_rule,
+              decision: eventDecision,
+              prior_receipt_id
             });
-          }
+            if (judgmentRecorder) {
+              judgmentRecorder.append({
+                loop_id: sealed.structural.loop_id,
+                scope_ref: sealed.scope_ref,
+                prior_receipt_id,
+                proposed: proposedFrom(decision.descriptor),
+                verdict: {
+                  kind: eventDecision,
+                  source: "scope_gate",
+                  scope_event_hash: e.event_hash,
+                  ...(decision.matched_rule !== undefined ? { reason_code: decision.matched_rule } : {})
+                }
+              });
+            }
+            return e;
+          };
+          const event = options.loopSession
+            ? await options.loopSession.runInLoopOrder(recordRefusal)
+            : recordRefusal(sealed.structural.prior_receipt_ref ?? null);
           // Refuse before execution: bind is never called, the tool never runs.
           throw new ScopeGateError(decision, event);
         }

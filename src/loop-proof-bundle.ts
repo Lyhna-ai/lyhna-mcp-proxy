@@ -927,7 +927,7 @@ function buildJudgmentArtifacts(input: {
   // in that SAME order (in-mutex, right after each chain advance). So the i-th bind turn must anchor
   // the i-th in-loop receipt AND its verdict.kind must equal the signed receipt outcome. A set/count
   // check alone would let a stale/tampered ledger swap r1/r2 or relabel an APPROVED receipt REFUSED.
-  const inLoopReceipts: { id: string; outcome: unknown }[] = [];
+  const inLoopReceipts: { id: string; outcome: unknown; scope: Record<string, unknown> | undefined }[] = [];
   input.receipts.forEach((r, i) => {
     const c = r.constraints;
     const isTerminal = isRecord(c?.loop_close);
@@ -936,7 +936,11 @@ function buildJudgmentArtifacts(input: {
       if (typeof r.receipt_id !== "string") {
         throw new Error(`In-loop receipt ${describe(r, i)} is missing a string receipt_id (fail closed).`);
       }
-      inLoopReceipts.push({ id: r.receipt_id, outcome: (r as Record<string, unknown>).outcome });
+      inLoopReceipts.push({
+        id: r.receipt_id,
+        outcome: (r as Record<string, unknown>).outcome,
+        scope: isRecord((c as { scope?: unknown }).scope) ? ((c as { scope: Record<string, unknown> }).scope) : undefined
+      });
     }
   });
   const bindTurns = turns.filter((t) => t.verdict.source === "bind");
@@ -962,6 +966,27 @@ function buildJudgmentArtifacts(input: {
       throw new Error(
         `Bind judgment turn ${t.turn_index} verdict ${t.verdict.kind} does not match signed receipt ${r.id} ` +
           `outcome ${JSON.stringify(r.outcome)} (fail closed).`
+      );
+    }
+    // Bind the turn's proposed descriptor to the SIGNED constraints.scope stamp on the receipt. The
+    // stamp (action_class / tool_name / target hash) is part of the signed bind request, so a tampered
+    // ledger cannot recompute turn_ref with a different proposed move and still pass: the signed
+    // receipt commits what action was actually authorized. (Scoped in-loop receipts always carry the
+    // stamp — the Capsule Gate 1 per-receipt check above already enforced its presence.)
+    if (!r.scope) {
+      throw new Error(`In-loop receipt ${r.id} has no signed constraints.scope stamp to bind its bind turn descriptor to (fail closed).`);
+    }
+    const sAction = typeof r.scope.action_class === "string" ? r.scope.action_class : undefined;
+    const sTool = typeof r.scope.tool_name === "string" ? r.scope.tool_name : undefined;
+    const sTarget = typeof r.scope.target_descriptor === "string" ? r.scope.target_descriptor : null;
+    if (
+      t.proposed.action_class !== sAction ||
+      t.proposed.tool_name !== sTool ||
+      (t.proposed.target_descriptor ?? null) !== sTarget
+    ) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} proposed descriptor (${t.proposed.action_class}/${t.proposed.tool_name}/` +
+          `${t.proposed.target_descriptor ?? "—"}) does not match the signed constraints.scope stamp on receipt ${r.id} (fail closed).`
       );
     }
   }
@@ -1015,6 +1040,16 @@ function buildJudgmentArtifacts(input: {
       throw new Error(
         `Judgment turn ${t.turn_index} proposed descriptor does not match the descriptor committed by attested ` +
           `scope event ${h} (fail closed).`
+      );
+    }
+    // The event_hash also commits the event's prior_receipt_id, and the live path records the event +
+    // turn in one serialized section (same predecessor). Require the turn's inherited prior to equal
+    // the attested event's anchor, so a tampered ledger cannot reposition a scope-gate turn against a
+    // predecessor different from the one the attested event was anchored to.
+    if ((t.prior_receipt_id ?? null) !== (event.prior_receipt_id ?? null)) {
+      throw new Error(
+        `Judgment turn ${t.turn_index} inherits prior_receipt_id ${JSON.stringify(t.prior_receipt_id ?? null)} but ` +
+          `attested scope event ${h} is anchored to ${JSON.stringify(event.prior_receipt_id ?? null)} (fail closed).`
       );
     }
     anchoredEvents.add(h);

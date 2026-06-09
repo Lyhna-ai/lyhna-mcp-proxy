@@ -364,6 +364,71 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     ).toThrow(/judgment summary does not match/);
   });
 
+  // Build the bundle from one fixture with caller-supplied turns (consistent scope-event hash).
+  function buildWith(f: ReturnType<typeof fixture>, turns: JudgmentTurn[]) {
+    return () =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: turns }
+      });
+  }
+
+  it("cold validation fails when a bind turn's proposed descriptor diverges from the signed scope stamp", () => {
+    const f = fixture("verified_context");
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      // tool_name differs from the signed constraints.scope stamp ("write_file") on receipt r1
+      proposed: { action_class: "write", tool_name: "DELETE_EVERYTHING", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/does not match the signed constraints.scope stamp/);
+  });
+
+  it("cold validation fails when a scope turn's inherited prior diverges from the attested event anchor", () => {
+    const f = fixture("verified_context"); // f.event is anchored to prior_receipt_id "r1"
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r2", // tampered: the attested event is anchored to "r1"
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: f.event.event_hash, reason_code: "forbidden_targets" }
+    });
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: f.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r2" }
+    });
+    expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/is anchored to "r1" \(fail closed\)/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {

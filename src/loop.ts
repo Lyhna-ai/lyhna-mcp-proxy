@@ -23,12 +23,7 @@
 import { createHash } from "node:crypto";
 
 import type { BindRequest, BindResponse } from "./bind.js";
-import type {
-  JudgmentProposedMove,
-  JudgmentTurn,
-  JudgmentVerdictKind,
-  JudgmentVerdictSource
-} from "./judgment-ledger.js";
+import type { JudgmentProposedMove, JudgmentTurn, JudgmentVerdictKind } from "./judgment-ledger.js";
 import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 
 /** Immutable loop identity injected at proxy start (via env). */
@@ -84,21 +79,6 @@ export type JudgmentBindContext = {
   onTurn?: (turn: JudgmentTurn) => void;
 };
 
-/**
- * Capsule Gate 2 judgment-capture context for a PRE-BIND scope refusal / escalation (no bind, no
- * receipt). Appended INSIDE the loop mutex (so its turn_index is serialized against the
- * receipt-anchored turns) but does NOT advance the receipt chain. Anchors to the attested scope
- * event hash instead of a signed receipt.
- */
-export type JudgmentRefusalContext = {
-  recorder: JudgmentLedgerRecorder;
-  scope_ref: string;
-  proposed: JudgmentProposedMove;
-  kind: JudgmentVerdictKind;
-  source: JudgmentVerdictSource;
-  scope_event_hash: string;
-  reason_code?: string;
-};
 
 export type LoopCloseResult =
   | { sealed: true; receipt: BindResponse }
@@ -407,25 +387,14 @@ export class LoopSession {
   }
 
   /**
-   * Append a PRE-BIND scope refusal / escalation as a judgment turn (Capsule Gate 2). Runs inside
-   * the loop mutex so its turn_index is serialized against the receipt-anchored turns, but does NOT
-   * advance the receipt chain (no bind happened). Anchors to the attested scope-event hash.
+   * Run `fn` INSIDE the loop's serializing mutex, passing the chain predecessor at that serialized
+   * instant. Capsule Gate 2 uses it for a PRE-BIND scope refusal / escalation: the attested scope
+   * event AND its judgment turn are recorded in ONE section, so both cite the SAME `prior_receipt_id`
+   * and neither can straddle a concurrent bind's chain advance (the receipt event-anchor can never
+   * diverge from the turn's inherited predecessor). It does NOT advance the receipt chain (no bind).
    */
-  appendScopeRefusalTurn(ctx: JudgmentRefusalContext): Promise<JudgmentTurn> {
-    return this.runExclusive(async () => {
-      return ctx.recorder.append({
-        loop_id: this.context.loop_id,
-        scope_ref: ctx.scope_ref,
-        prior_receipt_id: this.priorReceiptIdValue,
-        proposed: ctx.proposed,
-        verdict: {
-          kind: ctx.kind,
-          source: ctx.source,
-          scope_event_hash: ctx.scope_event_hash,
-          ...(ctx.reason_code !== undefined ? { reason_code: ctx.reason_code } : {})
-        }
-      });
-    });
+  runInLoopOrder<T>(fn: (prior_receipt_id: string | null) => T): Promise<T> {
+    return this.runExclusive(async () => fn(this.priorReceiptIdValue));
   }
 
   /**
