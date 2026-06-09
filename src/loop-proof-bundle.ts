@@ -561,7 +561,41 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       }
     }
 
-    // FAIL CLOSED (scope-stamp binding + re-validation): for a SCOPED export, every in-loop
+    // FAIL CLOSED (continuation event-ref binding): the human-facing proof card renders its per-event
+    // list from `continuation.scope_events` (an unsigned ScopeEventRef[]), while `bundle.json` advertises
+    // the VERIFIED event hashes derived from `input.capsule.scope_events` (recomputed above). A stale or
+    // tampered `--continuation` could omit/alter its own refs and so under-report attested scope halts in
+    // the card even though the pack carries them. Require the continuation's refs to reproduce the verified
+    // events EXACTLY — same count, and in order the same structural ref fields — so the card can never
+    // diverge from the pack. (Refs are content-blind, so this holds identically in Proof and VC modes.)
+    const verifiedEvents = input.capsule.scope_events ?? [];
+    const contRefs = continuation.scope_events ?? [];
+    if (contRefs.length !== verifiedEvents.length) {
+      throw new Error(
+        `Continuation lists ${contRefs.length} scope event(s) but the verified pack carries ${verifiedEvents.length}; ` +
+          `the continuation/proof card would misreport attested scope halts (fail closed).`
+      );
+    }
+    for (let k = 0; k < verifiedEvents.length; k += 1) {
+      const want = verifiedEvents[k]!;
+      const got = contRefs[k]!;
+      if (
+        got.event_hash !== want.event_hash ||
+        got.event_type !== want.event_type ||
+        got.decision !== want.decision ||
+        got.scope_ref !== want.scope_ref ||
+        (got.prior_receipt_id ?? null) !== (want.prior_receipt_id ?? null) ||
+        (got.matched_rule ?? undefined) !== (want.matched_rule ?? undefined)
+      ) {
+        throw new Error(
+          `Continuation scope event ${k} does not match the verified scope event ` +
+            `(event_hash/event_type/decision/scope_ref/prior_receipt_id/matched_rule); the continuation/proof card ` +
+            `would misreport an attested scope halt (fail closed).`
+        );
+      }
+    }
+
+
     // consequential receipt must carry a `constraints.scope.scope_ref` in the VERIFIED chain, AND
     // the stamped descriptor (action_class / tool_name / target_descriptor) must actually be IN-LANE
     // for THAT referenced scope version's structural rules — not merely point at a valid scope_ref.

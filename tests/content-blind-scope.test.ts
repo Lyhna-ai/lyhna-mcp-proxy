@@ -19,7 +19,8 @@ import {
   type BindRequest,
   type ProofReceipt,
   type ScopeCapsule,
-  type ScopeConstraint
+  type ScopeConstraint,
+  type ScopeEvent
 } from "../src/index.js";
 
 const capsule: ScopeCapsule = {
@@ -194,7 +195,7 @@ describe("export identity binding + mode contract (fail closed)", () => {
       }
     ];
   }
-  function continuationFor(loop_id: string, goal_hash: string, scope_ref: string) {
+  function continuationFor(loop_id: string, goal_hash: string, scope_ref: string, events: ScopeEvent[] = []) {
     return {
       capsule_type: "continuation_capsule" as const,
       capsule_version: "continuation-capsule/v1",
@@ -206,7 +207,14 @@ describe("export identity binding + mode contract (fail closed)", () => {
       action_count: 0,
       closed_at: "2026-06-08T00:00:00.000Z",
       what_changed: [],
-      scope_events: []
+      scope_events: events.map((e) => ({
+        event_hash: e.event_hash,
+        event_type: e.event_type,
+        decision: e.decision,
+        scope_ref: e.scope_ref,
+        prior_receipt_id: e.prior_receipt_id,
+        matched_rule: e.matched_rule
+      }))
     };
   }
 
@@ -292,7 +300,8 @@ describe("export identity binding + mode contract (fail closed)", () => {
     // Tamper ONLY the retained plaintext; descriptor + event_hash (which excludes the plaintext) are unchanged.
     const tampered = { ...event, attempted: { ...event.attempted, target: "/checkout/cart.ts" } };
     const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
-    const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref);
+    // Continuation refs match the event (only attempted.target differs under tamper, which is not a ref field).
+    const continuation = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref, [event]);
     // The event_hash still validates (it never covered the plaintext) — the new binding check is what catches it.
     expect(deriveScopeEventHash({ ...tampered })).toBe(event.event_hash);
     expect(() =>
@@ -302,6 +311,41 @@ describe("export identity binding + mode contract (fail closed)", () => {
     // Control: the untampered event exports cleanly in verified-context mode.
     const ok = buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "verified_context", sealed_scope: sealed, continuation, scope_events: [event] } });
     expect(ok.scope_events?.[0]?.attempted.target).toBe("/billing/secrets.env");
+  });
+
+  it("fails closed when the continuation under-reports/alters scope events vs the verified pack (round 24)", () => {
+    // The pack carries a real attested refusal, but the (unsigned) continuation omits it — the proof
+    // card renders its per-event list from the continuation, so it could under-report scope halts.
+    const sealed = sealScopeCapsule({ capsule }); // proof mode
+    const rec = createScopeEventRecorder();
+    const event = rec.record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1",
+      scope_ref: sealed.scope_ref,
+      attempted: { action_class: "write", tool_name: "write_file", target_descriptor: hashTarget("/billing/secrets.env") },
+      matched_rule: "allowed_targets",
+      decision: "REFUSED",
+      prior_receipt_id: null
+    });
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+
+    // (a) continuation omits the event entirely (0 refs vs 1 verified) -> fail closed.
+    const omitting = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref, []);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation: omitting, scope_events: [event] } })
+    ).toThrow(/misreport attested scope halts/);
+
+    // (b) continuation keeps the count but alters a ref field (decision) -> fail closed.
+    const altered = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref, [event]);
+    altered.scope_events[0]!.decision = "ESCALATED";
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation: altered, scope_events: [event] } })
+    ).toThrow(/misreport an attested scope halt/);
+
+    // (c) faithful continuation exports cleanly and the bundle advertises the event hash.
+    const faithful = continuationFor("loop-1", "a".repeat(64), sealed.scope_ref, [event]);
+    const built = buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: sealed, continuation: faithful, scope_events: [event] } });
+    expect(built.bundle.capsule?.scope_events.event_hashes).toEqual([event.event_hash]);
   });
 
   it("fails closed when the sealed scope_ref does not hash to its structural projection (tamper)", () => {
