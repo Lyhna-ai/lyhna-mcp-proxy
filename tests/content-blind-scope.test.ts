@@ -758,6 +758,46 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/per-step scope anchor is stale\s+or forged/);
   });
 
+  it("fails closed when an imported chain exceeds the sealed bounds.max_steps hard bound (round 28)", () => {
+    // Sealed scope declares max_steps: 1, but the (imported/tampered) chain has TWO in-loop steps.
+    const scoped = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: "loop-1",
+          goal_hash: "a".repeat(64),
+          privacy_mode: "proof",
+          allowed_action_classes: ["write"],
+          bounds: { max_steps: 1 }
+        }
+      }
+    });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash }, scope: { scope_ref: scoped.scope_ref, action_class: "write", prior_receipt_id: null } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, scope: { scope_ref: scoped.scope_ref, action_class: "write", prior_receipt_id: "r1" } }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r3", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r2", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 2, outcome: "COMPLETED", prior_receipt_id: "r2", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, scoped.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: scoped, continuation, scope_events: [] } })
+    ).toThrow(/exceeds the sealed hard step bound|max_steps/);
+  });
+
   it("fails closed when a receipt carries a scope_ref outside the exported scope chain", () => {
     const sealed = sealScopeCapsule({ capsule });
     const goal_hash = "a".repeat(64);
