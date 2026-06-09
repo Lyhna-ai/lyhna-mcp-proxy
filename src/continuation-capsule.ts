@@ -140,8 +140,39 @@ export function buildContinuationCapsule(input: BuildContinuationCapsuleInput): 
  * structural core for a Proof Mode pack. Strips the plaintext sidecar fields.
  */
 export function projectContinuationProofMode(capsule: ContinuationCapsule): ContinuationCapsule {
-  const { settled: _s, open_questions: _o, next_actions: _n, ...structural } = capsule;
-  return structural;
+  // Content-blind projection by EXPLICIT allowlist — never spread the (JSON-loaded) capsule. Beyond the
+  // plaintext sidecar fields (settled / open_questions / next_actions), a stale or tampered continuation
+  // can carry arbitrary extra keys (e.g. `notes`, `plan`); a spread would leak them into the content-blind
+  // continuation-capsule.json. Nested records are likewise reconstructed from their known structural
+  // fields so no unknown sub-key rides along.
+  return {
+    capsule_type: "continuation_capsule",
+    capsule_version: capsule.capsule_version,
+    loop_id: capsule.loop_id,
+    goal_hash: capsule.goal_hash,
+    scope_ref: capsule.scope_ref,
+    inherits_from: { scope_ref: capsule.inherits_from.scope_ref },
+    sealed: capsule.sealed,
+    action_count: capsule.action_count,
+    closed_at: capsule.closed_at,
+    what_changed: capsule.what_changed.map((a) => ({
+      from_scope_ref: a.from_scope_ref,
+      to_scope_ref: a.to_scope_ref,
+      sealed_at: a.sealed_at,
+      changed_fields: [...a.changed_fields]
+    })),
+    scope_events: capsule.scope_events.map((e) => {
+      const ref: ScopeEventRef = {
+        event_hash: e.event_hash,
+        event_type: e.event_type,
+        decision: e.decision,
+        scope_ref: e.scope_ref,
+        prior_receipt_id: e.prior_receipt_id
+      };
+      if (e.matched_rule !== undefined) ref.matched_rule = e.matched_rule;
+      return ref;
+    })
+  };
 }
 
 export function renderContinuationCardMarkdown(capsule: ContinuationCapsule): string {

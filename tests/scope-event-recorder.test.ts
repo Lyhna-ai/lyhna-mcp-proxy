@@ -74,4 +74,32 @@ describe("createScopeEventRecorder", () => {
     const vcm = projectScopeEvent(e, "verified_context");
     expect(vcm.attempted.target).toBe("/billing/migrations/2026_ledger.sql");
   });
+
+  it("projectScopeEvent drops unknown top-level/attempted keys (content-blind allowlist), keeping event_hash valid", () => {
+    const rec = createScopeEventRecorder();
+    const e = rec.record(refusal());
+    // Simulate a JSON-loaded event smuggling unhashed plaintext beyond the typed fields.
+    const tainted = {
+      ...e,
+      notes: "secret plan text",
+      plan: ["leak step"],
+      attempted: { ...e.attempted, secret_arg: "/etc/shadow" }
+    } as unknown as Parameters<typeof projectScopeEvent>[0];
+
+    const proof = projectScopeEvent(tainted, "proof");
+    expect(Object.keys(proof).sort()).toEqual(
+      ["attempted", "decision", "event_hash", "event_type", "loop_id", "matched_rule", "prior_receipt_id", "scope_ref", "ts"]
+    );
+    expect(Object.keys(proof.attempted).sort()).toEqual(["action_class", "target_descriptor", "tool_name"]);
+    expect((proof as Record<string, unknown>).notes).toBeUndefined();
+    expect((proof.attempted as Record<string, unknown>).secret_arg).toBeUndefined();
+    // The projected (clean) event still recomputes to the same committed hash.
+    expect(deriveScopeEventHash({ ...proof })).toBe(e.event_hash);
+
+    // Verified Context keeps ONLY the one permitted plaintext field (`target`), not arbitrary keys.
+    const vcm = projectScopeEvent(tainted, "verified_context");
+    expect(Object.keys(vcm.attempted).sort()).toEqual(["action_class", "target", "target_descriptor", "tool_name"]);
+    expect((vcm as Record<string, unknown>).notes).toBeUndefined();
+    expect((vcm.attempted as Record<string, unknown>).secret_arg).toBeUndefined();
+  });
 });

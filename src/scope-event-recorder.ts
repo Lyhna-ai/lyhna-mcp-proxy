@@ -143,7 +143,30 @@ export function createScopeEventRecorder(): ScopeEventRecorder {
  * `event_hash` is unaffected (it never covered the plaintext target).
  */
 export function projectScopeEvent(event: ScopeEvent, mode: "proof" | "verified_context"): ScopeEvent {
-  if (mode === "verified_context") return event;
-  const { target: _drop, ...attempted } = event.attempted;
-  return { ...event, attempted };
+  // Build from an EXPLICIT allowlist — never spread the (JSON-loaded) input. `event_hash` covers only
+  // the hashed structural fields, so extra top-level keys or extra `attempted` keys (unhashed plaintext
+  // like `notes`/`plan`) would otherwise ride into a content-blind pack alongside a valid event_hash.
+  // Proof Mode drops the plaintext `target`; Verified Context retains it as the SINGLE permitted sidecar
+  // field. `target_descriptor` is normalized to null exactly as deriveScopeEventHash sees it, so the
+  // projected event still recomputes to the same event_hash.
+  const attempted: ScopeEventAttempt = {
+    action_class: event.attempted.action_class,
+    tool_name: event.attempted.tool_name,
+    target_descriptor: event.attempted.target_descriptor ?? null
+  };
+  if (mode === "verified_context" && typeof event.attempted.target === "string") {
+    attempted.target = event.attempted.target;
+  }
+  const projected: ScopeEvent = {
+    event_type: event.event_type,
+    loop_id: event.loop_id,
+    scope_ref: event.scope_ref,
+    attempted,
+    decision: event.decision,
+    prior_receipt_id: event.prior_receipt_id,
+    ts: event.ts,
+    event_hash: event.event_hash
+  };
+  if (event.matched_rule !== undefined) projected.matched_rule = event.matched_rule;
+  return projected;
 }

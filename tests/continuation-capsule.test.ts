@@ -109,6 +109,26 @@ describe("buildContinuationCapsule", () => {
     expect(proof.scope_ref).toBe(original.scope_ref);
   });
 
+  it("Proof Mode projection drops UNKNOWN extra keys (content-blind allowlist), not just the typed sidecar", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 0 },
+      mode: "verified_context"
+    });
+    // A JSON-loaded continuation smuggling arbitrary plaintext beyond the typed fields.
+    const tainted = { ...cont, notes: "secret plan text", plan: ["leak step"] } as unknown as typeof cont;
+    const proof = projectContinuationProofMode(tainted);
+    expect(JSON.stringify(proof)).not.toContain("secret plan text");
+    expect(JSON.stringify(proof)).not.toContain("leak step");
+    expect((proof as Record<string, unknown>).notes).toBeUndefined();
+    expect((proof as Record<string, unknown>).plan).toBeUndefined();
+    expect(Object.keys(proof).sort()).toEqual(
+      ["action_count", "capsule_type", "capsule_version", "closed_at", "goal_hash", "inherits_from", "loop_id", "scope_events", "scope_ref", "sealed", "what_changed"]
+    );
+  });
+
   it("Proof Mode build omits sidecar fields from the start (mode=proof)", () => {
     const original = sealScopeCapsule({ capsule: capsule() });
     const cont = buildContinuationCapsule({
