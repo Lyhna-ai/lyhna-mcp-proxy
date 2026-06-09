@@ -999,6 +999,18 @@ function buildJudgmentArtifacts(input: {
           `constraints.scope stamp on receipt ${r.id} cites ${JSON.stringify(sScopeRef)} (fail closed).`
       );
     }
+    // For multi-target tools the signed stamp carries the authoritative per-target hash list
+    // (`target_descriptors`), which is ALSO part of the turn's proposed move (and thus turn_ref).
+    // Bind it canonically (order-independent) so a tampered ledger cannot alter the individual target
+    // hashes for the authorized move while the receipt proves a different list. Both absent is a match.
+    const canonTargets = (v: unknown): string | undefined =>
+      Array.isArray(v) ? JSON.stringify([...(v as unknown[])].map((x) => String(x)).sort()) : undefined;
+    if (canonTargets(r.scope.target_descriptors) !== canonTargets(t.proposed.target_descriptors)) {
+      throw new Error(
+        `Bind judgment turn ${t.turn_index} proposed target_descriptors do not match the signed constraints.scope ` +
+          `stamp's per-target hash list on receipt ${r.id} (fail closed).`
+      );
+    }
   }
 
   // 3) Scope events <-> scope_gate / loop_bound turns, by CONTENT. The event_hash commits the event's

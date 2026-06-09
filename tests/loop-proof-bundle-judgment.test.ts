@@ -525,6 +525,64 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     expect(buildWith(f, rec.judgmentLedgerForLoop(LOOP_ID))).toThrow(/commits scope_ref "scope_v1:[0-9a-f]+" \(fail closed\)/);
   });
 
+  it("cold validation fails when a multi-target bind turn's per-target hashes diverge from the signed stamp", () => {
+    const sealed = sealedScope("verified_context");
+    const scope_ref = sealed.scope_ref;
+    const stampTargets = [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`];
+    const aggregate = `sha256:${"c".repeat(64)}`; // stand-in multi-target set digest
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2",
+        receipt_id: "r1",
+        public_key: PUBKEY,
+        tenant_hash: "55b966349a28aaaa",
+        action_type: "tool_call",
+        outcome: "APPROVED",
+        signature: "c3R1Yg==",
+        constraints: {
+          loop: { loop_id: LOOP_ID, prior_receipt_id: null, goal_hash: GOAL_HASH },
+          scope: { scope_ref, prior_receipt_id: null, action_class: "write", tool_name: "copy_file", target_descriptor: aggregate, target_descriptors: stampTargets }
+        }
+      },
+      terminalReceipt("close", "r1", 1)
+    ];
+    const honestTurns = (() => {
+      const rec = createJudgmentRecorder();
+      rec.append({
+        loop_id: LOOP_ID,
+        scope_ref,
+        prior_receipt_id: null,
+        proposed: { action_class: "write", tool_name: "copy_file", target_descriptor: aggregate, target_descriptors: stampTargets },
+        verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+      });
+      return rec.judgmentLedgerForLoop(LOOP_ID);
+    })();
+    const reduced = reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref, turns: honestTurns, mode: "verified_context" });
+    const continuation = buildContinuationCapsule({
+      scope_history: [sealed],
+      scope_events: [],
+      loop: { loop_id: LOOP_ID, goal_hash: GOAL_HASH, sealed: true, action_count: 1 },
+      mode: "verified_context",
+      reduced
+    });
+    // Tamper: keep the aggregate target_descriptor, but swap one per-target hash.
+    const rec = createJudgmentRecorder();
+    rec.append({
+      loop_id: LOOP_ID,
+      scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "copy_file", target_descriptor: aggregate, target_descriptors: [`sha256:${"a".repeat(64)}`, `sha256:${"f".repeat(64)}`] },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: sealed, scope_history: [sealed], continuation, scope_events: [], judgment_turns: rec.judgmentLedgerForLoop(LOOP_ID) }
+      })
+    ).toThrow(/per-target hash list/);
+  });
+
   it("a non-scoped (judgment-less) bundle is unaffected", () => {
     const built = buildLoopProofBundle({
       receipts: [inLoopReceipt("r1", null, "scope_v1:x"), terminalReceipt("close", "r1", 1)].map((r) => {
