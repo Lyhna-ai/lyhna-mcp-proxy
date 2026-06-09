@@ -70,6 +70,21 @@ const LOOP_CLOSE_ACTION_TYPE = "loop_close";
 const LOOP_INTENT_VERSION = "loop_v1";
 
 /**
+ * Thrown by LoopSession.bindToolCall when a scoped loop's declared `max_steps` bound is reached.
+ * Raised INSIDE the loop mutex against the authoritative serialized count, before any bind — so
+ * the offending step never executes. The adapter catches it to attest the scope refusal.
+ */
+export class LoopStepBoundError extends Error {
+  constructor(
+    readonly maxSteps: number,
+    readonly stepsTaken: number
+  ) {
+    super(`Loop step bound exceeded: max_steps=${maxSteps}, steps_taken=${stepsTaken}`);
+    this.name = "LoopStepBoundError";
+  }
+}
+
+/**
  * goal_hash is sha256(utf8(goal)) hex-encoded, with NO normalization or trimming —
  * byte-equivalent to the canonical @lyhna/bind computeGoalHash. It is carried (and
  * signed) inside every link's constraints.loop so verifiers can confirm a chain
@@ -127,6 +142,70 @@ export function mergeLoopConstraint(request: BindRequest, loop: LoopConstraint):
   return { ...stripped, constraints };
 }
 
+/**
+ * Per-consequential-event scope stamp merged additively under `constraints.scope`. Every field
+ * is structural / a reference / a hash — NEVER a plaintext plan field. This is the Capsule Gate 1
+ * citation: each consequential event cites `scope_ref` and the prior receipt it was checked
+ * against, plus a structural descriptor. It rides the same additive `constraints` envelope as
+ * `constraints.loop`, so it adds zero core / receipt-schema change.
+ */
+export type ScopeConstraint = {
+  scope_ref: string;
+  prior_receipt_id: string | null;
+  action_class?: string;
+  tool_name?: string;
+  /** sha256 hash or a structural class — never the plaintext target. For multi-target calls this
+   * is a stable SET DIGEST (identity); per-target membership is carried in `target_descriptors`. */
+  target_descriptor?: string | null;
+  /** Per-target sha256 hashes (one per resolved target) so a multi-target call can be re-validated
+   * member-by-member at export. Never plaintext. */
+  target_descriptors?: string[];
+};
+
+// The complete, closed set of keys `constraints.scope` may carry. The merge fails closed on any
+// other key so a plaintext plan field can never transit the gate/core path under scope.
+const SCOPE_CONSTRAINT_KEYS = new Set([
+  "scope_ref",
+  "prior_receipt_id",
+  "action_class",
+  "tool_name",
+  "target_descriptor",
+  "target_descriptors"
+]);
+
+/**
+ * Assert a scope constraint carries only the closed structural key set — the content-blind floor
+ * for the gate/core path. Fail closed on any unexpected key (a plaintext plan field could only
+ * arrive as an unexpected key).
+ */
+export function assertScopeConstraintStructural(scope: Record<string, unknown>): void {
+  for (const key of Object.keys(scope)) {
+    if (!SCOPE_CONSTRAINT_KEYS.has(key)) {
+      throw new Error(
+        `constraints.scope carries unexpected key "${key}"; only structural scope fields may ` +
+          `transit the gate/core path (fail closed).`
+      );
+    }
+  }
+}
+
+/**
+ * Merge a scope stamp additively into `request.constraints.scope`, mirroring
+ * mergeLoopConstraint exactly:
+ *   - preserves caller/server-appended sibling keys (never clobbers `constraints.loop`),
+ *   - sets `constraints.scope` as a distinct sibling key,
+ *   - strips caller-supplied `authority_tier`,
+ *   - never touches `action_payload`.
+ * Validates the scope stamp is structural-only before stamping (fail closed).
+ */
+export function mergeScopeConstraint(request: BindRequest, scope: ScopeConstraint): BindRequest {
+  assertScopeConstraintStructural(scope as unknown as Record<string, unknown>);
+  const stripped = stripAuthorityTier(request);
+  const constraints = isRecord(stripped.constraints) ? { ...stripped.constraints } : {};
+  constraints.scope = scope;
+  return { ...stripped, constraints };
+}
+
 /** Build the terminal loop_close bind request carrying `constraints.loop_close`. */
 export function buildLoopCloseRequest(
   context: LoopContext,
@@ -173,6 +252,10 @@ export class LoopSession {
   private readonly context: LoopContext;
   private priorReceiptIdValue: string | null = null;
   private actionCountValue = 0;
+  // Forwarded (executed) in-loop steps: incremented ONLY on an APPROVED bind (the only outcome that
+  // reaches the upstream). The `bounds.max_steps` execution budget is gated on THIS, not on every
+  // bind — a held (ESCALATED) or refused (REFUSED) authorization attempt must not consume the scope.
+  private forwardedCountValue = 0;
   private closedFlag = false;
   // The terminal result, cached once the loop seals. A second close() returns THIS verbatim
   // (see close()) instead of binding a duplicate terminal — additive defense-in-depth that
@@ -208,23 +291,52 @@ export class LoopSession {
    * Stamp an in-loop tools/call bind request and advance the chain under the mutex.
    * The provided `bind` runs inside the critical section so the read-prior ->
    * bind -> set-prior sequence is atomic with respect to concurrent calls.
+   *
+   * When `scope` is supplied (Capsule Gate 1), `constraints.scope` is stamped INSIDE the same
+   * mutex with the SAME `prior_receipt_id` as `constraints.loop`, so a concurrent scoped call
+   * cannot leave the scope anchor citing a stale predecessor.
+   *
+   * When `maxSteps` is supplied, the declared step bound is enforced INSIDE the mutex against the
+   * authoritative (serialized) action count, BEFORE binding — so two concurrent calls cannot both
+   * pass a pre-bind count read and then both execute. On violation it throws LoopStepBoundError
+   * and never binds (the tool does not run); the caller attests the refusal.
    */
-  bindToolCall(request: BindRequest, bind: LoopBindFn): Promise<BindResponse> {
+  bindToolCall(
+    request: BindRequest,
+    bind: LoopBindFn,
+    scope?: Omit<ScopeConstraint, "prior_receipt_id">,
+    maxSteps?: number
+  ): Promise<BindResponse> {
     return this.runExclusive(async () => {
       if (this.closedFlag) {
         throw new Error("Loop already closed; refusing in-loop bind (fail closed).");
       }
 
-      const stamped = mergeLoopConstraint(request, {
+      // Authoritative step-bound check: serialized FORWARDED count, evaluated before any bind/forward.
+      // max_steps bounds executed steps, so a prior held/refused bind (which never forwarded) does not
+      // count against it. The chain still advances and action_count still counts every in-loop bind.
+      if (maxSteps != null && this.forwardedCountValue >= maxSteps) {
+        throw new LoopStepBoundError(maxSteps, this.forwardedCountValue);
+      }
+
+      const prior = this.priorReceiptIdValue;
+      let stamped = mergeLoopConstraint(request, {
         loop_id: this.context.loop_id,
-        prior_receipt_id: this.priorReceiptIdValue,
+        prior_receipt_id: prior,
         goal_hash: this.context.goal_hash
       });
+      if (scope) {
+        stamped = mergeScopeConstraint(stamped, { ...scope, prior_receipt_id: prior });
+      }
 
       const response = await bind(stamped);
 
       this.priorReceiptIdValue = response.receipt_id;
       this.actionCountValue += 1;
+      // Only an APPROVED bind forwards to the upstream and thus consumes the execution budget.
+      if (response.outcome === "APPROVED") {
+        this.forwardedCountValue += 1;
+      }
 
       return response;
     });

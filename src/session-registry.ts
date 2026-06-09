@@ -24,11 +24,32 @@ import {
   type LoopCloseResult,
   type LoopCloseTuning
 } from "./loop.js";
+import type { ProxyScopeContext } from "./proxy-core.js";
+import {
+  amendScope,
+  sealScopeCapsule,
+  type ScopeCapsule,
+  type SealedScope
+} from "./scope-capsule.js";
+import type { ScopeEventRecorder } from "./scope-event-recorder.js";
 
 export type OpenLoopInput = {
   session_id: string;
   loop_id: string;
   goal: string;
+  // Optional Capsule Gate 1 scope material, sealed at open by this supervisor-only boundary.
+  // The agent's MCP path never reaches openLoop, so the agent cannot seal its own scope.
+  scope_capsule?: ScopeCapsule;
+  /** Optional tool-name -> action-class map for the structural gate. */
+  scope_class_map?: Record<string, string>;
+};
+
+/** Per-session scope state: the sealed scope seal-history (original + amendments). The classifier
+ * override lives INSIDE each sealed structural projection (hash-bound), not as a separate field. */
+type SessionScopeState = {
+  session_id: string;
+  loop_id: string;
+  history: SealedScope[];
 };
 
 export type CloseLoopInput = {
@@ -64,10 +85,18 @@ export class LoopSessionRegistry {
   // distinct chains into one bucket and corrupt the exported proof. Reject reuse at open
   // time so one loop_id maps to one chain, ever.
   private readonly seenLoopIds = new Set<string>();
+  // Capsule Gate 1 scope state. Keyed by BOTH session_id (the agent hot-path / gate lookup) and
+  // loop_id (the supervisor dump_scope / continuation lookup), pointing at the SAME state object.
+  // Retained past close (like recorded receipts) so the supervisor can build the Continuation
+  // Capsule. Only populated when a loop opens WITH a scope capsule.
+  private readonly scopeBySession = new Map<string, SessionScopeState>();
+  private readonly scopeByLoop = new Map<string, SessionScopeState>();
 
   constructor(
     private readonly bind: LoopBindFn,
-    private readonly tuning: LoopCloseTuning
+    private readonly tuning: LoopCloseTuning,
+    // Optional shared scope-event recorder. Required for the scope gate to attest refusals.
+    private readonly scopeEventRecorder?: ScopeEventRecorder
   ) {}
 
   /**
@@ -94,13 +123,106 @@ export class LoopSessionRegistry {
         `Loop id already used: ${input.loop_id}. A loop_id identifies exactly one loop; reusing it would merge distinct chains in the recorded dump.`
       );
     }
+    // FAIL CLOSED: a scoped loop without a scope-event recorder has no attestation sink, so a
+    // scope refusal could not be recorded/proved. Refuse to open it rather than silently degrade
+    // the scoped session to an ungated one. (Checked before any state mutation.)
+    if (input.scope_capsule && !this.scopeEventRecorder) {
+      throw new Error(
+        "Cannot open a scoped loop without a scope-event recorder: scope refusals must be attestable (fail closed)."
+      );
+    }
 
-    const session = new LoopSession(
-      createLoopContext({ loop_id: input.loop_id, goal: input.goal })
-    );
+    const context = createLoopContext({ loop_id: input.loop_id, goal: input.goal });
+
+    // Seal the Scope Capsule BEFORE mutating any registry state (supervisor boundary). goal_hash
+    // is bound to the loop's canonical goal_hash so the capsule cannot declare a different goal
+    // than the loop. Sealing can throw (bad capsule type, plaintext leak, unenforceable bound);
+    // doing it first means a rejected capsule leaves NO half-opened session that would otherwise
+    // resolve as scoped-but-ungated. Registry writes below are atomic w.r.t. seal success.
+    let scopeState: SessionScopeState | undefined;
+    if (input.scope_capsule) {
+      // Fold any supervisor-supplied classifier override INTO the structural projection so it is
+      // sealed (hash-bound into scope_ref) and surfaces in the verified scope history. The classifier
+      // that governs deriveActionClass() at the gate is then exactly the one the proof exports — a
+      // `shell -> read` remap can no longer allow a step without appearing in the pack. An explicit
+      // `class_map` already in the capsule structural is honored when no override is supplied.
+      const structural = {
+        ...input.scope_capsule.structural,
+        loop_id: input.loop_id,
+        goal_hash: context.goal_hash,
+        ...(input.scope_class_map ? { class_map: input.scope_class_map } : {})
+      };
+      const sealed = sealScopeCapsule({ capsule: { structural, sidecar: input.scope_capsule.sidecar } });
+      scopeState = {
+        session_id: sessionId,
+        loop_id: input.loop_id,
+        history: [sealed]
+      };
+    }
+
+    const session = new LoopSession(context);
     this.sessions.set(sessionId, session);
     this.seenLoopIds.add(input.loop_id);
+    if (scopeState) {
+      this.scopeBySession.set(sessionId, scopeState);
+      this.scopeByLoop.set(input.loop_id, scopeState);
+    } else {
+      // FAIL CLOSED (no stale-scope inheritance): a NEW unscoped loop may reuse a session_id (only
+      // ACTIVE sessions are refused; a closed session_id is free to reopen). If we left the prior
+      // scoped loop's entry, getScope(session_id) would attach that sealed scope to this new loop,
+      // stamping or refusing calls under a stale scope_ref / loop identity. Clear the session-keyed
+      // scope so this loop resolves as baseline (ungated). (loop_id is globally single-use, so the
+      // loop-keyed map can never collide for a new loop and needs no clearing.)
+      this.scopeBySession.delete(sessionId);
+    }
     return session;
+  }
+
+  /**
+   * Resolve the scope context for the agent hot path / gate, or undefined when the session has
+   * no sealed scope (baseline, ungated) or no scope-event recorder is configured. Read-only.
+   */
+  getScope(session_id: string): ProxyScopeContext | undefined {
+    const state = this.scopeBySession.get(session_id);
+    if (!state || !this.scopeEventRecorder) return undefined;
+    const sealed = state.history[state.history.length - 1]!;
+    return {
+      sealed,
+      mode: sealed.structural.privacy_mode,
+      recorder: this.scopeEventRecorder,
+      // The classifier is read from the SEALED projection (hash-bound), not a separate unsealed field.
+      classMap: sealed.structural.class_map
+    };
+  }
+
+  /**
+   * Amend the scope for an OPEN session. SUPERVISOR-ONLY (control channel `amend` verb). Seals a
+   * NEW scope_ref version chained to the prior and appends it to the seal history. Never silent —
+   * the new version surfaces in the Continuation Capsule under what changed.
+   */
+  amendLoop(input: { session_id: string; scope_capsule: ScopeCapsule }): SealedScope {
+    const state = this.scopeBySession.get(input.session_id);
+    if (!state) {
+      throw new Error(`No sealed scope to amend for session: ${input.session_id}`);
+    }
+    if (!this.sessions.has(input.session_id)) {
+      throw new Error(`Cannot amend scope for a closed session: ${input.session_id}`);
+    }
+    const prior = state.history[state.history.length - 1]!;
+    const structural = {
+      ...input.scope_capsule.structural,
+      loop_id: state.loop_id,
+      goal_hash: prior.structural.goal_hash
+    };
+    const sealed = amendScope(prior, { structural, sidecar: input.scope_capsule.sidecar });
+    state.history.push(sealed);
+    return sealed;
+  }
+
+  /** The full seal history (original + amendments) for a loop, for Continuation Capsule build. */
+  scopeHistoryForLoop(loop_id: string): SealedScope[] {
+    const state = this.scopeByLoop.get(loop_id);
+    return state ? [...state.history] : [];
   }
 
   /**

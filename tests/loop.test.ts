@@ -10,6 +10,7 @@ import {
   deriveGoalHash,
   loadLoopContextFromEnv,
   LoopSession,
+  LoopStepBoundError,
   mergeLoopConstraint,
   stripAuthorityTier,
   verifyLoopChain,
@@ -523,5 +524,111 @@ describe("createProxyCore with a loop session", () => {
     expect(session.priorReceiptId).toBeNull();
     expect(session.actionCount).toBe(0);
     expect(upstream.calls).toEqual([]);
+  });
+});
+
+describe("LoopSession.bindToolCall scope stamping (Capsule Gate 1)", () => {
+  // A bind that echoes the stamped constraints and mints unique receipt ids, so the chain and
+  // the scope anchors can be inspected exactly as a verifier would see them.
+  function echoBind(): BindClient & { seen: BindRequest[] } {
+    let n = 0;
+    const seen: BindRequest[] = [];
+    return {
+      seen,
+      async bind(request) {
+        seen.push(request);
+        n += 1;
+        return { outcome: "APPROVED", receipt_id: `r_${n}`, signature: "sig", constraints: request.constraints };
+      }
+    };
+  }
+
+  const scopeStamp = { scope_ref: "scope_v1:" + "a".repeat(64), action_class: "write", tool_name: "write_file", target_descriptor: "sha256:" + "b".repeat(64) };
+
+  it("stamps constraints.scope with the SAME prior_receipt_id as constraints.loop", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_s", goal: "g" }));
+    const bind = echoBind();
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp);
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp);
+
+    for (const req of bind.seen) {
+      const loop = req.constraints?.loop as { prior_receipt_id: string | null };
+      const scope = req.constraints?.scope as { prior_receipt_id: string | null; scope_ref: string };
+      expect(scope.prior_receipt_id).toBe(loop.prior_receipt_id); // same anchor, never stale
+      expect(scope.scope_ref).toBe(scopeStamp.scope_ref);
+    }
+    // Second link's anchor is the first receipt id (chain advanced under the mutex).
+    const secondScope = bind.seen[1]!.constraints?.scope as { prior_receipt_id: string | null };
+    expect(secondScope.prior_receipt_id).toBe("r_1");
+  });
+
+  it("under CONCURRENT scoped calls, each scope anchor matches its own loop anchor (mutex-stamped)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_c", goal: "g" }));
+    const bind = echoBind();
+    await Promise.all([
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp)
+    ]);
+    const priors = new Set<string | null>();
+    for (const req of bind.seen) {
+      const loop = req.constraints?.loop as { prior_receipt_id: string | null };
+      const scope = req.constraints?.scope as { prior_receipt_id: string | null };
+      expect(scope.prior_receipt_id).toBe(loop.prior_receipt_id);
+      priors.add(loop.prior_receipt_id);
+    }
+    // Three distinct anchors (null, r_1, r_2) — the chain serialized cleanly.
+    expect(priors.size).toBe(3);
+  });
+
+  it("enforces max_steps inside the mutex: the over-limit call throws LoopStepBoundError and never binds", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_ms", goal: "g" }));
+    const bind = echoBind();
+    await session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1); // step 1: ok
+    await expect(
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1)
+    ).rejects.toBeInstanceOf(LoopStepBoundError);
+    expect(bind.seen).toHaveLength(1); // the 2nd call never bound
+  });
+
+  it("under CONCURRENCY, max_steps:1 admits exactly one bind; the rest throw (no pre-bind race)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_msc", goal: "g" }));
+    const bind = echoBind();
+    const results = await Promise.allSettled([
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1),
+      session.bindToolCall(baseRequest(), (r) => bind.bind(r), scopeStamp, 1)
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+    expect(bind.seen).toHaveLength(1); // exactly one bind crossed the bound
+  });
+
+  it("a held (ESCALATED) bind does not consume the max_steps budget (round 30)", async () => {
+    const session = new LoopSession(createLoopContext({ loop_id: "loop_held", goal: "g" }));
+    // First bind is ESCALATED (held, never forwarded), then APPROVED.
+    let n = 0;
+    const outcomes: Array<BindResponse["outcome"]> = ["ESCALATED", "APPROVED", "APPROVED"];
+    const seen: BindRequest[] = [];
+    const bind = async (request: BindRequest): Promise<BindResponse> => {
+      seen.push(request);
+      const outcome = outcomes[n] ?? "APPROVED";
+      n += 1;
+      return { outcome, receipt_id: `r_${n}`, signature: "sig" };
+    };
+
+    // Step 1: ESCALATED — held, so it does NOT consume the single-step budget.
+    const r1 = await session.bindToolCall(baseRequest(), bind, scopeStamp, 1);
+    expect(r1.outcome).toBe("ESCALATED");
+    // Step 2: the next call is APPROVED and is NOT refused as over-budget (the held bind didn't count).
+    const r2 = await session.bindToolCall(baseRequest(), bind, scopeStamp, 1);
+    expect(r2.outcome).toBe("APPROVED");
+    // Step 3: now one forwarded step has been consumed, so a further call IS refused.
+    await expect(session.bindToolCall(baseRequest(), bind, scopeStamp, 1)).rejects.toBeInstanceOf(LoopStepBoundError);
+
+    // The chain advanced over all three binds (action_count counts every in-loop bind for the verifier),
+    // even though only one forwarded step was budgeted.
+    expect(session.actionCount).toBe(2); // two binds returned (r1 escalated, r2 approved); 3rd never bound
+    expect(seen).toHaveLength(2);
   });
 });

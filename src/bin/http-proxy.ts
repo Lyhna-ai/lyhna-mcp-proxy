@@ -11,6 +11,7 @@ import {
 } from "../loop.js";
 import { createProxyCore } from "../proxy-core.js";
 import { createReceiptRecorder, type ReceiptSource } from "../receipt-recorder.js";
+import { createScopeEventRecorder, type ScopeEventSource } from "../scope-event-recorder.js";
 import { LoopSessionRegistry } from "../session-registry.js";
 import { connectUpstream, serveStreamableHttpProxy } from "../transport/mcp-sdk.js";
 import { serveStandingHttpProxy } from "../transport/standing-http.js";
@@ -38,7 +39,13 @@ async function runStandingService(): Promise<void> {
   // in-loop links plus terminal loop_close — is captured in order.
   const recorder = createReceiptRecorder();
   const recordingBind = recorder.wrap(config.bindClient);
-  const registry = new LoopSessionRegistry((request) => recordingBind.bind(request), closeTuning);
+  // Capsule Gate 1: supervisor-only scope-event store for attested scope refusals/escalations.
+  const scopeEvents = createScopeEventRecorder();
+  const registry = new LoopSessionRegistry(
+    (request) => recordingBind.bind(request),
+    closeTuning,
+    scopeEvents
+  );
 
   const standing = await serveStandingHttpProxy({
     upstream: upstream.client,
@@ -50,7 +57,7 @@ async function runStandingService(): Promise<void> {
     serverInfo: { name: "lyhna-mcp-proxy-standing", version: "0.1.0" }
   });
 
-  const control = await startControlChannel(registry, recorder);
+  const control = await startControlChannel(registry, recorder, scopeEvents);
 
   process.stderr.write(
     `[lyhna-mcp-proxy] STANDING service: mcp=${standing.url}/<session_id>; ` +
@@ -153,21 +160,25 @@ function isStandingMode(env: NodeJS.ProcessEnv): boolean {
 
 function startControlChannel(
   registry: LoopSessionRegistry,
-  receiptSource: ReceiptSource
+  receiptSource: ReceiptSource,
+  scopeEventSource: ScopeEventSource
 ): Promise<ControlChannelHandle> {
   const socketPath = process.env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   const logger = (line: string) => process.stderr.write(`${line}\n`);
 
   if (socketPath) {
-    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, logger });
+    return serveControlChannel({ transport: "unix", socketPath, registry, receiptSource, scopeEventSource, logger });
   }
 
   return serveControlChannel({
     transport: "tcp",
-    host: process.env.LYHNA_PROXY_CONTROL_HOST ?? "127.0.0.1",
+    // Empty/whitespace falls back to loopback; a non-loopback value is refused by serveControlChannel
+    // (the control plane is supervisor-only and must never bind a non-loopback interface).
+    host: process.env.LYHNA_PROXY_CONTROL_HOST?.trim() || "127.0.0.1",
     port: parsePort(process.env.LYHNA_PROXY_CONTROL_PORT),
     registry,
     receiptSource,
+    scopeEventSource,
     logger
   });
 }

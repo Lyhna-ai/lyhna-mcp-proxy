@@ -17,6 +17,7 @@ import type {
 } from "../src/index.js";
 import {
   connectStreamableHttpUpstream,
+  isLoopbackHost,
   LoopSessionRegistry,
   serveControlChannel,
   serveStandingHttpProxy,
@@ -288,5 +289,51 @@ describe("standing service: registry + supervisor control channel", () => {
     await expect(
       sendControl(socketPath, { cmd: "open", session_id: "ok", loop_id: "loop_ok", goal: "g" })
     ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("fails closed on a PRESENT-but-malformed scope_capsule rather than opening an unscoped baseline (round 31)", async () => {
+    const { socketPath } = await start();
+    // scope_capsule: null must NOT be silently treated as "omitted" (which would open unscoped).
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n1", loop_id: "loop_n1", goal: "g", scope_capsule: null })
+    ).resolves.toMatchObject({ ok: false });
+    // Other non-object values fail closed too.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n2", loop_id: "loop_n2", goal: "g", scope_capsule: "nope" })
+    ).resolves.toMatchObject({ ok: false });
+    // A present-but-malformed scope_class_map (governs enforcement once sealed) also fails closed.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n3", loop_id: "loop_n3", goal: "g", scope_class_map: null })
+    ).resolves.toMatchObject({ ok: false });
+    // The session_ids were never opened (no half-open state) — reusing one for a real open succeeds.
+    await expect(
+      sendControl(socketPath, { cmd: "open", session_id: "n1", loop_id: "loop_n1b", goal: "g" })
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  it("control TCP fallback is loopback-only: a non-loopback host fails closed (never published off-host)", async () => {
+    const { client: bindClient } = recordingBindClient();
+    const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 50, retryDelayMs: 5 });
+    // 0.0.0.0 / :: / a LAN address would expose open/close/dump/dump_scope to the network — refuse.
+    for (const host of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.5", ""]) {
+      await expect(serveControlChannel({ transport: "tcp", host, port: 0, registry })).rejects.toThrow(/loopback/i);
+    }
+    // Loopback hosts are accepted (and immediately closed so the test leaks no listener). Limited to
+    // IPv4 loopback here because some CI sandboxes can't bind ::1; ::1/localhost acceptance is proven
+    // by the isLoopbackHost unit test below (no socket bind).
+    for (const host of ["127.0.0.1", "127.0.0.5"]) {
+      const handle = await serveControlChannel({ transport: "tcp", host, port: 0, registry });
+      expect(handle.transport).toBe("tcp");
+      await handle.close();
+    }
+  });
+
+  it("isLoopbackHost: only local-machine hosts are loopback", () => {
+    for (const h of ["127.0.0.1", "127.0.0.5", "127.255.255.254", "::1", "localhost", "LOCALHOST", "::ffff:127.0.0.1"]) {
+      expect(isLoopbackHost(h)).toBe(true);
+    }
+    for (const h of ["0.0.0.0", "::", "", "   ", "192.168.0.1", "10.0.0.1", "8.8.8.8", "169.254.1.1", "example.com", "::ffff:10.0.0.1"]) {
+      expect(isLoopbackHost(h)).toBe(false);
+    }
   });
 });

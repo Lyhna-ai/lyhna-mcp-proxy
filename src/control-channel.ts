@@ -33,6 +33,8 @@ import { chmod, unlink } from "node:fs/promises";
 
 import type { ReceiptSource } from "./receipt-recorder.js";
 import type { LoopSessionRegistry } from "./session-registry.js";
+import type { ScopeCapsule } from "./scope-capsule.js";
+import type { ScopeEventSource } from "./scope-event-recorder.js";
 
 export type ControlChannelLogger = (line: string) => void;
 
@@ -46,6 +48,11 @@ export type ControlChannelOptions =
        * omitted, `dump` is unavailable (fails closed). Never on the agent path.
        */
       receiptSource?: ReceiptSource;
+      /**
+       * Optional read-only scope-event source backing the supervisor `dump_scope` verb. When
+       * omitted, `dump_scope` returns scope history only. Never on the agent path.
+       */
+      scopeEventSource?: ScopeEventSource;
       logger?: ControlChannelLogger;
     }
   | {
@@ -54,6 +61,7 @@ export type ControlChannelOptions =
       port?: number;
       registry: LoopSessionRegistry;
       receiptSource?: ReceiptSource;
+      scopeEventSource?: ScopeEventSource;
       logger?: ControlChannelLogger;
     };
 
@@ -73,7 +81,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, options.receiptSource, log);
+    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, log);
   });
 
   if (options.transport === "unix") {
@@ -95,6 +103,19 @@ export async function serveControlChannel(
   }
 
   const host = options.host ?? "127.0.0.1";
+  // FAIL CLOSED (loopback-only invariant): the control plane (open/close/dump/dump_scope) is
+  // supervisor-only and topologically separate from the agent transport. The TCP fallback is a
+  // weaker, same-host convenience — binding it to a non-loopback interface (0.0.0.0, ::, or a LAN
+  // address) would publish those verbs to anyone who can reach the interface, letting a non-supervisor
+  // seal/close/dump a loop. Refuse any non-loopback host here so a stray LYHNA_PROXY_CONTROL_HOST can
+  // never expose the control plane remotely; use a unix-domain socket (preferred) for stronger isolation.
+  if (!isLoopbackHost(host)) {
+    throw new Error(
+      `Control channel TCP host ${JSON.stringify(host)} is not loopback; the control plane is ` +
+        `supervisor-only and must never be published to a non-loopback interface (fail closed). ` +
+        `Use a 127.0.0.0/8 / ::1 host, or a unix-domain socket.`
+    );
+  }
   const port = options.port ?? 0;
   await listen(server, { host, port });
 
@@ -113,6 +134,7 @@ function handleConnection(
   socket: Socket,
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
+  scopeEventSource: ScopeEventSource | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
@@ -134,7 +156,7 @@ function handleConnection(
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
         queue = queue.then(async () => {
-          const response = await dispatchLine(line, registry, receiptSource, log);
+          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -156,6 +178,7 @@ async function dispatchLine(
   line: string,
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
+  scopeEventSource: ScopeEventSource | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;
@@ -175,9 +198,57 @@ async function dispatchLine(
         const session_id = requireString(command, "session_id");
         const loop_id = requireString(command, "loop_id");
         const goal = requireString(command, "goal");
-        registry.openLoop({ session_id, loop_id, goal });
+        // Optional Capsule Gate 1 scope material, sealed at open by this supervisor boundary.
+        // FAIL CLOSED: a PRESENT scope_capsule / scope_class_map key must be a real object. A
+        // null/falsy/malformed value (e.g. `scope_capsule: null`) must NOT be treated as "omitted" —
+        // that would silently open an UNSCOPED baseline session and run future tools/call without the
+        // Capsule Gate (or drop a supervisor classifier override that governs enforcement).
+        if (command.scope_capsule !== undefined && !isRecord(command.scope_capsule)) {
+          return { ok: false, error: "open `scope_capsule` must be an object when present (fail closed)." };
+        }
+        if (command.scope_class_map !== undefined && !isRecord(command.scope_class_map)) {
+          return { ok: false, error: "open `scope_class_map` must be an object when present (fail closed)." };
+        }
+        const scope_capsule = isRecord(command.scope_capsule)
+          ? (command.scope_capsule as unknown as ScopeCapsule)
+          : undefined;
+        const scope_class_map = isRecord(command.scope_class_map)
+          ? (command.scope_class_map as Record<string, string>)
+          : undefined;
+        const session = registry.openLoop({ session_id, loop_id, goal, scope_capsule, scope_class_map });
+        if (scope_capsule) {
+          const scope = registry.getScope(session_id);
+          log(`[control] opened loop session=${session_id} loop=${loop_id} scope_ref=${scope?.sealed.scope_ref ?? "(no recorder)"}`);
+          return { ok: true, session_id, loop_id, scope_ref: scope?.sealed.scope_ref ?? null };
+        }
+        // Touch `session` so the no-scope path keeps the same return shape as before.
+        void session;
         log(`[control] opened loop session=${session_id} loop=${loop_id}`);
         return { ok: true, session_id, loop_id };
+      }
+
+      case "amend": {
+        // SUPERVISOR-ONLY scope amendment: seal a NEW scope_ref version chained to the prior.
+        const session_id = requireString(command, "session_id");
+        if (!isRecord(command.scope_capsule)) {
+          return { ok: false, error: "amend requires a `scope_capsule` object." };
+        }
+        const sealed = registry.amendLoop({
+          session_id,
+          scope_capsule: command.scope_capsule as unknown as ScopeCapsule
+        });
+        log(`[control] amended scope session=${session_id} scope_ref=${sealed.scope_ref} prior=${sealed.prior_scope_ref}`);
+        return { ok: true, session_id, scope_ref: sealed.scope_ref, prior_scope_ref: sealed.prior_scope_ref };
+      }
+
+      case "dump_scope": {
+        // Read-only supervisor verb: hand back the sealed scope seal-history (original +
+        // amendments) and the attested scope events for a loop, so the supervisor can package the
+        // Continuation Capsule and the Proof Pack scope artifacts. Keyed by loop_id, like `dump`.
+        const loop_id = requireString(command, "loop_id");
+        const scope_history = registry.scopeHistoryForLoop(loop_id);
+        const scope_events = scopeEventSource ? scopeEventSource.scopeEventsForLoop(loop_id) : [];
+        return { ok: true, loop_id, scope_history, scope_events };
       }
 
       case "close": {
@@ -231,6 +302,22 @@ function requireString(record: Record<string, unknown>, key: string): string {
     throw new Error(`Control command requires a non-empty string \`${key}\`.`);
   }
   return value;
+}
+
+/**
+ * A host is loopback iff it names the local machine only: `localhost`, the IPv6 loopback `::1`, or
+ * any IPv4 in 127.0.0.0/8 (incl. its IPv4-mapped IPv6 form `::ffff:127.x.x.x`). Everything else —
+ * `0.0.0.0`, `::`, an empty/unspecified host, or a routable LAN/WAN address — is non-loopback and is
+ * refused so the supervisor-only control plane cannot be published off-host.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  if (h === "localhost" || h === "::1") return true;
+  const v4 = h.startsWith("::ffff:") ? h.slice("::ffff:".length) : h;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v4);
+  if (!m) return false;
+  const octets = m.slice(1).map((n) => Number(n));
+  return octets.every((n) => n <= 255) && octets[0] === 127;
 }
 
 function listen(server: NetServer, options: { path: string } | { host: string; port: number }): Promise<void> {

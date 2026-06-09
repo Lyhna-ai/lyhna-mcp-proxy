@@ -16,8 +16,10 @@ export type {
 export type { ForwardDecision } from "./enforcement.js";
 export { decideForward } from "./enforcement.js";
 export type { McpTool, McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
-export { BindGateError, createProxyCore } from "./proxy-core.js";
+export { BindGateError, ScopeGateError, createProxyCore } from "./proxy-core.js";
+export type { ProxyCoreOptions, ProxyScopeContext } from "./proxy-core.js";
 export {
+  assertScopeConstraintStructural,
   buildLoopCloseRequest,
   closeLoopWithRetry,
   createLoopContext,
@@ -25,7 +27,9 @@ export {
   loadLoopCloseTuning,
   loadLoopContextFromEnv,
   LoopSession,
+  LoopStepBoundError,
   mergeLoopConstraint,
+  mergeScopeConstraint,
   stripAuthorityTier,
   verifyLoopChain
 } from "./loop.js";
@@ -38,8 +42,67 @@ export type {
   LoopCloseResult,
   LoopCloseTuning,
   LoopConstraint,
-  LoopContext
+  LoopContext,
+  ScopeConstraint
 } from "./loop.js";
+export {
+  amendScope,
+  assertBoundsEnforceable,
+  canonicalizeTarget,
+  assertScopeCapsuleStructuralOnly,
+  assertScopeStructuralClosed,
+  assertScopeStructuralContentBlind,
+  canonicalScopeJson,
+  checkScopeStructural,
+  deriveActionClass,
+  deriveScopeRef,
+  deriveSidecarHash,
+  globToRegExp,
+  projectScopeCapsuleForExport,
+  resolveTargetPlaintext,
+  resolveTargets,
+  sealScopeCapsule,
+  SCOPE_CAPSULE_VERSION
+} from "./scope-capsule.js";
+export type {
+  ScopeBounds,
+  ScopeCapsule,
+  ScopeCapsuleExport,
+  ScopeDecision,
+  ScopeDecisionKind,
+  ScopePrivacyMode,
+  ScopeSidecarProjection,
+  ScopeStructuralDescriptor,
+  ScopeStructuralProjection,
+  SealedScope
+} from "./scope-capsule.js";
+export {
+  createScopeEventRecorder,
+  deriveScopeEventHash,
+  projectScopeEvent
+} from "./scope-event-recorder.js";
+export type {
+  RecordScopeEventInput,
+  ScopeEvent,
+  ScopeEventAttempt,
+  ScopeEventDecision,
+  ScopeEventRecorder,
+  ScopeEventSource,
+  ScopeEventType
+} from "./scope-event-recorder.js";
+export {
+  buildContinuationCapsule,
+  CONTINUATION_CAPSULE_VERSION,
+  diffStructural,
+  projectContinuationProofMode,
+  renderContinuationCardMarkdown
+} from "./continuation-capsule.js";
+export type {
+  BuildContinuationCapsuleInput,
+  ContinuationCapsule,
+  ScopeAmendmentRecord,
+  ScopeEventRef
+} from "./continuation-capsule.js";
 export {
   connectStreamableHttpUpstream,
   connectStdioUpstream,
@@ -57,7 +120,7 @@ export type {
   OpenLoopInput,
   SessionSummary
 } from "./session-registry.js";
-export { serveControlChannel } from "./control-channel.js";
+export { serveControlChannel, isLoopbackHost } from "./control-channel.js";
 export type {
   ControlChannelHandle,
   ControlChannelLogger,
@@ -73,6 +136,8 @@ export {
   deriveLoopSummary,
   pinTrustRoot,
   renderGraphNodeMarkdown,
+  renderProofCardMarkdown,
+  renderVerifyInstructionsMarkdown,
   serializeReceipts,
   sha256Hex
 } from "./loop-proof-bundle.js";
@@ -81,6 +146,7 @@ export type {
   AuthorityContextGraphNode,
   BuildLoopProofBundleInput,
   BuiltLoopProofBundle,
+  BundleCapsuleSection,
   ContentDigest,
   LoopProofBundle,
   LoopSummary,

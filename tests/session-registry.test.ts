@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { BindRequest, BindResponse, LoopChainLink } from "../src/index.js";
-import { LoopSessionRegistry, verifyLoopChain } from "../src/index.js";
+import type { BindRequest, BindResponse, LoopChainLink, ScopeCapsule } from "../src/index.js";
+import { createScopeEventRecorder, LoopSessionRegistry, verifyLoopChain } from "../src/index.js";
 
 type BindRecord = { request: BindRequest; response: BindResponse };
 
@@ -154,6 +154,53 @@ describe("LoopSessionRegistry lifecycle", () => {
     );
   });
 
+  it("does not inherit a prior closed loop's scope when a session_id is reused for a new unscoped loop (round 27)", async () => {
+    const { bind } = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const registry = new LoopSessionRegistry(bind, TUNING, recorder);
+    const scope: ScopeCapsule = {
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop_scoped",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "proof",
+        allowed_targets: ["/checkout/**"]
+      }
+    };
+    // 1) A scoped loop: getScope resolves its sealed scope.
+    registry.openLoop({ session_id: "reuse", loop_id: "loop_scoped", goal: "g", scope_capsule: scope });
+    expect(registry.getScope("reuse")).toBeDefined();
+    await registry.closeLoop({ session_id: "reuse", outcome: "COMPLETED", reason: "done" });
+
+    // 2) Reopen the SAME session_id with a NEW, UNSCOPED loop — it must resolve as baseline (ungated),
+    // NEVER inheriting the closed loop's stale scope_ref / loop identity.
+    registry.openLoop({ session_id: "reuse", loop_id: "loop_unscoped", goal: "g2" });
+    expect(registry.getScope("reuse")).toBeUndefined();
+  });
+
+  it("seals scope_class_map into the sealed scope and sources the gate classifier from it (round 29)", () => {
+    const { bind } = recordingBind();
+    const recorder = createScopeEventRecorder();
+    const registry = new LoopSessionRegistry(bind, TUNING, recorder);
+    const scope: ScopeCapsule = {
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop_cm",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "proof",
+        allowed_action_classes: ["read"]
+      }
+    };
+    registry.openLoop({ session_id: "cm", loop_id: "loop_cm", goal: "g", scope_capsule: scope, scope_class_map: { shell: "read" } });
+    const ctx = registry.getScope("cm")!;
+    // The classifier override is folded INTO the sealed structural projection (hash-bound)...
+    expect(ctx.sealed.structural.class_map).toEqual({ shell: "read" });
+    // ...and the gate classifier is sourced from that sealed projection, not a separate unsealed field.
+    expect(ctx.classMap).toEqual({ shell: "read" });
+  });
+
   it("rejects open with missing identity fields", () => {
     const { bind } = recordingBind();
     const registry = new LoopSessionRegistry(bind, TUNING);
@@ -236,5 +283,54 @@ describe("LoopSessionRegistry lifecycle", () => {
     expect(registry.size).toBe(0);
     expect(verifyLoopChain(reconstructLinks(records, "loop_x"))).toMatchObject({ valid: true, sealed: true });
     expect(verifyLoopChain(reconstructLinks(records, "loop_y"))).toMatchObject({ valid: true, sealed: true });
+  });
+});
+
+const SCOPE_CAPSULE: ScopeCapsule = {
+  structural: {
+    capsule_type: "scope_capsule",
+    capsule_version: "scope-capsule/v1",
+    loop_id: "loop_scoped",
+    goal_hash: "",
+    privacy_mode: "verified_context",
+    allowed_targets: ["/checkout/**"]
+  }
+};
+
+describe("LoopSessionRegistry scope (Capsule Gate 1)", () => {
+  it("fails closed: opening a scoped loop without a scope-event recorder is rejected (P2)", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING); // no scope-event recorder
+    expect(() =>
+      registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE })
+    ).toThrow(/scope-event recorder/);
+    // A non-scoped open on the same recorder-less registry is unaffected.
+    expect(() => registry.openLoop({ session_id: "s2", loop_id: "loop_plain", goal: "g" })).not.toThrow();
+  });
+
+  it("with a recorder, a scoped loop opens and getScope returns an engaged gate context", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING, createScopeEventRecorder());
+    registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE });
+    const scope = registry.getScope("s1");
+    expect(scope?.mode).toBe("verified_context");
+    expect(scope?.sealed.scope_ref).toMatch(/^scope_v1:/);
+    expect(scope?.recorder).toBeDefined();
+  });
+
+  it("a capsule that fails to seal leaves NO half-opened session (registry unmutated)", () => {
+    const { bind } = recordingBind();
+    const registry = new LoopSessionRegistry(bind, TUNING, createScopeEventRecorder());
+    const bad: ScopeCapsule = {
+      // bounds.max_writes is rejected by sealScopeCapsule -> openLoop must throw before mutating.
+      structural: { ...SCOPE_CAPSULE.structural, bounds: { max_writes: 1 } }
+    };
+    expect(() => registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: bad })).toThrow();
+    // No session, no scope context, and the loop_id is not reserved — the open was atomic.
+    expect(registry.get("s1")).toBeUndefined();
+    expect(registry.getScope("s1")).toBeUndefined();
+    expect(registry.size).toBe(0);
+    // The same loop_id can still be opened cleanly afterward (it was never reserved).
+    expect(() => registry.openLoop({ session_id: "s1", loop_id: "loop_scoped", goal: "g", scope_capsule: SCOPE_CAPSULE })).not.toThrow();
   });
 });

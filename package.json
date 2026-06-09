@@ -28,6 +28,7 @@
     "inspect:proxy:http": "tsx src/bin/inspect-http-proxy.ts",
     "adapter": "npm run build && node dist/src/bin/http-proxy.js",
     "demo": "node scripts/demo-golden-path.mjs",
+    "demo:capsule": "node scripts/demo-capsule-gate.mjs",
     "capture:live": "node scripts/live-bind-capture.mjs",
     "test": "vitest run",
     "verify:legs": "node scripts/verify-legs.mjs"

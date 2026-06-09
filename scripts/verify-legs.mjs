@@ -52,6 +52,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { produceGoldenPathBundle, assertSyntheticColdVerify } from "./demo-golden-path.mjs";
+import {
+  captureCapsuleGateLoop,
+  exportCapsulePack,
+  assertSyntheticColdVerify as assertCapsuleColdVerify
+} from "./demo-capsule-gate.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const EXPORT_CLI = join(ROOT, "dist", "src", "bin", "export-loop-proof.js");
@@ -353,6 +358,92 @@ function leg3(verifyDir) {
   ok("Leg 3", `live Chione/Hermes chain FULL GREEN cold (exit 0, sealed, all Ed25519 signatures valid); digest matches`);
 }
 
+// ---- Capsule leg (Capsule Gate 1) -------------------------------------------
+//
+// Added AFTER the existing legs (existing leg names/numbers unchanged). Drives the real capsule
+// gate end-to-end (open-with-scope -> in-lane -> out-of-scope BLOCKED & attested -> corrected ->
+// close -> dump -> continuation), then:
+//   (a) cold-verifies the Verified Context pack (structural pass + must-NOT-verify-as-signed);
+//   (b) re-exports the SAME captured material as a Proof Mode pack and asserts it is
+//       content-blind (structural-only scope-capsule.json, no plaintext plan/target anywhere)
+//       and that it still cold-verifies structurally;
+//   (c) asserts the scope refusal is attested (referenced by event_hash from bundle.json).
+
+async function legCapsule(verifyDir) {
+  log("\n=== Leg Capsule (Capsule Gate 1: scope gate end-to-end; content-blind Proof Mode export) ===");
+  let captured;
+  try {
+    captured = await captureCapsuleGateLoop({ log: () => {} });
+  } catch (e) {
+    fail("Leg Capsule", `capsule gate flow failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+
+  // The refusal must be attested.
+  if (captured.summary.scopeEventCount < 1) {
+    fail("Leg Capsule", "expected at least one attested scope event (the out-of-scope refusal)");
+    return;
+  }
+
+  // (a) Verified Context pack: cold-verify structural + must-not-verify-as-signed.
+  const vcDir = join(work, "capsule-vc");
+  exportCapsulePack({ material: captured.material, outDir: vcDir, mode: "verified-context", exportCli: EXPORT_CLI });
+  const vcVerdict = assertCapsuleColdVerify(runVerifier(verifyDir, join(vcDir, "receipts.json")).json);
+  if (!vcVerdict.ok) {
+    fail("Leg Capsule", `verified-context pack cold-verify: ${vcVerdict.detail}`);
+    return;
+  }
+
+  // (b) Proof Mode pack from the SAME material: must be content-blind and still cold-verify.
+  const proofDir = join(work, "capsule-proof");
+  exportCapsulePack({ material: captured.material, outDir: proofDir, mode: "proof", exportCli: EXPORT_CLI });
+
+  const scopeCapsule = JSON.parse(readFileSync(join(proofDir, "scope-capsule.json"), "utf8"));
+  if (scopeCapsule.sidecar !== undefined) {
+    fail("Leg Capsule", "Proof Mode scope-capsule.json is NOT structural-only (sidecar present)");
+    return;
+  }
+
+  // No plaintext plan/target may appear ANYWHERE in the content-blind pack.
+  const plaintextNeedles = [
+    "fix checkout bug",
+    "planned_steps",
+    "2026_ledger.sql",
+    "checkout fix written",
+    "/checkout/cart.ts"
+  ];
+  for (const file of ["scope-capsule.json", "continuation-capsule.json", "scope-events.json", "bundle.json", "receipts.json", "proof-card.md"]) {
+    const p = join(proofDir, file);
+    if (!existsSync(p)) continue;
+    const text = readFileSync(p, "utf8");
+    for (const needle of plaintextNeedles) {
+      if (text.includes(needle)) {
+        fail("Leg Capsule", `Proof Mode pack leaks plaintext "${needle}" in ${file}`);
+        return;
+      }
+    }
+  }
+
+  const proofVerdict = assertCapsuleColdVerify(runVerifier(verifyDir, join(proofDir, "receipts.json")).json);
+  if (!proofVerdict.ok) {
+    fail("Leg Capsule", `proof pack cold-verify: ${proofVerdict.detail}`);
+    return;
+  }
+
+  // (c) The refusal is referenced by event_hash from the bundle.
+  const bundle = JSON.parse(readFileSync(join(proofDir, "bundle.json"), "utf8"));
+  if (!bundle.capsule || bundle.capsule.scope_events.count < 1 || bundle.capsule.scope_events.event_hashes.length < 1) {
+    fail("Leg Capsule", "bundle.json does not reference the attested scope event by hash");
+    return;
+  }
+
+  ok(
+    "Leg Capsule",
+    `scope gate: ${captured.summary.actionCount} in-lane actions, ${captured.summary.scopeEventCount} attested refusal(s); ` +
+      `VC + Proof packs cold-verify (structural pass + fail-by-absence); Proof Mode content-blind`
+  );
+}
+
 // ---- main -------------------------------------------------------------------
 
 try {
@@ -362,6 +453,7 @@ try {
   leg1(verifyDir);
   leg2(verifyDir);
   leg3(verifyDir);
+  await legCapsule(verifyDir);
 } catch (e) {
   failed = true;
   log(`\nFATAL: ${e instanceof Error ? e.message : String(e)}`);
@@ -373,7 +465,7 @@ log(
   `\n${
     failed
       ? "VERIFY LEGS: FAILED"
-      : "VERIFY LEGS: PASSED (Leg 0 demo-producer structural+must-not-verify, Leg 1 structural+fail-by-absence, Leg 2 full-green cold, Leg 3 live positive-control full-green)"
+      : "VERIFY LEGS: PASSED (Leg 0 demo-producer structural+must-not-verify, Leg 1 structural+fail-by-absence, Leg 2 full-green cold, Leg 3 live positive-control full-green, Leg Capsule scope-gate + content-blind Proof Mode)"
   }`
 );
 process.exit(failed ? 1 : 0);
