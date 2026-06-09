@@ -23,6 +23,13 @@
 import { createHash } from "node:crypto";
 
 import type { BindRequest, BindResponse } from "./bind.js";
+import type {
+  JudgmentProposedMove,
+  JudgmentTurn,
+  JudgmentVerdictKind,
+  JudgmentVerdictSource
+} from "./judgment-ledger.js";
+import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 
 /** Immutable loop identity injected at proxy start (via env). */
 export type LoopContext = {
@@ -61,6 +68,37 @@ export type LoopCloseFields = {
 };
 
 export type LoopBindFn = (request: BindRequest) => Promise<BindResponse>;
+
+/**
+ * Capsule Gate 2 judgment-capture context for an in-loop bind. When supplied to bindToolCall, a
+ * judgment turn is appended INSIDE the same loop mutex that advances the receipt chain — so the
+ * judgment order can never diverge from the receipt order. The turn anchors to the signed receipt
+ * the bind returns (verdict.source = "bind", verdict.receipt_id = receipt.receipt_id). `onTurn` is
+ * invoked synchronously inside the mutex with the appended turn, so the caller can later attach the
+ * (additive, post-forward) runtime report by its turn_ref.
+ */
+export type JudgmentBindContext = {
+  recorder: JudgmentLedgerRecorder;
+  scope_ref: string;
+  proposed: JudgmentProposedMove;
+  onTurn?: (turn: JudgmentTurn) => void;
+};
+
+/**
+ * Capsule Gate 2 judgment-capture context for a PRE-BIND scope refusal / escalation (no bind, no
+ * receipt). Appended INSIDE the loop mutex (so its turn_index is serialized against the
+ * receipt-anchored turns) but does NOT advance the receipt chain. Anchors to the attested scope
+ * event hash instead of a signed receipt.
+ */
+export type JudgmentRefusalContext = {
+  recorder: JudgmentLedgerRecorder;
+  scope_ref: string;
+  proposed: JudgmentProposedMove;
+  kind: JudgmentVerdictKind;
+  source: JudgmentVerdictSource;
+  scope_event_hash: string;
+  reason_code?: string;
+};
 
 export type LoopCloseResult =
   | { sealed: true; receipt: BindResponse }
@@ -305,7 +343,8 @@ export class LoopSession {
     request: BindRequest,
     bind: LoopBindFn,
     scope?: Omit<ScopeConstraint, "prior_receipt_id">,
-    maxSteps?: number
+    maxSteps?: number,
+    judgment?: JudgmentBindContext
   ): Promise<BindResponse> {
     return this.runExclusive(async () => {
       if (this.closedFlag) {
@@ -338,7 +377,48 @@ export class LoopSession {
         this.forwardedCountValue += 1;
       }
 
+      // Capsule Gate 2: append the judgment turn INSIDE this same critical section, so the judgment
+      // order is byte-for-byte the receipt order. The turn anchors to the signed receipt this bind
+      // returned (source "bind"); its verdict kind mirrors the bind outcome. APPENDED for EVERY
+      // in-loop bind (APPROVED / ESCALATED / REFUSED) — so every in-loop receipt maps to a turn.
+      if (judgment) {
+        const turn = judgment.recorder.append({
+          loop_id: this.context.loop_id,
+          scope_ref: judgment.scope_ref,
+          prior_receipt_id: prior,
+          proposed: judgment.proposed,
+          verdict: {
+            kind: response.outcome as JudgmentVerdictKind,
+            source: "bind",
+            receipt_id: response.receipt_id
+          }
+        });
+        judgment.onTurn?.(turn);
+      }
+
       return response;
+    });
+  }
+
+  /**
+   * Append a PRE-BIND scope refusal / escalation as a judgment turn (Capsule Gate 2). Runs inside
+   * the loop mutex so its turn_index is serialized against the receipt-anchored turns, but does NOT
+   * advance the receipt chain (no bind happened). Anchors to the attested scope-event hash.
+   */
+  appendScopeRefusalTurn(ctx: JudgmentRefusalContext): Promise<JudgmentTurn> {
+    return this.runExclusive(async () => {
+      return ctx.recorder.append({
+        loop_id: this.context.loop_id,
+        scope_ref: ctx.scope_ref,
+        prior_receipt_id: this.priorReceiptIdValue,
+        proposed: ctx.proposed,
+        verdict: {
+          kind: ctx.kind,
+          source: ctx.source,
+          scope_event_hash: ctx.scope_event_hash,
+          ...(ctx.reason_code !== undefined ? { reason_code: ctx.reason_code } : {})
+        }
+      });
     });
   }
 

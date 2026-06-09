@@ -32,6 +32,7 @@ import {
   type SealedScope
 } from "./scope-capsule.js";
 import type { ScopeEventRecorder } from "./scope-event-recorder.js";
+import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 
 export type OpenLoopInput = {
   session_id: string;
@@ -96,7 +97,11 @@ export class LoopSessionRegistry {
     private readonly bind: LoopBindFn,
     private readonly tuning: LoopCloseTuning,
     // Optional shared scope-event recorder. Required for the scope gate to attest refusals.
-    private readonly scopeEventRecorder?: ScopeEventRecorder
+    private readonly scopeEventRecorder?: ScopeEventRecorder,
+    // Optional shared judgment-ledger recorder (Capsule Gate 2). When present, the scoped gate
+    // captures ordered judgment turns for the loop. Read back only via the supervisor control
+    // channel (dump_judgment) — never on the agent's MCP path.
+    private readonly judgmentRecorder?: JudgmentLedgerRecorder
   ) {}
 
   /**
@@ -191,7 +196,10 @@ export class LoopSessionRegistry {
       mode: sealed.structural.privacy_mode,
       recorder: this.scopeEventRecorder,
       // The classifier is read from the SEALED projection (hash-bound), not a separate unsealed field.
-      classMap: sealed.structural.class_map
+      classMap: sealed.structural.class_map,
+      // Capsule Gate 2: thread the judgment recorder onto the agent hot path so consequential
+      // verdicts are captured as ordered turns. Undefined when no recorder is configured.
+      judgment: this.judgmentRecorder
     };
   }
 

@@ -35,6 +35,7 @@ import type { ReceiptSource } from "./receipt-recorder.js";
 import type { LoopSessionRegistry } from "./session-registry.js";
 import type { ScopeCapsule } from "./scope-capsule.js";
 import type { ScopeEventSource } from "./scope-event-recorder.js";
+import type { JudgmentLedgerSource } from "./judgment-recorder.js";
 
 export type ControlChannelLogger = (line: string) => void;
 
@@ -53,6 +54,12 @@ export type ControlChannelOptions =
        * omitted, `dump_scope` returns scope history only. Never on the agent path.
        */
       scopeEventSource?: ScopeEventSource;
+      /**
+       * Optional judgment-ledger source/recorder backing the supervisor `dump_judgment` and
+       * `record_delta` verbs (Capsule Gate 2). When omitted, those verbs fail closed. Never on
+       * the agent path.
+       */
+      judgmentSource?: JudgmentLedgerSource;
       logger?: ControlChannelLogger;
     }
   | {
@@ -62,6 +69,7 @@ export type ControlChannelOptions =
       registry: LoopSessionRegistry;
       receiptSource?: ReceiptSource;
       scopeEventSource?: ScopeEventSource;
+      judgmentSource?: JudgmentLedgerSource;
       logger?: ControlChannelLogger;
     };
 
@@ -81,7 +89,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, log);
+    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, options.judgmentSource, log);
   });
 
   if (options.transport === "unix") {
@@ -135,6 +143,7 @@ function handleConnection(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
+  judgmentSource: JudgmentLedgerSource | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
@@ -156,7 +165,7 @@ function handleConnection(
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
         queue = queue.then(async () => {
-          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, log);
+          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, judgmentSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -179,6 +188,7 @@ async function dispatchLine(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
+  judgmentSource: JudgmentLedgerSource | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;

@@ -2,6 +2,8 @@ import type { BindClient, BindRequest, BindResponse } from "./bind.js";
 import { buildBindRequest } from "./bind.js";
 import { decideForward, type ForwardDecision } from "./enforcement.js";
 import { LoopStepBoundError, mergeScopeConstraint, type LoopSession, type ScopeConstraint } from "./loop.js";
+import type { JudgmentProposedMove, JudgmentTurn } from "./judgment-ledger.js";
+import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "./mcp.js";
 import {
   checkScopeStructural,
@@ -23,6 +25,10 @@ export type ProxyScopeContext = {
   mode: ScopePrivacyMode;
   recorder: ScopeEventRecorder;
   classMap?: Record<string, string>;
+  // Capsule Gate 2 (optional): the append-only judgment-ledger recorder. When present (and a loop
+  // session is in play), every consequential verdict — scope refusal, step-bound refusal, and bind
+  // outcome — is captured as an ordered judgment turn, serialized against the receipt chain.
+  judgment?: JudgmentLedgerRecorder;
 };
 
 export type ProxyCoreOptions = {
@@ -95,6 +101,14 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       // bindToolCall) so it always cites the same predecessor as constraints.loop — never a stale
       // value under concurrent scoped calls.
       let scopeStamp: Omit<ScopeConstraint, "prior_receipt_id"> | undefined;
+      // Capsule Gate 2: the structural move proposed this turn (action_class / tool_name / target
+      // HASH), derived from the SAME scope decision the gate made — never plaintext, never inferred.
+      let proposed: JudgmentProposedMove | undefined;
+      // Judgment capture is engaged only on the serialized loop path (the mutex that orders the
+      // receipt chain). Absent a loop session there is no chain to serialize against, so turns would
+      // have no defined order — skip recording rather than produce an unordered ledger.
+      const judgmentRecorder = options.loopSession ? options.scope?.judgment : undefined;
+
       if (options.scope) {
         const { sealed, mode, recorder } = options.scope;
         const decision = checkScopeStructural(call, sealed, {
@@ -120,6 +134,20 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
             // Best-effort anchor for the (off-chain) attestation: the last receipt the loop saw.
             prior_receipt_id: options.loopSession?.priorReceiptId ?? sealed.structural.prior_receipt_ref ?? null
           });
+          // Capsule Gate 2: capture the refused/escalated move as a judgment turn, anchored to the
+          // attested scope-event hash (source "scope_gate"). Serialized inside the loop mutex so its
+          // turn_index sits in order with the receipt-anchored turns; no chain advance (no bind ran).
+          if (judgmentRecorder && options.loopSession) {
+            await options.loopSession.appendScopeRefusalTurn({
+              recorder: judgmentRecorder,
+              scope_ref: sealed.scope_ref,
+              proposed: proposedFrom(decision.descriptor),
+              kind: decision.decision === "ESCALATED" ? "ESCALATED" : "REFUSED",
+              source: "scope_gate",
+              scope_event_hash: event.event_hash,
+              reason_code: decision.matched_rule
+            });
+          }
           // Refuse before execution: bind is never called, the tool never runs.
           throw new ScopeGateError(decision, event);
         }
@@ -131,6 +159,7 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
           target_descriptor: decision.descriptor.target_descriptor,
           ...(decision.descriptor.target_descriptors ? { target_descriptors: decision.descriptor.target_descriptors } : {})
         };
+        proposed = proposedFrom(decision.descriptor);
       }
 
       let bindResponse: BindResponse;
@@ -148,6 +177,10 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         );
       }
 
+      // Capsule Gate 2: capture the bind judgment turn appended INSIDE the loop mutex (so it sits in
+      // receipt order). Held here so the post-forward runtime report can be attached by its turn_ref.
+      let boundTurn: JudgmentTurn | undefined;
+
       try {
         bindResponse = options.loopSession
           ? // Loop path: bindToolCall stamps constraints.loop AND constraints.scope under one
@@ -157,7 +190,17 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
               bindRequest,
               (request) => options.bindClient.bind(request),
               scopeStamp,
-              maxSteps
+              maxSteps,
+              judgmentRecorder && proposed
+                ? {
+                    recorder: judgmentRecorder,
+                    scope_ref: options.scope!.sealed.scope_ref,
+                    proposed,
+                    onTurn: (turn) => {
+                      boundTurn = turn;
+                    }
+                  }
+                : undefined
             )
           : // No-loop path: no chain to advance, so stamp the scope anchor from the declared
             // prior reference (if any) and bind directly.
@@ -197,6 +240,19 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
             decision: "REFUSED",
             prior_receipt_id: options.loopSession?.priorReceiptId ?? null
           });
+          // Capsule Gate 2: the step-bound refusal is a loop-bound verdict (source "loop_bound"),
+          // anchored to its attested scope event. Serialized in the loop mutex; no chain advance.
+          if (judgmentRecorder && options.loopSession && proposed) {
+            await options.loopSession.appendScopeRefusalTurn({
+              recorder: judgmentRecorder,
+              scope_ref: sealed.scope_ref,
+              proposed,
+              kind: "REFUSED",
+              source: "loop_bound",
+              scope_event_hash: event.event_hash,
+              reason_code: "max_steps"
+            });
+          }
           throw new ScopeGateError(stepDecision, event);
         }
         throw new BindGateError(
@@ -210,6 +266,9 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       const decision = decideForward(bindResponse);
 
       if (decision === "FORWARD") {
+        // Forward the EXACT payload (never mutated). Capsule Gate 2 / Checkpoint 3 will attach the
+        // hashed runtime result/error to `boundTurn` here — for now the turn is captured in order.
+        void boundTurn;
         return options.upstream.callTool(call);
       }
 
@@ -227,5 +286,19 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
         bindResponse
       );
     }
+  };
+}
+
+/**
+ * Derive the Capsule Gate 2 proposed-move descriptor from the gate's structural scope descriptor.
+ * Carries only structural fields / target HASHES — never plaintext (the gate already hashed the
+ * target; the plaintext, if any, stays in the Verified-Context sidecar scope event, not here).
+ */
+function proposedFrom(descriptor: ScopeDecision["descriptor"]): JudgmentProposedMove {
+  return {
+    action_class: descriptor.action_class,
+    tool_name: descriptor.tool_name,
+    target_descriptor: descriptor.target_descriptor ?? null,
+    ...(descriptor.target_descriptors ? { target_descriptors: descriptor.target_descriptors } : {})
   };
 }
