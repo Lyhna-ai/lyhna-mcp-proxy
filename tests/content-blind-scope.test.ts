@@ -717,6 +717,47 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/not allowed under scope/);
   });
 
+  it("fails closed when a receipt's scope stamp is anchored to a different predecessor than the signed loop (round 26)", () => {
+    // The scope stamp is otherwise IN-LANE (valid scope_ref + allowed tool/class), but its
+    // prior_receipt_id cites a different predecessor than the signed constraints.loop. The runtime
+    // stamps both with the same prior inside one mutex, so this divergence is stale/forged.
+    const scoped = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: "loop-1",
+          goal_hash: "a".repeat(64),
+          privacy_mode: "proof",
+          allowed_action_classes: ["write"],
+          allowed_tools: ["write_file"]
+        }
+      }
+    });
+    const goal_hash = "a".repeat(64);
+    const pk = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
+    const receipts: ProofReceipt[] = [
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r1", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "write_file", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: {
+          // loop predecessor is null (root step), but the scope anchor cites a forged predecessor.
+          loop: { loop_id: "loop-1", prior_receipt_id: null, goal_hash },
+          scope: { scope_ref: scoped.scope_ref, action_class: "write", tool_name: "write_file", prior_receipt_id: "lrv2_forged" }
+        }
+      },
+      {
+        version: "LYHNA_RECEIPT_V2", receipt_id: "r2", public_key: pk, tenant_hash: "55b966349a28aaaa",
+        action_type: "loop_close", outcome: "APPROVED", signature: "c3R1Yg==",
+        constraints: { loop: { loop_id: "loop-1", prior_receipt_id: "r1", goal_hash }, loop_close: { loop_id: "loop-1", goal_hash, action_count: 1, outcome: "COMPLETED", prior_receipt_id: "r1", termination_reason: "t" } }
+      }
+    ];
+    const continuation = continuationFor("loop-1", goal_hash, scoped.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({ receipts, source_env: "t", capsule: { mode: "proof", sealed_scope: scoped, continuation, scope_events: [] } })
+    ).toThrow(/per-step scope anchor is stale\s+or forged/);
+  });
+
   it("fails closed when a receipt carries a scope_ref outside the exported scope chain", () => {
     const sealed = sealScopeCapsule({ capsule });
     const goal_hash = "a".repeat(64);

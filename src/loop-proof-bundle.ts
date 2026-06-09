@@ -606,9 +606,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     input.receipts.forEach((r, i) => {
       const c = r.constraints as
         | {
-            loop?: unknown;
+            loop?: { prior_receipt_id?: unknown };
             loop_close?: unknown;
-            scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown };
+            scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown; prior_receipt_id?: unknown };
           }
         | undefined;
       const isTerminal = isRecord(c?.loop_close);
@@ -622,6 +622,22 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
             `Receipt ${describe(r, i)} carries scope_ref ${sref} outside the exported scope/amendment ` +
               `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
           );
+        }
+        // FAIL CLOSED (per-step scope anchoring): the scope stamp must cite the SAME predecessor as the
+        // signed `constraints.loop`. The runtime stamps both inside one loop mutex with the same
+        // `prior_receipt_id` (loop.ts), so a scope anchor pointing at a different predecessor than the
+        // signed loop constraint is stale or forged — refuse rather than package a misanchored per-step
+        // proof. Only enforced when a loop constraint is present (the predecessor source of truth).
+        if (isRecord(c?.loop)) {
+          const loopPrior = c!.loop!.prior_receipt_id ?? null;
+          const scopePrior = stamp?.prior_receipt_id ?? null;
+          if (scopePrior !== loopPrior) {
+            throw new Error(
+              `Receipt ${describe(r, i)} scope stamp is anchored to prior_receipt_id ${JSON.stringify(scopePrior)} ` +
+                `but the signed loop predecessor is ${JSON.stringify(loopPrior)}; the per-step scope anchor is stale ` +
+                `or forged (fail closed).`
+            );
+          }
         }
         // Re-validate the stamped descriptor against the referenced version's structural lane.
         const s = version.structural;
