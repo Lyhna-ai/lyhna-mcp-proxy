@@ -70,6 +70,17 @@ async function runStandingService(): Promise<void> {
       `upstream=${config.upstream.description}\n`
   );
 
+  // Stable, parseable ready block on STDOUT (stranger-test finding: the
+  // endpoints must not require log spelunking). key=value lines; the
+  // LYHNA_MCP_READY sentinel marks the block for machine consumption.
+  process.stdout.write(
+    "LYHNA_MCP_READY\n" +
+      `agent_mcp_url=${standing.url}/<session_id>\n` +
+      `control=${control.transport}:${control.address}\n` +
+      `bind=${config.bindDescription}\n` +
+      'next=open a loop: write {"cmd":"open","session_id":"<id>","loop_id":"<loop>","goal":"<goal>"} to open.json, then: npx -y @lyhna/mcp ctl --file open.json\n'
+  );
+
   const shutdown = async (sealOpenLoops: boolean, reason: string): Promise<void> => {
     if (sealOpenLoops && registry.size > 0) {
       const results = await registry.closeAll(reason);
@@ -119,6 +130,16 @@ async function runPerTaskService(): Promise<void> {
   process.stderr.write(
     `[lyhna-mcp-proxy] streamable_http listening at ${proxy.url}; bind=${config.bindDescription}; upstream=${config.upstream.description}` +
       `${loopContext ? `; loop=${loopContext.loop_id}` : "; loop=disabled"}\n`
+  );
+
+  // Same stable ready block as the standing service (per-task topology has
+  // no control channel; the loop comes from the environment).
+  process.stdout.write(
+    "LYHNA_MCP_READY\n" +
+      `agent_mcp_url=${proxy.url}\n` +
+      `bind=${config.bindDescription}\n` +
+      `${loopContext ? `loop=${loopContext.loop_id}` : "loop=disabled"}\n` +
+      "next=point your MCP client at agent_mcp_url; SIGTERM seals the loop\n"
   );
 
   // SIGTERM is the proxy-controlled close trigger: the boundary seals the loop on
