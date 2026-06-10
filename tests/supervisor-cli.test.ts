@@ -20,6 +20,7 @@ import {
   createScopeEventRecorder,
   createSyntheticDemoBindClient,
   LoopSessionRegistry,
+  resolveControlTarget,
   runCtl,
   runExportPack,
   serveControlChannel,
@@ -87,6 +88,33 @@ function sendControl(socketPath: string, command: unknown): Promise<Record<strin
     socket.on("error", reject);
   });
 }
+
+describe("resolveControlTarget precedence", () => {
+  const env = {
+    LYHNA_PROXY_CONTROL_SOCKET: "/env/control.sock",
+    LYHNA_PROXY_CONTROL_PORT: "9000",
+    LYHNA_PROXY_CONTROL_HOST: "127.0.0.2"
+  };
+
+  it("explicit --socket wins over everything", () => {
+    expect(resolveControlTarget({ socket: "/flag.sock", port: "8000" }, env)).toEqual({ socketPath: "/flag.sock" });
+  });
+
+  it("explicit --port wins over the env socket", () => {
+    expect(resolveControlTarget({ port: "8000" }, env)).toEqual({ host: "127.0.0.2", port: 8000 });
+    expect(resolveControlTarget({ port: "8000", host: "127.0.0.5" }, env)).toEqual({ host: "127.0.0.5", port: 8000 });
+  });
+
+  it("falls back to the env socket, then the env port", () => {
+    expect(resolveControlTarget({}, env)).toEqual({ socketPath: "/env/control.sock" });
+    expect(resolveControlTarget({}, { LYHNA_PROXY_CONTROL_PORT: "9000" })).toEqual({ host: "127.0.0.1", port: 9000 });
+    expect(resolveControlTarget({}, {})).toBeNull();
+  });
+
+  it("rejects an invalid explicit port instead of silently using the env socket", () => {
+    expect(resolveControlTarget({ port: "not-a-port" }, env)).toBeNull();
+  });
+});
 
 describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
   const cleanups: Array<() => Promise<unknown> | unknown> = [];

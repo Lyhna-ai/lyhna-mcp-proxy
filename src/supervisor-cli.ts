@@ -43,18 +43,29 @@ export const EXPORT_PACK_USAGE =
 
 export type ControlTarget = { socketPath: string } | { host: string; port: number };
 
-/** Resolve the control-channel address from flags, falling back to the standing-service env. */
+/**
+ * Resolve the control-channel address. EXPLICIT FLAGS ALWAYS WIN over environment defaults:
+ * a shell that keeps LYHNA_PROXY_CONTROL_SOCKET exported must still be able to target a
+ * different standing proxy with `--port` (otherwise the command would silently drive the
+ * wrong proxy). Precedence: --socket, then --port (+ --host), then the env socket, then the
+ * env port.
+ */
 export function resolveControlTarget(
   flags: { socket?: string; host?: string; port?: string },
   env: NodeJS.ProcessEnv
 ): ControlTarget | null {
-  const socketPath = flags.socket ?? env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
-  if (socketPath) return { socketPath };
-  const portRaw = flags.port ?? env.LYHNA_PROXY_CONTROL_PORT?.trim();
-  if (!portRaw) return null;
-  const port = Number(portRaw);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-  return { host: flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1", port };
+  const toTcp = (portRaw: string, host: string): ControlTarget | null => {
+    const port = Number(portRaw);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return { host, port };
+  };
+  if (flags.socket) return { socketPath: flags.socket };
+  if (flags.port) return toTcp(flags.port, flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1");
+  const envSocket = env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
+  if (envSocket) return { socketPath: envSocket };
+  const envPort = env.LYHNA_PROXY_CONTROL_PORT?.trim();
+  if (envPort) return toTcp(envPort, flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1");
+  return null;
 }
 
 /** Send one newline-delimited JSON command to the control channel; resolve its one-line response. */
