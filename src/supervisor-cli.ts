@@ -27,10 +27,12 @@ import type { ScopeEvent } from "./scope-event-recorder.js";
 import type { JudgmentTurn } from "./judgment-ledger.js";
 
 export const CTL_USAGE =
-  "usage: lyhna-mcp ctl '<json-command>' [--file <command.json>]\n" +
+  "usage: lyhna-mcp ctl --file <command.json>      (recommended — shell-quoting-safe, incl. PowerShell)\n" +
+  "       lyhna-mcp ctl '<json-command>'\n" +
   "                [--socket <path> | --host <host> --port <port>]\n" +
   "  Sends ONE supervisor control command (open / amend / close / status / dump / dump_scope /\n" +
   "  dump_judgment / record_delta) to a standing lyhna-mcp proxy and prints the JSON response.\n" +
+  '  Example: write {"cmd":"status"} to cmd.json, then: lyhna-mcp ctl --file cmd.json\n' +
   "  Defaults to LYHNA_PROXY_CONTROL_SOCKET / LYHNA_PROXY_CONTROL_HOST+PORT from the environment.\n";
 
 export const EXPORT_PACK_USAGE =

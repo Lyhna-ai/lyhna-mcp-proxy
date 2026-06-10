@@ -19,7 +19,7 @@ const HELP =
   "  lyhna-mcp                 start the MCP proxy, Streamable HTTP (config via LYHNA_PROXY_* env)\n" +
   "  lyhna-mcp proxy           same, explicit\n" +
   "  lyhna-mcp stdio           start the MCP proxy over stdio (for MCP client config blocks)\n" +
-  "  lyhna-mcp ctl '<json>'    send one supervisor control command (open/close/status/dump/...)\n" +
+  "  lyhna-mcp ctl --file <f>  send one supervisor control command from a JSON file (open/close/status/dump/...)\n" +
   "  lyhna-mcp export-pack     export a closed loop's full proof pack in one command\n" +
   "  lyhna-mcp handoff [dir]   print the paste-ready next-agent handoff from a proof pack\n" +
   "  lyhna-mcp post --pr <n>   post the pack's proof card to a GitHub PR (uses YOUR gh login)\n" +
