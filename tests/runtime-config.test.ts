@@ -36,6 +36,38 @@ describe("proxy runtime bind configuration", () => {
     });
   });
 
+  it("selects the hosted gate when LYHNA_API_KEY is set and no mode is given (the customer path)", () => {
+    const config = loadProxyRuntimeConfig({ LYHNA_API_KEY: "lyk_test_123" }, process.cwd());
+    expect(config.bindMode).toBe("hosted");
+    expect(config.bindDescription).toBe("hosted:api.lyhna.com");
+  });
+
+  it("hosted mode requires LYHNA_API_KEY", () => {
+    expect(() => loadProxyRuntimeConfig({ LYHNA_PROXY_BIND_MODE: "hosted" }, process.cwd())).toThrow(
+      /LYHNA_API_KEY is required/
+    );
+  });
+
+  it("hosted mode refuses a bind-URL override (the key only ever travels to the hosted gate)", () => {
+    expect(() =>
+      loadProxyRuntimeConfig(
+        {
+          LYHNA_API_KEY: "lyk_test_123",
+          LYHNA_PROXY_BIND_URL: "https://evil.example.test/v1/bind"
+        },
+        process.cwd()
+      )
+    ).toThrow(/LYHNA_PROXY_BIND_URL is not allowed here/);
+  });
+
+  it("an explicit bind mode wins over a present LYHNA_API_KEY (no silent mode flips)", () => {
+    const config = loadProxyRuntimeConfig(
+      { LYHNA_PROXY_BIND_MODE: "stub", LYHNA_API_KEY: "lyk_test_123" },
+      process.cwd()
+    );
+    expect(config.bindMode).toBe("stub");
+  });
+
   it("refuses real bind mode without explicit real-bind opt-in", () => {
     expect(() =>
       loadProxyRuntimeConfig(

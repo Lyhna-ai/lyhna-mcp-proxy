@@ -12,17 +12,26 @@
 // instead of silently starting a governed proxy under a typo.
 
 import { runHandoff, runPost, HANDOFF_USAGE, POST_USAGE } from "../capsule-cli.js";
+import { runCtl, runExportPack, CTL_USAGE, EXPORT_PACK_USAGE } from "../supervisor-cli.js";
 
 const HELP =
   "lyhna-mcp — Lyhna MCP proxy + capsule tools\n\n" +
-  "  lyhna-mcp                 start the MCP proxy (configuration via LYHNA_PROXY_* env)\n" +
+  "  lyhna-mcp                 start the MCP proxy, Streamable HTTP (config via LYHNA_PROXY_* env)\n" +
   "  lyhna-mcp proxy           same, explicit\n" +
+  "  lyhna-mcp stdio           start the MCP proxy over stdio (for MCP client config blocks)\n" +
+  "  lyhna-mcp ctl '<json>'    send one supervisor control command (open/close/status/dump/...)\n" +
+  "  lyhna-mcp export-pack     export a closed loop's full proof pack in one command\n" +
   "  lyhna-mcp handoff [dir]   print the paste-ready next-agent handoff from a proof pack\n" +
   "  lyhna-mcp post --pr <n>   post the pack's proof card to a GitHub PR (uses YOUR gh login)\n" +
+  "  lyhna-mcp export …        package an existing receipts.json (see export-loop-proof usage)\n" +
   "  lyhna-mcp help            show this help\n\n" +
   HANDOFF_USAGE +
   "\n" +
-  POST_USAGE;
+  POST_USAGE +
+  "\n" +
+  CTL_USAGE +
+  "\n" +
+  EXPORT_PACK_USAGE;
 
 const argv = process.argv.slice(2);
 const verb = argv[0];
@@ -34,6 +43,19 @@ const io = {
 if (verb === undefined || verb === "proxy") {
   // The proxy entry registers its own signal handlers and runs until terminated.
   await import("./http-proxy.js");
+} else if (verb === "stdio") {
+  // The stdio proxy entry (one MCP server on stdin/stdout) — the shape MCP client config
+  // blocks expect for a command-launched server.
+  await import("./local-proxy.js");
+} else if (verb === "export") {
+  // Delegate to the export-loop-proof CLI, which parses process.argv.slice(2) itself —
+  // remove the verb so its positional receipts.json argument is read correctly.
+  process.argv.splice(2, 1);
+  await import("./export-loop-proof.js");
+} else if (verb === "ctl") {
+  process.exit(await runCtl(argv.slice(1), io));
+} else if (verb === "export-pack") {
+  process.exit(await runExportPack(argv.slice(1), io));
 } else if (verb === "handoff") {
   process.exit(runHandoff(argv.slice(1), io));
 } else if (verb === "post") {

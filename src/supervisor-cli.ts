@@ -1,0 +1,296 @@
+// Supervisor-side CLI verbs — `lyhna-mcp ctl` and `lyhna-mcp export-pack`.
+//
+// Both speak the standing service's SUPERVISOR control channel (newline-delimited JSON over the
+// owner-only unix socket / loopback TCP port). They are supervisor tooling by construction: the
+// governed agent holds only its per-session MCP URL and can never reach this channel, so adding
+// convenience verbs on the supervisor side changes nothing about the agent/supervisor boundary.
+//
+//   ctl          — send ONE control command (open/close/status/dump/...) and print the response.
+//   export-pack  — the dump -> continuation -> export dance as one command: read the sealed
+//                  chain + scope history + judgment ledger over the control channel, fold the
+//                  continuation, and write the full proof pack (the capsule trio) to a directory.
+//
+// export-pack is ADDITIVE packaging: it reuses the exact reducer / continuation / bundle builders
+// the export CLI uses, so every fail-closed export validation still runs. Receipts are never
+// reshaped; the bytes written to receipts.json are the bytes digested.
+
+import { connect as netConnect, type Socket } from "node:net";
+import { readFileSync } from "node:fs";
+
+import type { CliIo } from "./capsule-cli.js";
+import { buildContinuationCapsule } from "./continuation-capsule.js";
+import { reduceJudgmentLedger } from "./judgment-reducer.js";
+import { buildLoopProofBundle, deriveLoopSummary, type ProofReceipt } from "./loop-proof-bundle.js";
+import { writeProofPackFiles } from "./proof-pack-io.js";
+import type { ScopePrivacyMode, SealedScope } from "./scope-capsule.js";
+import type { ScopeEvent } from "./scope-event-recorder.js";
+import type { JudgmentTurn } from "./judgment-ledger.js";
+
+export const CTL_USAGE =
+  "usage: lyhna-mcp ctl '<json-command>' [--file <command.json>]\n" +
+  "                [--socket <path> | --host <host> --port <port>]\n" +
+  "  Sends ONE supervisor control command (open / amend / close / status / dump / dump_scope /\n" +
+  "  dump_judgment / record_delta) to a standing lyhna-mcp proxy and prints the JSON response.\n" +
+  "  Defaults to LYHNA_PROXY_CONTROL_SOCKET / LYHNA_PROXY_CONTROL_HOST+PORT from the environment.\n";
+
+export const EXPORT_PACK_USAGE =
+  "usage: lyhna-mcp export-pack --loop <loop_id> --out <dir> [--mode proof|verified-context]\n" +
+  "                [--source-env <env>] [--socket <path> | --host <host> --port <port>]\n" +
+  "  Reads a closed loop's sealed chain, scope history, and judgment ledger over the supervisor\n" +
+  "  control channel, folds the continuation capsule, and writes the full proof pack (receipts,\n" +
+  "  bundle, proof-card.md, HANDOFF.md, judgment ledger, memory-injection.json) to <dir>.\n" +
+  "  Default --mode is the scope's sealed privacy_mode (downgrading to proof is always allowed).\n";
+
+export type ControlTarget = { socketPath: string } | { host: string; port: number };
+
+/** Resolve the control-channel address from flags, falling back to the standing-service env. */
+export function resolveControlTarget(
+  flags: { socket?: string; host?: string; port?: string },
+  env: NodeJS.ProcessEnv
+): ControlTarget | null {
+  const socketPath = flags.socket ?? env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
+  if (socketPath) return { socketPath };
+  const portRaw = flags.port ?? env.LYHNA_PROXY_CONTROL_PORT?.trim();
+  if (!portRaw) return null;
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { host: flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1", port };
+}
+
+/** Send one newline-delimited JSON command to the control channel; resolve its one-line response. */
+export function controlRequest(target: ControlTarget, command: unknown): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket: Socket =
+      "socketPath" in target ? netConnect(target.socketPath) : netConnect(target.port, target.host);
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(JSON.stringify(command) + "\n"));
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const nl = buffer.indexOf("\n");
+      if (nl !== -1) {
+        socket.end();
+        try {
+          resolve(JSON.parse(buffer.slice(0, nl)) as Record<string, unknown>);
+        } catch (error) {
+          reject(new Error(`control channel returned non-JSON: ${(error as Error).message}`));
+        }
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
+type CommonFlags = { socket?: string; host?: string; port?: string };
+
+function takeCommonFlag(flags: CommonFlags, argv: string[], i: number): number | null {
+  const a = argv[i]!;
+  if (a === "--socket") {
+    flags.socket = argv[i + 1];
+    return i + 1;
+  }
+  if (a === "--host") {
+    flags.host = argv[i + 1];
+    return i + 1;
+  }
+  if (a === "--port") {
+    flags.port = argv[i + 1];
+    return i + 1;
+  }
+  return null;
+}
+
+const NO_TARGET =
+  "no control channel configured — pass --socket/--port or set LYHNA_PROXY_CONTROL_SOCKET / " +
+  "LYHNA_PROXY_CONTROL_PORT (the standing proxy prints its control address at startup).\n";
+
+/** `lyhna-mcp ctl '<json>'` — one supervisor command, one JSON response on stdout. */
+export async function runCtl(argv: string[], io: CliIo, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  const flags: CommonFlags = {};
+  let raw: string | undefined;
+  let file: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]!;
+    const skipped = takeCommonFlag(flags, argv, i);
+    if (skipped !== null) {
+      i = skipped;
+      continue;
+    }
+    if (a === "--file") file = argv[++i];
+    else if (a === "--help" || a === "-h") {
+      io.stdout(CTL_USAGE);
+      return 0;
+    } else if (a.startsWith("-")) {
+      io.stderr(`unknown flag ${a}\n${CTL_USAGE}`);
+      return 1;
+    } else raw = a;
+  }
+  if (file !== undefined && raw !== undefined) {
+    io.stderr(`pass the command either inline or via --file, not both.\n${CTL_USAGE}`);
+    return 1;
+  }
+  if (file !== undefined) raw = readFileSync(file, "utf8");
+  if (raw === undefined) {
+    io.stderr(`a JSON command is required.\n${CTL_USAGE}`);
+    return 1;
+  }
+  let command: unknown;
+  try {
+    command = JSON.parse(raw);
+  } catch (error) {
+    io.stderr(`command is not valid JSON: ${(error as Error).message}\n`);
+    return 1;
+  }
+  const target = resolveControlTarget(flags, env);
+  if (!target) {
+    io.stderr(NO_TARGET);
+    return 1;
+  }
+  const response = await controlRequest(target, command);
+  io.stdout(JSON.stringify(response, null, 2) + "\n");
+  return response.ok === true ? 0 : 1;
+}
+
+function normalizeMode(value: string | undefined): ScopePrivacyMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "proof") return "proof";
+  if (value === "verified-context" || value === "verified_context") return "verified_context";
+  throw new Error(`--mode must be "proof" or "verified-context", received "${value}".`);
+}
+
+/** `lyhna-mcp export-pack` — dump + fold + export in one supervisor command. */
+export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  const flags: CommonFlags = {};
+  let loopId: string | undefined;
+  let outDir: string | undefined;
+  let modeFlag: ScopePrivacyMode | undefined;
+  let sourceEnv = "lyhna-mcp export-pack";
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]!;
+    const skipped = takeCommonFlag(flags, argv, i);
+    if (skipped !== null) {
+      i = skipped;
+      continue;
+    }
+    if (a === "--loop") loopId = argv[++i];
+    else if (a === "--out") outDir = argv[++i];
+    else if (a === "--mode") modeFlag = normalizeMode(argv[++i]);
+    else if (a === "--source-env") sourceEnv = argv[++i] ?? sourceEnv;
+    else if (a === "--help" || a === "-h") {
+      io.stdout(EXPORT_PACK_USAGE);
+      return 0;
+    } else {
+      io.stderr(`unknown argument ${a}\n${EXPORT_PACK_USAGE}`);
+      return 1;
+    }
+  }
+  if (!loopId || !outDir) {
+    io.stderr(`--loop and --out are required.\n${EXPORT_PACK_USAGE}`);
+    return 1;
+  }
+  const target = resolveControlTarget(flags, env);
+  if (!target) {
+    io.stderr(NO_TARGET);
+    return 1;
+  }
+
+  // 1) Dump the recorded chain + scope material + judgment ledger (supervisor-only verbs).
+  const dumped = await controlRequest(target, { cmd: "dump", loop_id: loopId });
+  if (dumped.ok !== true || !Array.isArray(dumped.receipts) || dumped.receipts.length === 0) {
+    io.stderr(`dump failed for loop ${loopId}: ${JSON.stringify(dumped)}\n`);
+    return 1;
+  }
+  const receipts = dumped.receipts as ProofReceipt[];
+
+  const dumpedScope = await controlRequest(target, { cmd: "dump_scope", loop_id: loopId });
+  if (dumpedScope.ok !== true) {
+    io.stderr(`dump_scope failed for loop ${loopId}: ${JSON.stringify(dumpedScope)}\n`);
+    return 1;
+  }
+  const scopeHistory = (dumpedScope.scope_history as SealedScope[] | undefined) ?? [];
+  const scopeEvents = (dumpedScope.scope_events as ScopeEvent[] | undefined) ?? [];
+
+  // The summary (sealed verdict, action_count, goal_hash) is DERIVED from the dumped chain via
+  // the structural verifier — never asserted. An unsealed chain exports honestly as UNSEALED.
+  const summary = deriveLoopSummary(receipts);
+  const receiptsText = JSON.stringify(receipts, null, 2);
+
+  // No scope capsule -> the legacy 4-artifact bundle (no trio); say so rather than half-emit.
+  if (scopeHistory.length === 0) {
+    const bare = buildLoopProofBundle({ receipts, receipts_text: receiptsText, source_env: sourceEnv });
+    const files = writeProofPackFiles(outDir, bare);
+    io.stderr(
+      `[lyhna] loop ${loopId} has no sealed scope capsule, so this is a bare bundle (no proof card / ` +
+        `handoff / judgment artifacts). Open loops with a scope_capsule to export the full capsule trio.\n`
+    );
+    io.stdout(`wrote ${files.length} file(s) to ${outDir}: ${files.join(", ")}\n`);
+    io.stdout(`verify: npx lyhna-verify --chain ${outDir}/receipts.json\n`);
+    return 0;
+  }
+
+  const finalScope = scopeHistory[scopeHistory.length - 1]!;
+  const sealedMode = finalScope.structural.privacy_mode === "verified_context" ? "verified_context" : "proof";
+  // Default to the scope's sealed mode; downgrading to proof is always allowed. Upgrading is not:
+  // the export's mode contract fails closed, but refuse here with a readable message instead.
+  const mode: ScopePrivacyMode = modeFlag ?? sealedMode;
+  if (mode === "verified_context" && sealedMode !== "verified_context") {
+    io.stderr(
+      `loop ${loopId} sealed its scope in proof (content-blind) mode; a verified-context export is not ` +
+        `available for it (fail closed). Re-run without --mode or with --mode proof.\n`
+    );
+    return 1;
+  }
+
+  // The control channel projects judgment turns under min(requested, sealed) mode server-side.
+  const dumpedJudgment = await controlRequest(target, {
+    cmd: "dump_judgment",
+    loop_id: loopId,
+    mode: mode === "verified_context" ? "verified-context" : "proof"
+  });
+  const judgmentTurns =
+    dumpedJudgment.ok === true && Array.isArray(dumpedJudgment.turns)
+      ? (dumpedJudgment.turns as JudgmentTurn[])
+      : [];
+
+  // 2) Fold the continuation from the dumped material (the same builders the demo/export use;
+  // every fail-closed export validation still runs inside buildLoopProofBundle).
+  const reduced =
+    judgmentTurns.length > 0
+      ? reduceJudgmentLedger({ loop_id: loopId, scope_ref: finalScope.scope_ref, turns: judgmentTurns, mode })
+      : undefined;
+  const continuation = buildContinuationCapsule({
+    scope_history: scopeHistory,
+    scope_events: scopeEvents,
+    loop: {
+      loop_id: summary.loop_id,
+      goal_hash: summary.goal_hash,
+      sealed: summary.sealed,
+      action_count: summary.action_count
+    },
+    mode,
+    reduced
+  });
+
+  const built = buildLoopProofBundle({
+    receipts,
+    receipts_text: receiptsText,
+    source_env: sourceEnv,
+    capsule: {
+      mode,
+      sealed_scope: finalScope,
+      scope_history: scopeHistory,
+      continuation,
+      scope_events: scopeEvents,
+      judgment_turns: judgmentTurns.length > 0 ? judgmentTurns : undefined
+    }
+  });
+
+  const files = writeProofPackFiles(outDir, built);
+  io.stdout(
+    `exported loop ${summary.loop_id} (${summary.sealed ? "SEALED" : "UNSEALED"}, ` +
+      `${summary.action_count} action(s), mode ${mode}) -> ${outDir}\n` +
+      `  ${files.join(", ")}\n` +
+      `verify: npx lyhna-verify --chain ${outDir}/receipts.json\n`
+  );
+  return 0;
+}

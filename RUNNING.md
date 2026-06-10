@@ -31,7 +31,14 @@ REFUSED
 ESCALATED
 ```
 
-Real HTTP bind mode is guarded and requires all of:
+**Hosted mode (the customer path):** setting `LYHNA_API_KEY` (your tenant key from the
+dashboard) with no `LYHNA_PROXY_BIND_MODE` selects the hosted gate at
+`https://api.lyhna.com/v1/bind` — supplying your own key IS the deliberate opt-in, and the
+key only ever travels to that fixed endpoint (`LYHNA_PROXY_BIND_URL` is refused in hosted
+mode). An explicitly set bind mode always wins. The safety rule above still governs
+DEVELOPMENT shakeout: don't export a real key into a dev environment you're smoke-testing.
+
+Real HTTP bind mode (custom/non-production bind URLs) is guarded and requires all of:
 
 ```text
 LYHNA_PROXY_BIND_MODE=http

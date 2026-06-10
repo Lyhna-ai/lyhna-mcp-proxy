@@ -11,6 +11,22 @@ portable, independently verifiable record that a loop ran and closed under autho
 
 > Permission grants access once. Lyhna attests authority every time.
 
+**Have an API key already?** [`docs/QUICKSTART.md`](docs/QUICKSTART.md) is the ten-minute
+path from key to capsule: one config block (or one `npx` command), a governed loop, and the
+**capsule trio** out the other side —
+
+- **THE CARD** (`proof-card.md`) — the human one-pager, sized to paste into a PR comment
+  (`lyhna-mcp post --pr <n>` posts it with your own `gh` credentials);
+- **THE HANDOFF** (`HANDOFF.md`) — the paste-ready continuation for the next agent session
+  (`lyhna-mcp handoff` prints it), assembled from the sealed during-run judgment ledger —
+  the agent cannot author its own report card;
+- **THE SEED** (`memory-injection.json`) — the machine-ingestable handoff object.
+
+CLI verbs (`npx -y @lyhna/mcp help`): the bare command starts the proxy (Streamable HTTP;
+`stdio` for MCP client config blocks), `ctl` drives the supervisor control channel,
+`export-pack` exports a closed loop's full pack in one command, `handoff` / `post` read an
+exported pack.
+
 **Two topologically distinct surfaces** (this separation is the whole point):
 
 - **Agent path** — the agent holds only a per-session MCP URL (`/mcp/<session_id>`). It can

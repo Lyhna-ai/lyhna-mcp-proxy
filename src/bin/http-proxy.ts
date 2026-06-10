@@ -193,7 +193,9 @@ function startControlChannel(
 function withHttpModeDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...env,
-    LYHNA_PROXY_BIND_MODE: env.LYHNA_PROXY_BIND_MODE ?? "stub",
+    // A present LYHNA_API_KEY selects the hosted gate (the customer path); otherwise the
+    // fail-closed local stub stays the default, exactly as before.
+    LYHNA_PROXY_BIND_MODE: env.LYHNA_PROXY_BIND_MODE ?? (env.LYHNA_API_KEY?.trim() ? "hosted" : "stub"),
     LYHNA_PROXY_STUB_OUTCOME: env.LYHNA_PROXY_STUB_OUTCOME ?? "APPROVED",
     LYHNA_PROXY_UPSTREAM_MODE: env.LYHNA_PROXY_UPSTREAM_MODE ?? "stdio",
     LYHNA_PROXY_UPSTREAM_COMMAND: env.LYHNA_PROXY_UPSTREAM_COMMAND ?? process.execPath,
