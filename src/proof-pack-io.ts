@@ -3,10 +3,32 @@
 // the exact digested bytes (never re-serialized), every other artifact is written iff the build
 // produced it. No validation happens here — buildLoopProofBundle already failed closed upstream.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type { BuiltLoopProofBundle } from "./loop-proof-bundle.js";
+
+/**
+ * Every file name this writer can ever produce. Before writing, ALL of these are removed from
+ * the target directory so a re-export can never leave a stale optional artifact (an old
+ * proof-card.md / HANDOFF.md / scope-events.json from a previous chain) sitting next to a fresh
+ * receipts.json. Only these names are touched — anything else in the directory is left alone.
+ */
+const PACK_FILE_NAMES = [
+  "receipts.json",
+  "bundle.json",
+  "graph-node.json",
+  "graph-node.md",
+  "scope-capsule.json",
+  "continuation-capsule.json",
+  "scope-events.json",
+  "proof-card.md",
+  "HANDOFF.md",
+  "verify-instructions.md",
+  "judgment-ledger.json",
+  "judgment-ledger.md",
+  "memory-injection.json"
+] as const;
 
 function writeJson(outDir: string, name: string, value: unknown): void {
   writeFileSync(path.join(outDir, name), JSON.stringify(value, null, 2) + "\n");
@@ -15,6 +37,9 @@ function writeJson(outDir: string, name: string, value: unknown): void {
 /** Write the full side-car pack; returns the list of file names written. */
 export function writeProofPackFiles(outDir: string, built: BuiltLoopProofBundle): string[] {
   mkdirSync(outDir, { recursive: true });
+  for (const name of PACK_FILE_NAMES) {
+    rmSync(path.join(outDir, name), { force: true });
+  }
   const written: string[] = [];
   const put = (name: string, write: () => void): void => {
     write();
