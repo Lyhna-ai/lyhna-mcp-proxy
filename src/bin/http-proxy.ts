@@ -72,13 +72,23 @@ async function runStandingService(): Promise<void> {
 
   // Stable, parseable ready block on STDOUT (stranger-test finding: the
   // endpoints must not require log spelunking). key=value lines; the
-  // LYHNA_MCP_READY sentinel marks the block for machine consumption.
+  // LYHNA_MCP_READY sentinel marks the block for machine consumption. The
+  // next= command carries the RESOLVED control target flags so it is
+  // copy-pasteable from a fresh shell (a dynamically assigned port never
+  // matches the env the proxy was started with).
+  const ctlTargetFlags =
+    control.transport === "unix"
+      ? `--socket ${control.address}`
+      : (() => {
+          const sep = control.address.lastIndexOf(":");
+          return `--host ${control.address.slice(0, sep)} --port ${control.address.slice(sep + 1)}`;
+        })();
   process.stdout.write(
     "LYHNA_MCP_READY\n" +
       `agent_mcp_url=${standing.url}/<session_id>\n` +
       `control=${control.transport}:${control.address}\n` +
       `bind=${config.bindDescription}\n` +
-      'next=open a loop: write {"cmd":"open","session_id":"<id>","loop_id":"<loop>","goal":"<goal>"} to open.json, then: npx -y @lyhna/mcp ctl --file open.json\n'
+      `next=open a loop: write {"cmd":"open","session_id":"<id>","loop_id":"<loop>","goal":"<goal>"} to open.json, then: npx -y @lyhna/mcp ctl ${ctlTargetFlags} --file open.json\n`
   );
 
   const shutdown = async (sealOpenLoops: boolean, reason: string): Promise<void> => {
