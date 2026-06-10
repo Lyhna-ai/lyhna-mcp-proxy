@@ -9,7 +9,7 @@ import type {
 } from "../transport/mcp-sdk.js";
 import { createSyntheticDemoBindClient } from "./synthetic-demo.js";
 
-export type BindMode = "stub" | "http" | "demo";
+export type BindMode = "stub" | "http" | "demo" | "hosted";
 
 export type ProxyRuntimeConfig = {
   bindMode: BindMode;
@@ -20,6 +20,9 @@ export type ProxyRuntimeConfig = {
 
 const DEFAULT_STUB_OUTCOME: BindOutcome = "REFUSED";
 const PRODUCTION_BIND_HOST = "api.lyhna.com";
+// The hosted gate endpoint is FIXED in hosted mode: the customer's Bearer key can only ever be
+// sent to Lyhna's hosted bind, never to an attacker-supplied URL riding in via the environment.
+const HOSTED_BIND_URL = "https://api.lyhna.com/v1/bind";
 
 export function createStubBindClient(outcome: BindOutcome = DEFAULT_STUB_OUTCOME): BindClient {
   return {
@@ -39,7 +42,7 @@ export function loadProxyRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd()
 ): ProxyRuntimeConfig {
-  const bindMode = parseBindMode(env.LYHNA_PROXY_BIND_MODE);
+  const bindMode = parseBindMode(env.LYHNA_PROXY_BIND_MODE, env);
   const upstream = loadUpstreamConfig(env, cwd);
 
   if (bindMode === "stub") {
@@ -60,6 +63,27 @@ export function loadProxyRuntimeConfig(
       bindMode,
       bindClient: createSyntheticDemoBindClient(),
       bindDescription: "demo:synthetic-unsigned",
+      upstream
+    };
+  }
+
+  if (bindMode === "hosted") {
+    // The CUSTOMER path: setting LYHNA_API_KEY is the deliberate opt-in. The endpoint is the
+    // fixed hosted gate — a URL override here is refused rather than silently ignored (point a
+    // custom URL through the guarded `http` mode instead, with its explicit opt-in flags).
+    if (env.LYHNA_PROXY_BIND_URL?.trim()) {
+      throw new Error(
+        "Hosted bind mode always targets the hosted gate; LYHNA_PROXY_BIND_URL is not allowed here. " +
+          "Use LYHNA_PROXY_BIND_MODE=http (with its explicit opt-in flags) for a custom bind URL."
+      );
+    }
+    return {
+      bindMode,
+      bindClient: createHttpBindClient({
+        bindUrl: HOSTED_BIND_URL,
+        apiKey: requireEnv(env, "LYHNA_API_KEY")
+      }),
+      bindDescription: `hosted:${PRODUCTION_BIND_HOST}`,
       upstream
     };
   }
@@ -148,14 +172,17 @@ function defaultReferenceUpstreamArgs(cwd: string): string[] {
   ];
 }
 
-function parseBindMode(value: string | undefined): BindMode {
+function parseBindMode(value: string | undefined, env: NodeJS.ProcessEnv): BindMode {
   if (!value) {
-    return "stub";
+    // Stranger path: a present LYHNA_API_KEY (the customer-held tenant key from the dashboard)
+    // selects the hosted gate with no further flags — supplying YOUR key IS the opt-in. With no
+    // key and no mode, the default stays the fail-closed local stub (nothing live, ever).
+    return env.LYHNA_API_KEY?.trim() ? "hosted" : "stub";
   }
-  if (value === "stub" || value === "http" || value === "demo") {
+  if (value === "stub" || value === "http" || value === "demo" || value === "hosted") {
     return value;
   }
-  throw new Error("LYHNA_PROXY_BIND_MODE must be 'stub', 'http', or 'demo'.");
+  throw new Error("LYHNA_PROXY_BIND_MODE must be 'stub', 'http', 'demo', or 'hosted'.");
 }
 
 function parseUpstreamMode(env: NodeJS.ProcessEnv): UpstreamConfig["transport"] {

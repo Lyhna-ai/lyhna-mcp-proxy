@@ -4,7 +4,7 @@
   "description": "Standalone Lyhna MCP proxy that intercepts MCP tools/call and routes through hosted bind().",
   "type": "module",
   "bin": {
-    "lyhna-mcp": "./dist/src/bin/http-proxy.js"
+    "lyhna-mcp": "./dist/src/bin/cli.js"
   },
   "files": [
     "dist/src",

@@ -194,6 +194,19 @@ export type {
 } from "./loop-proof-bundle.js";
 export { buildMemoryInjection, MEMORY_INJECTION_VERSION } from "./memory-injection.js";
 export type { MemoryInjection } from "./memory-injection.js";
+export { buildHandoffPrompt, renderHandoffMarkdown } from "./handoff.js";
+export { buildGhPostArgs, runHandoff, runPost, HANDOFF_USAGE, POST_USAGE } from "./capsule-cli.js";
+export type { CliIo, SpawnGh } from "./capsule-cli.js";
+export { writeProofPackFiles } from "./proof-pack-io.js";
+export {
+  controlRequest,
+  resolveControlTarget,
+  runCtl,
+  runExportPack,
+  CTL_USAGE,
+  EXPORT_PACK_USAGE
+} from "./supervisor-cli.js";
+export type { ControlTarget } from "./supervisor-cli.js";
 export type {
   McpProxyRequestHandlers,
   StreamableHttpUpstream,

@@ -442,6 +442,21 @@ export function validateJudgmentChain(turns: readonly JudgmentTurn[]): JudgmentC
 
 // --- markdown projection -----------------------------------------------------
 
+/** One glyph per turn, in order: ✓ APPROVED · ⛔ REFUSED · ⏸ ESCALATED. Capped for very long loops. */
+const VERDICT_GLYPHS: Record<JudgmentVerdictKind, string> = {
+  APPROVED: "✓",
+  REFUSED: "⛔",
+  ESCALATED: "⏸"
+};
+const VERDICT_PATH_CAP = 64;
+
+function renderVerdictPath(turns: readonly JudgmentTurn[]): string {
+  if (turns.length === 0) return "—";
+  const shown = turns.slice(0, VERDICT_PATH_CAP).map((t) => VERDICT_GLYPHS[t.verdict.kind]);
+  const overflow = turns.length > VERDICT_PATH_CAP ? ` … (+${turns.length - VERDICT_PATH_CAP} more)` : "";
+  return `${shown.join(" ")}${overflow} (✓ approved · ⛔ refused · ⏸ escalated)`;
+}
+
 /**
  * Render a judgment ledger to human-readable markdown that RESPECTS the privacy mode: Proof
  * Mode carries only structural refs/hashes (no plaintext delta); Verified Context Mode also
@@ -461,6 +476,7 @@ export function renderJudgmentLedgerMarkdown(
     `| version | \`${JUDGMENT_LEDGER_VERSION}\` |`,
     `| mode | \`${mode}\` |`,
     `| turns | ${turns.length} |`,
+    `| verdict path | ${renderVerdictPath(turns)} |`,
     `| final_turn_ref | \`${turns.length ? turns[turns.length - 1]!.turn_ref : "—"}\` |`,
     ``,
     `> ${mode === "proof" ? "Content-blind: structural refs / hashes only — no plaintext deltas." : "Verified Context: includes supervisor-declared sidecar deltas."}`,

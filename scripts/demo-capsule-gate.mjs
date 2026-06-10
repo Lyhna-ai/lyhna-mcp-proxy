@@ -432,7 +432,8 @@ async function main() {
     log("");
     log(`Proof Pack written to: ${outDir}  (preserved after exit)`);
     log(`  scope-capsule.json        — sealed Scope Capsule (Verified Context: structural + sidecar)`);
-    log(`  proof-card.md             — one-page human summary`);
+    log(`  proof-card.md             — THE CARD: one-page human summary (PR-comment ready)`);
+    log(`  HANDOFF.md                — THE HANDOFF: paste-ready next-agent continuation`);
     log(`  receipts.json             — the verifier input (bare receipt array)`);
     log(`  bundle.json               — additive envelope (+ capsule refs by hash)`);
     log(`  graph-node.json / .md     — Authority Context Graph node`);

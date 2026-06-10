@@ -31,7 +31,14 @@ REFUSED
 ESCALATED
 ```
 
-Real HTTP bind mode is guarded and requires all of:
+**Hosted mode (the customer path):** setting `LYHNA_API_KEY` (your tenant key from the
+dashboard) with no `LYHNA_PROXY_BIND_MODE` selects the hosted gate at
+`https://api.lyhna.com/v1/bind` — supplying your own key IS the deliberate opt-in, and the
+key only ever travels to that fixed endpoint (`LYHNA_PROXY_BIND_URL` is refused in hosted
+mode). An explicitly set bind mode always wins. The safety rule above still governs
+DEVELOPMENT shakeout: don't export a real key into a dev environment you're smoke-testing.
+
+Real HTTP bind mode (custom/non-production bind URLs) is guarded and requires all of:
 
 ```text
 LYHNA_PROXY_BIND_MODE=http
@@ -94,14 +101,15 @@ HTTP mode defaults to:
 ```text
 transport: mcp.client.streamable_http
 url: http://127.0.0.1:8765/mcp
-bind: stub:APPROVED
+bind: stub:REFUSED   (fail closed — this bin is the install path; an allow-all default is not safe)
 upstream: @modelcontextprotocol/server-filesystem
 allowed filesystem root: C:\Users\Adam\lyhna-mcp-proxy
 ```
 
-Start the HTTP proxy:
+Start the HTTP proxy (set the stub outcome explicitly for forwarding shakeout):
 
 ```powershell
+$env:LYHNA_PROXY_STUB_OUTCOME='APPROVED'
 npm.cmd run start:proxy:http
 ```
 

@@ -414,7 +414,7 @@ async function legCapsule(verifyDir) {
   ];
   for (const file of [
     "scope-capsule.json", "continuation-capsule.json", "scope-events.json", "bundle.json", "receipts.json",
-    "proof-card.md", "judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"
+    "proof-card.md", "HANDOFF.md", "judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"
   ]) {
     const p = join(proofDir, file);
     if (!existsSync(p)) continue;
@@ -427,12 +427,13 @@ async function legCapsule(verifyDir) {
     }
   }
 
-  // (d) Capsule Gate 2: the judgment-ledger + memory-injection artifacts are present in BOTH packs,
-  // referenced by bundle.json, content-blind in Proof Mode and readable in Verified Context Mode.
+  // (d) The capsule trio + judgment artifacts are present in BOTH packs, referenced by
+  // bundle.json, content-blind in Proof Mode and readable in Verified Context Mode. The trio:
+  // the Card (proof-card.md), the Handoff (HANDOFF.md), the Seed (memory-injection.json).
   for (const [label, dir] of [["VC", vcDir], ["Proof", proofDir]]) {
-    for (const f of ["judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"]) {
+    for (const f of ["proof-card.md", "HANDOFF.md", "judgment-ledger.json", "judgment-ledger.md", "memory-injection.json"]) {
       if (!existsSync(join(dir, f))) {
-        fail("Leg Capsule", `${label} pack is missing Capsule Gate 2 artifact ${f}`);
+        fail("Leg Capsule", `${label} pack is missing capsule artifact ${f}`);
         return;
       }
     }

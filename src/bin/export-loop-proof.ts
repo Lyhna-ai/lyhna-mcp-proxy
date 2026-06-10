@@ -14,7 +14,8 @@
 //   <out>/scope-capsule.json        the sealed Scope Capsule (structural-only in Proof Mode)
 //   <out>/continuation-capsule.json the Continuation Capsule (settled/open/next + what changed)
 //   <out>/scope-events.json         attested scope refusals/escalations (if any)
-//   <out>/proof-card.md             one-page human summary
+//   <out>/proof-card.md             THE CARD — one-page human summary (PR-comment ready)
+//   <out>/HANDOFF.md                THE HANDOFF — paste-ready next-agent continuation
 //   <out>/verify-instructions.md    how to cold-verify the pack
 //
 // CAPSULE GATE 2 (additive, optional). When --judgment is also supplied, ALSO writes:
@@ -32,10 +33,11 @@
 // Additive packaging only: receipts are never reshaped. The standalone verifier consumes
 // <out>/receipts.json with zero adaptation.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { buildLoopProofBundle, type ProofReceipt } from "../loop-proof-bundle.js";
+import { writeProofPackFiles } from "../proof-pack-io.js";
 import type { ContinuationCapsule } from "../continuation-capsule.js";
 import type { ScopePrivacyMode, SealedScope } from "../scope-capsule.js";
 import type { ScopeEvent } from "../scope-event-recorder.js";
@@ -130,45 +132,10 @@ function main(): void {
     capsule
   });
 
-  mkdirSync(args.out, { recursive: true });
-  // receipts.json is written VERBATIM from the digested bytes — the verifier input.
-  writeFileSync(path.join(args.out, "receipts.json"), built.receipts_json);
-  writeFileSync(path.join(args.out, "bundle.json"), JSON.stringify(built.bundle, null, 2) + "\n");
-  writeFileSync(path.join(args.out, "graph-node.json"), JSON.stringify(built.graph_node, null, 2) + "\n");
-  writeFileSync(path.join(args.out, "graph-node.md"), built.graph_node_markdown);
+  writeProofPackFiles(args.out, built);
 
   let capsuleNote = "";
   if (built.scope_capsule) {
-    writeFileSync(
-      path.join(args.out, "scope-capsule.json"),
-      JSON.stringify(built.scope_capsule, null, 2) + "\n"
-    );
-    writeFileSync(
-      path.join(args.out, "continuation-capsule.json"),
-      JSON.stringify(built.continuation_capsule, null, 2) + "\n"
-    );
-    if (built.scope_events && built.scope_events.length > 0) {
-      writeFileSync(
-        path.join(args.out, "scope-events.json"),
-        JSON.stringify(built.scope_events, null, 2) + "\n"
-      );
-    }
-    if (built.proof_card_markdown) {
-      writeFileSync(path.join(args.out, "proof-card.md"), built.proof_card_markdown);
-    }
-    if (built.verify_instructions_markdown) {
-      writeFileSync(path.join(args.out, "verify-instructions.md"), built.verify_instructions_markdown);
-    }
-    // Capsule Gate 2 artifacts (present only when --judgment was supplied).
-    if (built.judgment_ledger) {
-      writeFileSync(path.join(args.out, "judgment-ledger.json"), JSON.stringify(built.judgment_ledger, null, 2) + "\n");
-    }
-    if (built.judgment_ledger_markdown) {
-      writeFileSync(path.join(args.out, "judgment-ledger.md"), built.judgment_ledger_markdown);
-    }
-    if (built.memory_injection) {
-      writeFileSync(path.join(args.out, "memory-injection.json"), JSON.stringify(built.memory_injection, null, 2) + "\n");
-    }
     capsuleNote =
       `  capsule: scope_ref=${built.bundle.capsule?.scope_ref} mode=${built.bundle.capsule?.mode} ` +
       `scope_events=${built.bundle.capsule?.scope_events.count}\n`;
