@@ -289,4 +289,50 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     expect(err.join("")).toContain("dump_judgment failed");
     expect(existsSync(join(outDir, "bundle.json"))).toBe(false);
   });
+
+  it("export-pack fails closed when the ledger dumps EMPTY for a loop whose receipts prove bind turns", async () => {
+    // A real loop is captured first (receipts + sealed scope from the live surfaces), then a
+    // CANNED control server replays everything faithfully EXCEPT dump_judgment, which answers
+    // ok:true with turns:[] — simulating lost/cleared judgment-recorder state. The empty array
+    // must flow into the export validator and fail the receipt<->judgment cross-check, never
+    // silently produce a judgment-less pack.
+    const { socketPath } = await runScopedLoop();
+    const dumped = await sendControl(socketPath, { cmd: "dump", loop_id: LOOP_ID });
+    const dumpedScope = await sendControl(socketPath, { cmd: "dump_scope", loop_id: LOOP_ID });
+
+    const cannedPath = join(tmpdir(), `lyhna-canned-control-${process.pid}-${Date.now()}.sock`);
+    const { createServer } = await import("node:net");
+    const canned = createServer((socket) => {
+      socket.setEncoding("utf8");
+      let buffer = "";
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        const nl = buffer.indexOf("\n");
+        if (nl === -1) return;
+        const command = JSON.parse(buffer.slice(0, nl)) as { cmd: string };
+        const response =
+          command.cmd === "dump"
+            ? dumped
+            : command.cmd === "dump_scope"
+              ? dumpedScope
+              : command.cmd === "dump_judgment"
+                ? { ok: true, loop_id: LOOP_ID, mode: "verified_context", count: 0, turns: [] }
+                : { ok: false, error: `unexpected ${command.cmd}` };
+        socket.end(JSON.stringify(response) + "\n");
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      canned.once("error", reject);
+      canned.listen(cannedPath, resolve);
+    });
+    cleanups.push(() => new Promise((resolve) => canned.close(resolve)));
+
+    const outDir = mkdtempSync(join(tmpdir(), "lyhna-export-pack-emptyledger-"));
+    cleanups.push(() => rmSync(outDir, { recursive: true, force: true }));
+    const { cli, err } = io();
+    const rc = await runExportPack(["--loop", LOOP_ID, "--out", outDir, "--socket", cannedPath], cli, {});
+    expect(rc).toBe(1);
+    expect(err.join("")).toContain("does not match in-loop receipt count");
+    expect(existsSync(join(outDir, "bundle.json"))).toBe(false);
+  });
 });

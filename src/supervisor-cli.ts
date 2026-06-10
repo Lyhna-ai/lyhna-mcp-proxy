@@ -257,39 +257,53 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   const judgmentTurns = dumpedJudgment.turns as JudgmentTurn[];
 
   // 2) Fold the continuation from the dumped material (the same builders the demo/export use;
-  // every fail-closed export validation still runs inside buildLoopProofBundle).
-  const reduced =
-    judgmentTurns.length > 0
-      ? reduceJudgmentLedger({ loop_id: loopId, scope_ref: finalScope.scope_ref, turns: judgmentTurns, mode })
-      : undefined;
-  const continuation = buildContinuationCapsule({
-    scope_history: scopeHistory,
-    scope_events: scopeEvents,
-    loop: {
-      loop_id: summary.loop_id,
-      goal_hash: summary.goal_hash,
-      sealed: summary.sealed,
-      action_count: summary.action_count
-    },
-    mode,
-    reduced
-  });
-
-  const built = buildLoopProofBundle({
-    receipts,
-    receipts_text: receiptsText,
-    source_env: sourceEnv,
-    capsule: {
-      mode,
-      sealed_scope: finalScope,
+  // every fail-closed export validation still runs inside buildLoopProofBundle). The dumped
+  // ledger is passed through AS IS — including an empty array — so the receipt<->judgment
+  // cross-check always runs: a loop whose receipts prove bind turns the ledger fails to report
+  // (lost/empty recorder state) fails closed instead of exporting a judgment-less pack. A truly
+  // judgment-less loop (no in-loop receipts) still validates green with the empty ledger.
+  let files: string[];
+  try {
+    const reduced = reduceJudgmentLedger({
+      loop_id: loopId,
+      scope_ref: finalScope.scope_ref,
+      turns: judgmentTurns,
+      mode
+    });
+    const continuation = buildContinuationCapsule({
       scope_history: scopeHistory,
-      continuation,
       scope_events: scopeEvents,
-      judgment_turns: judgmentTurns.length > 0 ? judgmentTurns : undefined
-    }
-  });
+      loop: {
+        loop_id: summary.loop_id,
+        goal_hash: summary.goal_hash,
+        sealed: summary.sealed,
+        action_count: summary.action_count
+      },
+      mode,
+      reduced
+    });
 
-  const files = writeProofPackFiles(outDir, built);
+    const built = buildLoopProofBundle({
+      receipts,
+      receipts_text: receiptsText,
+      source_env: sourceEnv,
+      capsule: {
+        mode,
+        sealed_scope: finalScope,
+        scope_history: scopeHistory,
+        continuation,
+        scope_events: scopeEvents,
+        judgment_turns: judgmentTurns
+      }
+    });
+
+    files = writeProofPackFiles(outDir, built);
+  } catch (error) {
+    // Fail-closed export validation (the same checks the export CLI runs). All validation
+    // happens in buildLoopProofBundle BEFORE the first write, so a refused export writes nothing.
+    io.stderr(`export refused for loop ${loopId} (fail closed): ${(error as Error).message}\n`);
+    return 1;
+  }
   io.stdout(
     `exported loop ${summary.loop_id} (${summary.sealed ? "SEALED" : "UNSEALED"}, ` +
       `${summary.action_count} action(s), mode ${mode}) -> ${outDir}\n` +
