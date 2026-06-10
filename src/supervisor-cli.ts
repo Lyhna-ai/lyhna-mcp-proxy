@@ -68,11 +68,33 @@ export function resolveControlTarget(
   return null;
 }
 
-/** Send one newline-delimited JSON command to the control channel; resolve its one-line response. */
-export function controlRequest(target: ControlTarget, command: unknown): Promise<Record<string, unknown>> {
+const CONTROL_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Send one newline-delimited JSON command to the control channel; resolve its one-line response.
+ * FAIL CLOSED on every non-response: a socket that accepts then closes without a complete line
+ * (a stale/wrong supervisor socket, a crashing control server) rejects immediately, and a silent
+ * peer rejects after a timeout — the CLI must never hang indefinitely.
+ */
+export function controlRequest(
+  target: ControlTarget,
+  command: unknown,
+  timeoutMs: number = CONTROL_REQUEST_TIMEOUT_MS
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const socket: Socket =
       "socketPath" in target ? netConnect(target.socketPath) : netConnect(target.port, target.host);
+    let settled = false;
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      action();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`control channel did not respond within ${timeoutMs}ms (fail closed).`)));
+    }, timeoutMs);
     let buffer = "";
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(JSON.stringify(command) + "\n"));
@@ -80,15 +102,19 @@ export function controlRequest(target: ControlTarget, command: unknown): Promise
       buffer += chunk;
       const nl = buffer.indexOf("\n");
       if (nl !== -1) {
-        socket.end();
-        try {
-          resolve(JSON.parse(buffer.slice(0, nl)) as Record<string, unknown>);
-        } catch (error) {
-          reject(new Error(`control channel returned non-JSON: ${(error as Error).message}`));
-        }
+        finish(() => {
+          try {
+            resolve(JSON.parse(buffer.slice(0, nl)) as Record<string, unknown>);
+          } catch (error) {
+            reject(new Error(`control channel returned non-JSON: ${(error as Error).message}`));
+          }
+        });
       }
     });
-    socket.on("error", reject);
+    socket.on("error", (error) => finish(() => reject(error)));
+    socket.on("close", () => {
+      finish(() => reject(new Error("control channel closed before sending a complete response (fail closed).")));
+    });
   });
 }
 
@@ -157,7 +183,13 @@ export async function runCtl(argv: string[], io: CliIo, env: NodeJS.ProcessEnv =
     io.stderr(NO_TARGET);
     return 1;
   }
-  const response = await controlRequest(target, command);
+  let response: Record<string, unknown>;
+  try {
+    response = await controlRequest(target, command);
+  } catch (error) {
+    io.stderr(`control channel request failed: ${(error as Error).message}\n`);
+    return 1;
+  }
   io.stdout(JSON.stringify(response, null, 2) + "\n");
   return response.ok === true ? 0 : 1;
 }
@@ -205,15 +237,28 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
     return 1;
   }
 
+  // Control-channel requests fail closed with a readable message (timeout / closed socket /
+  // connection error) instead of an unhandled rejection or an indefinite hang.
+  const request = async (command: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+    try {
+      return await controlRequest(target, command);
+    } catch (error) {
+      io.stderr(`control channel request failed (${String(command.cmd)}): ${(error as Error).message}\n`);
+      return null;
+    }
+  };
+
   // 1) Dump the recorded chain + scope material + judgment ledger (supervisor-only verbs).
-  const dumped = await controlRequest(target, { cmd: "dump", loop_id: loopId });
+  const dumped = await request({ cmd: "dump", loop_id: loopId });
+  if (dumped === null) return 1;
   if (dumped.ok !== true || !Array.isArray(dumped.receipts) || dumped.receipts.length === 0) {
     io.stderr(`dump failed for loop ${loopId}: ${JSON.stringify(dumped)}\n`);
     return 1;
   }
   const receipts = dumped.receipts as ProofReceipt[];
 
-  const dumpedScope = await controlRequest(target, { cmd: "dump_scope", loop_id: loopId });
+  const dumpedScope = await request({ cmd: "dump_scope", loop_id: loopId });
+  if (dumpedScope === null) return 1;
   if (dumpedScope.ok !== true) {
     io.stderr(`dump_scope failed for loop ${loopId}: ${JSON.stringify(dumpedScope)}\n`);
     return 1;
@@ -256,11 +301,12 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // FAIL CLOSED on a dump error: silently exporting without the judgment artifacts would drop
   // refused turns and runtime hashes from the requested pack — an empty LEDGER is fine (a
   // judgment-less loop), a failed DUMP is not.
-  const dumpedJudgment = await controlRequest(target, {
+  const dumpedJudgment = await request({
     cmd: "dump_judgment",
     loop_id: loopId,
     mode: mode === "verified_context" ? "verified-context" : "proof"
   });
+  if (dumpedJudgment === null) return 1;
   if (dumpedJudgment.ok !== true || !Array.isArray(dumpedJudgment.turns)) {
     io.stderr(`dump_judgment failed for loop ${loopId} (fail closed): ${JSON.stringify(dumpedJudgment)}\n`);
     return 1;

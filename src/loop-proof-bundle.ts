@@ -37,6 +37,7 @@ import {
 } from "./scope-capsule.js";
 import { deriveScopeEventHash, projectScopeEvent, type ScopeEvent } from "./scope-event-recorder.js";
 import {
+  buildContinuationPrompt,
   diffStructural,
   projectContinuationProofMode,
   type ContinuationCapsule,
@@ -1189,6 +1190,42 @@ function buildJudgmentArtifacts(input: {
     };
     if (canonicalScopeJson(continuation.judgment) !== canonicalScopeJson(expected)) {
       throw new Error(`Continuation judgment summary does not match the verified judgment ledger (fail closed).`);
+    }
+  }
+
+  // FAIL CLOSED (plaintext sidecar binding, Verified Context judgment packs only): the structural
+  // check above does not cover the PLAINTEXT the continuation carries, yet HANDOFF.md, the proof
+  // card, and `lyhna-mcp handoff` render that plaintext (settled / open / next / changed /
+  // continuation_prompt) verbatim. A stale or tampered continuation could therefore tell the next
+  // agent false state while judgment-ledger.json holds the real supervisor-declared deltas. Bind
+  // every plaintext field to the VERIFIED reduced fold, and the prompt to a rebuild from verified
+  // values — equal or refused. (Proof Mode projects all of these away; nothing to bind.)
+  if (mode === "verified_context") {
+    const bindPlain = (name: string, got: string[] | undefined, want: string[] | undefined): void => {
+      if (canonicalScopeJson(got ?? []) !== canonicalScopeJson(want ?? [])) {
+        throw new Error(
+          `Continuation plaintext "${name}" does not match the verified judgment fold; the handoff/proof card ` +
+            `would publish unverified plaintext state (fail closed).`
+        );
+      }
+    };
+    bindPlain("settled", continuation.settled, reduced.settled);
+    bindPlain("open_questions", continuation.open_questions, reduced.open_questions);
+    bindPlain("next_actions", continuation.next_actions, reduced.next_actions);
+    bindPlain("changed", continuation.changed, reduced.changed);
+    const expectedPrompt = buildContinuationPrompt({
+      loop_id,
+      scope_ref,
+      final_turn_ref: reduced.final_turn_ref,
+      settled: reduced.settled,
+      open_questions: reduced.open_questions,
+      next_actions: reduced.next_actions
+    });
+    if (continuation.continuation_prompt !== expectedPrompt) {
+      throw new Error(
+        `Continuation continuation_prompt does not match the prompt rebuilt from the verified judgment fold; ` +
+          `the handoff would carry an unverified prompt (fail closed).`
+      );
     }
   }
 

@@ -239,8 +239,17 @@ function projectJudgmentSection(section: ContinuationJudgmentSection): Continuat
 /**
  * A short, human-readable handoff prompt for the next agent / memory system (Verified Context only).
  * Carries the settled/open/next plaintext the supervisor already declared — never any new content.
+ * Exported as the SINGLE source of the prompt text: the export rebuilds it from the VERIFIED
+ * reduced fold and fails closed if a supplied continuation's prompt diverges.
  */
-function buildContinuationPrompt(capsule: ContinuationCapsule): string {
+export function buildContinuationPrompt(capsule: {
+  loop_id: string;
+  scope_ref: string;
+  final_turn_ref?: string | null;
+  settled?: string[];
+  open_questions?: string[];
+  next_actions?: string[];
+}): string {
   const lines = [
     `You are continuing loop ${capsule.loop_id} under scope ${capsule.scope_ref}.`,
     `Start from the verified judgment ledger (final_turn_ref ${capsule.final_turn_ref ?? "—"}), not a transcript.`

@@ -199,6 +199,27 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     expect(response.ok).toBe(true);
   });
 
+  it("ctl fails closed (no hang) when the control socket closes without a response", async () => {
+    const deadPath = join(tmpdir(), `lyhna-dead-control-${process.pid}-${Date.now()}.sock`);
+    const { createServer } = await import("node:net");
+    // Drain (resume) the read side, then FIN: an unconsumed readable would keep the server-side
+    // socket alive and hang server.close() in cleanup.
+    const dead = createServer((socket) => {
+      socket.resume();
+      socket.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      dead.once("error", reject);
+      dead.listen(deadPath, resolve);
+    });
+    cleanups.push(() => new Promise((resolve) => dead.close(resolve)));
+
+    const { cli, err } = io();
+    const rc = await runCtl([JSON.stringify({ cmd: "status" }), "--socket", deadPath], cli, {});
+    expect(rc).toBe(1);
+    expect(err.join("")).toContain("closed before sending a complete response");
+  });
+
   it("ctl propagates a not-ok response as a non-zero exit", async () => {
     const { socketPath } = await runScopedLoop();
     const { cli } = io();
