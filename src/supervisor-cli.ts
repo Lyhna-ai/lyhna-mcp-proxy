@@ -323,6 +323,20 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
     return 0;
   }
 
+  // FAIL CLOSED (sealed-only trio): the handoff/continuation describe the settled state of a
+  // CLOSED loop. An unsealed chain (no terminal loop_close yet) has no final word — exporting
+  // the trio from it would hand the next agent a "closed" continuation built from non-final
+  // state. Close the loop first; there is no downgrade path here on purpose.
+  if (!summary.sealed) {
+    io.stderr(
+      `loop ${loopId} is not sealed (no terminal loop_close in the recorded chain); the capsule trio ` +
+        `describes a CLOSED loop, so exporting now would hand off non-final state. Close the loop first ` +
+        `(e.g. lyhna-mcp ctl '{"cmd":"close","session_id":"<id>","outcome":"COMPLETED","reason":"done"}') ` +
+        `and re-run export-pack (fail closed).\n`
+    );
+    return 1;
+  }
+
   const finalScope = scopeHistory[scopeHistory.length - 1]!;
   const sealedMode = finalScope.structural.privacy_mode === "verified_context" ? "verified_context" : "proof";
   // Default to the scope's sealed mode; downgrading to proof is always allowed. Upgrading is not:
