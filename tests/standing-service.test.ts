@@ -220,10 +220,13 @@ describe("standing service: registry + supervisor control channel", () => {
   it("fails closed for a session with no open loop, before and after close", async () => {
     const { socketPath } = await start();
 
-    // Never opened: tools/call is refused (fail closed). Listing still mirrors.
+    // Never opened: tools/call is refused (fail closed) as a verdict-led
+    // isError result. Listing still mirrors.
     const stranger = await connectAgent("never-opened");
     await expect(stranger.listTools()).resolves.toBeDefined();
-    await expect(stranger.callTool({ toolName: "echo", arguments: { message: "x" } })).rejects.toThrow();
+    await expect(
+      stranger.callTool({ toolName: "echo", arguments: { message: "x" } })
+    ).resolves.toMatchObject({ isError: true });
 
     // Open, use, close — then calls on the now-closed session fail closed again.
     await sendControl(socketPath, { cmd: "open", session_id: "ephemeral", loop_id: "loop_e", goal: "g" });
@@ -232,7 +235,9 @@ describe("standing service: registry + supervisor control channel", () => {
     await sendControl(socketPath, { cmd: "close", session_id: "ephemeral", outcome: "COMPLETED", reason: "done" });
 
     const afterClose = await connectAgent("ephemeral");
-    await expect(afterClose.callTool({ toolName: "echo", arguments: { message: "too late" } })).rejects.toThrow();
+    await expect(
+      afterClose.callTool({ toolName: "echo", arguments: { message: "too late" } })
+    ).resolves.toMatchObject({ isError: true });
   });
 
   it("control channel is topologically distinct from the agent MCP transport and is owner-only", async () => {

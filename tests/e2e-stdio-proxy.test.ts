@@ -89,16 +89,20 @@ describe("stdio upstream MCP proxy e2e", () => {
     });
   });
 
-  it("fails closed and does not forward when bind refuses", async () => {
+  it("fails closed and does not forward when bind refuses — verdict-led isError result, not a protocol error", async () => {
     await startProxy(bindByToolName({ echo: "REFUSED", read_count: "APPROVED" }));
 
     expect(await readEchoCallCount()).toBe(0);
-    await expect(
-      proxyClient.callTool({
-        name: "echo",
-        arguments: { message: "should not forward" }
-      })
-    ).rejects.toThrow(/Bind refused|did not allow forwarding/);
+    const refused = (await proxyClient.callTool({
+      name: "echo",
+      arguments: { message: "should not forward" }
+    })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+    expect(refused.isError).toBe(true);
+    const text = refused.content?.map(c => c.text ?? "").join("\n") ?? "";
+    expect(text).toMatch(/⛔ REFUSED — nothing was executed \(fail closed\)\./);
+    expect(text).toMatch(/Signed receipt: receipt_echo_REFUSED/);
+    // The clean rendering must not leak a protocol-error shape.
+    expect(text).not.toMatch(/MCP error|-32603/);
     expect(await readEchoCallCount()).toBe(0);
   });
 
@@ -117,25 +121,29 @@ describe("stdio upstream MCP proxy e2e", () => {
     });
 
     expect(await readEchoCallCount()).toBe(0);
-    await expect(
-      proxyClient.callTool({
-        name: "echo",
-        arguments: { message: "should not forward" }
-      })
-    ).rejects.toThrow(/Bind failed before upstream execution/);
+    const failedBind = (await proxyClient.callTool({
+      name: "echo",
+      arguments: { message: "should not forward" }
+    })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+    expect(failedBind.isError).toBe(true);
+    expect(failedBind.content?.map(c => c.text ?? "").join("\n")).toMatch(
+      /Bind failed before upstream execution/
+    );
     expect(await readEchoCallCount()).toBe(0);
   });
 
-  it("holds and does not forward when bind escalates", async () => {
+  it("holds and does not forward when bind escalates — held-for-resolution isError result", async () => {
     await startProxy(bindByToolName({ echo: "ESCALATED", read_count: "APPROVED" }));
 
     expect(await readEchoCallCount()).toBe(0);
-    await expect(
-      proxyClient.callTool({
-        name: "echo",
-        arguments: { message: "should be held" }
-      })
-    ).rejects.toThrow(/Bind escalated/);
+    const held = (await proxyClient.callTool({
+      name: "echo",
+      arguments: { message: "should be held" }
+    })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> };
+    expect(held.isError).toBe(true);
+    const heldText = held.content?.map(c => c.text ?? "").join("\n") ?? "";
+    expect(heldText).toMatch(/⏸ HELD FOR RESOLUTION by the declared resolver/);
+    expect(heldText).toMatch(/Bind escalated/);
     expect(await readEchoCallCount()).toBe(0);
   });
 });

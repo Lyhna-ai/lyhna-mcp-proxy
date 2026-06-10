@@ -19,6 +19,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 
 import type { Json } from "../json.js";
 import type { McpToolCall, UpstreamMcpClient } from "../mcp.js";
+import { BindGateError, ScopeGateError } from "../proxy-core.js";
 
 export type McpProxyRequestHandlers = {
   listTools(): Promise<ListToolsResult>;
@@ -73,6 +74,54 @@ const DEFAULT_UPSTREAM_CLIENT_INFO: Implementation = {
   version: "0.1.0"
 };
 
+/**
+ * Render a governance verdict (refusal / hold) as a clean, verdict-led tool
+ * RESULT with `isError: true` instead of letting the SDK wrap the throw as an
+ * opaque protocol error ("MCP error -32603: …"). A refusal is the product
+ * working — the agent (and the person reading its transcript) should see the
+ * verdict, the reason, and the attestation, not a stack-trace-shaped string.
+ *
+ * Only gate verdicts are rendered. Upstream/runtime errors keep their
+ * existing contract and propagate VERBATIM.
+ */
+export function renderGateVerdict(error: unknown): CallToolResult | null {
+  if (error instanceof ScopeGateError) {
+    const held = error.decision === "HOLD_AWAIT_RESOLUTION";
+    const verdict = held ? "⏸ HELD FOR RESOLUTION" : "⛔ REFUSED";
+    const text = [
+      `${verdict} — Lyhna scope gate, before execution.`,
+      `Rule: ${error.scopeDecision.reason}`,
+      `Attested scope event: ${error.scopeEvent.event_hash}`,
+      held
+        ? "The call was not forwarded; it is held for the declared resolver."
+        : "Nothing was executed. This step is outside the sealed scope; if it belongs in the loop, the supervisor can amend the scope over the control channel."
+    ].join("\n");
+    return { content: [{ type: "text", text }], isError: true };
+  }
+
+  if (error instanceof BindGateError) {
+    const held = error.decision === "HOLD_AWAIT_RESOLUTION";
+    const receipt = error.bindResponse;
+    // The error's own message carries the precise cause (refused bind,
+    // unreachable bind, no open loop, unenforceable bound) — keep it.
+    const lines = [
+      held
+        ? "⏸ HELD FOR RESOLUTION by the declared resolver — the call was not forwarded."
+        : "⛔ REFUSED — nothing was executed (fail closed).",
+      error.message
+    ];
+    if (receipt && typeof (receipt as Record<string, unknown>).reason === "string") {
+      lines.push(`Reason: ${(receipt as Record<string, unknown>).reason as string}`);
+    }
+    if (receipt?.receipt_id) {
+      lines.push(`Signed receipt: ${receipt.receipt_id}`);
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }], isError: true };
+  }
+
+  return null;
+}
+
 export function createMcpRequestHandlers(core: UpstreamMcpClient): McpProxyRequestHandlers {
   return {
     async listTools() {
@@ -86,7 +135,15 @@ export function createMcpRequestHandlers(core: UpstreamMcpClient): McpProxyReque
         arguments: toJson(params.arguments ?? {})
       };
 
-      return (await core.callTool(call)) as CallToolResult;
+      try {
+        return (await core.callTool(call)) as CallToolResult;
+      } catch (error) {
+        const verdict = renderGateVerdict(error);
+        if (verdict) {
+          return verdict;
+        }
+        throw error;
+      }
     }
   };
 }

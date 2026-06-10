@@ -164,16 +164,24 @@ export async function captureCapsuleGateLoop({ log = () => {} } = {}) {
       await agent.client.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts", contents: "// fix" } });
       log(`  [agent] in-lane  write_file /checkout/cart.ts -> APPROVED & forwarded`);
 
-      // 2b) OUT-OF-SCOPE attempt — the gate catches it BEFORE execution.
+      // 2b) OUT-OF-SCOPE attempt — the gate catches it BEFORE execution. The
+      // refusal surfaces as a clean isError tool RESULT (verdict-led, not an
+      // opaque protocol error); a thrown error is also accepted for older
+      // adapter builds.
       try {
-        await agent.client.callTool({
+        const refusedResult = await agent.client.callTool({
           toolName: "write_file",
           arguments: { path: "/billing/migrations/2026_ledger.sql", contents: "DROP?" }
         });
-        log(`  [agent] !! out-of-scope write was NOT blocked (UNEXPECTED)`);
+        if (refusedResult && refusedResult.isError) {
+          blockedAttempt = true;
+          log(`  [agent] out-of-scope write_file /billing/migrations/2026_ledger.sql -> REFUSED pre-execution (attested)`);
+        } else {
+          log(`  [agent] !! out-of-scope write was NOT blocked (UNEXPECTED)`);
+        }
       } catch {
         blockedAttempt = true;
-        log(`  [agent] out-of-scope write_file /billing/migrations/2026_ledger.sql -> BLOCKED pre-execution (attested)`);
+        log(`  [agent] out-of-scope write_file /billing/migrations/2026_ledger.sql -> REFUSED pre-execution (attested)`);
       }
 
       // 2c) Corrected in-lane action — a second write to the same allowed target — forwarded.
