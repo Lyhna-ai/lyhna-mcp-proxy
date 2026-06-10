@@ -114,6 +114,13 @@ describe("resolveControlTarget precedence", () => {
   it("rejects an invalid explicit port instead of silently using the env socket", () => {
     expect(resolveControlTarget({ port: "not-a-port" }, env)).toBeNull();
   });
+
+  it("--host alone declares TCP intent: env port pairs with it, the env socket never does", () => {
+    // With an env port available, --host pairs with it (and never resolves the env socket).
+    expect(resolveControlTarget({ host: "127.0.0.5" }, env)).toEqual({ host: "127.0.0.5", port: 9000 });
+    // With no env port, an incomplete TCP target is refused — not silently downgraded to the socket.
+    expect(resolveControlTarget({ host: "127.0.0.5" }, { LYHNA_PROXY_CONTROL_SOCKET: "/env/control.sock" })).toBeNull();
+  });
 });
 
 describe("flag parsing refuses a missing value (never falls back to env)", () => {

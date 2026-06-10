@@ -61,10 +61,16 @@ export function resolveControlTarget(
   };
   if (flags.socket) return { socketPath: flags.socket };
   if (flags.port) return toTcp(flags.port, flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1");
+  const envPort = env.LYHNA_PROXY_CONTROL_PORT?.trim();
+  if (flags.host) {
+    // An explicit --host declares a TCP intent: it must NEVER fall through to an exported env
+    // SOCKET (that would drive a different proxy than the one named). Pair it with the env port
+    // when one is exported; otherwise refuse the incomplete target (fail closed).
+    return envPort ? toTcp(envPort, flags.host) : null;
+  }
   const envSocket = env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   if (envSocket) return { socketPath: envSocket };
-  const envPort = env.LYHNA_PROXY_CONTROL_PORT?.trim();
-  if (envPort) return toTcp(envPort, flags.host ?? env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1");
+  if (envPort) return toTcp(envPort, env.LYHNA_PROXY_CONTROL_HOST?.trim() ?? "127.0.0.1");
   return null;
 }
 
