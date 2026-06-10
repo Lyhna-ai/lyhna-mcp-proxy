@@ -40,6 +40,9 @@ const io = {
   stderr: (text: string) => process.stderr.write(text)
 };
 
+// Verbs set process.exitCode and let the process drain naturally — process.exit() can
+// truncate piped stdout mid-flush (e.g. a large `ctl dump` response redirected to a file),
+// because stdout writes may complete on later event-loop ticks.
 if (verb === undefined || verb === "proxy") {
   // The proxy entry registers its own signal handlers and runs until terminated.
   await import("./http-proxy.js");
@@ -53,17 +56,16 @@ if (verb === undefined || verb === "proxy") {
   process.argv.splice(2, 1);
   await import("./export-loop-proof.js");
 } else if (verb === "ctl") {
-  process.exit(await runCtl(argv.slice(1), io));
+  process.exitCode = await runCtl(argv.slice(1), io);
 } else if (verb === "export-pack") {
-  process.exit(await runExportPack(argv.slice(1), io));
+  process.exitCode = await runExportPack(argv.slice(1), io);
 } else if (verb === "handoff") {
-  process.exit(runHandoff(argv.slice(1), io));
+  process.exitCode = runHandoff(argv.slice(1), io);
 } else if (verb === "post") {
-  process.exit(runPost(argv.slice(1), io));
+  process.exitCode = runPost(argv.slice(1), io);
 } else if (verb === "help" || verb === "--help" || verb === "-h") {
   io.stdout(HELP);
-  process.exit(0);
 } else {
   io.stderr(`unknown command ${JSON.stringify(verb)}\n\n${HELP}`);
-  process.exit(1);
+  process.exitCode = 1;
 }
