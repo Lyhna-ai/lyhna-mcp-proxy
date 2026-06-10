@@ -194,9 +194,12 @@ function withHttpModeDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...env,
     // A present LYHNA_API_KEY selects the hosted gate (the customer path); otherwise the
-    // fail-closed local stub stays the default, exactly as before.
+    // fail-closed local stub stays the default. The stub outcome is deliberately NOT
+    // defaulted to APPROVED here (it used to be, when this entry was a dev transport
+    // shakeout tool): this bin is now the documented install path, and a missing key must
+    // never silently run governed calls under an allow-all stub. Dev shakeout sets
+    // LYHNA_PROXY_STUB_OUTCOME=APPROVED explicitly (see RUNNING.md).
     LYHNA_PROXY_BIND_MODE: env.LYHNA_PROXY_BIND_MODE ?? (env.LYHNA_API_KEY?.trim() ? "hosted" : "stub"),
-    LYHNA_PROXY_STUB_OUTCOME: env.LYHNA_PROXY_STUB_OUTCOME ?? "APPROVED",
     LYHNA_PROXY_UPSTREAM_MODE: env.LYHNA_PROXY_UPSTREAM_MODE ?? "stdio",
     LYHNA_PROXY_UPSTREAM_COMMAND: env.LYHNA_PROXY_UPSTREAM_COMMAND ?? process.execPath,
     LYHNA_PROXY_UPSTREAM_ARGS_JSON:

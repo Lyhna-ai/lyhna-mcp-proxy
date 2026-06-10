@@ -242,15 +242,19 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   }
 
   // The control channel projects judgment turns under min(requested, sealed) mode server-side.
+  // FAIL CLOSED on a dump error: silently exporting without the judgment artifacts would drop
+  // refused turns and runtime hashes from the requested pack — an empty LEDGER is fine (a
+  // judgment-less loop), a failed DUMP is not.
   const dumpedJudgment = await controlRequest(target, {
     cmd: "dump_judgment",
     loop_id: loopId,
     mode: mode === "verified_context" ? "verified-context" : "proof"
   });
-  const judgmentTurns =
-    dumpedJudgment.ok === true && Array.isArray(dumpedJudgment.turns)
-      ? (dumpedJudgment.turns as JudgmentTurn[])
-      : [];
+  if (dumpedJudgment.ok !== true || !Array.isArray(dumpedJudgment.turns)) {
+    io.stderr(`dump_judgment failed for loop ${loopId} (fail closed): ${JSON.stringify(dumpedJudgment)}\n`);
+    return 1;
+  }
+  const judgmentTurns = dumpedJudgment.turns as JudgmentTurn[];
 
   // 2) Fold the continuation from the dumped material (the same builders the demo/export use;
   // every fail-closed export validation still runs inside buildLoopProofBundle).

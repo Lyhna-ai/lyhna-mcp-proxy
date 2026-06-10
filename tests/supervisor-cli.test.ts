@@ -233,4 +233,60 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     expect(rc).toBe(1);
     expect(err.join("")).toContain("no control channel configured");
   });
+
+  it("export-pack fails closed (does not silently downgrade) when dump_judgment is unavailable", async () => {
+    // A standing service WITHOUT a judgment recorder: dump_judgment answers ok:false. The export
+    // must refuse rather than emit a judgment-less pack that drops refused turns / runtime hashes.
+    const recorder = createReceiptRecorder();
+    const scopeEvents = createScopeEventRecorder();
+    const bindClient = recorder.wrap(createSyntheticDemoBindClient());
+    const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 2000, retryDelayMs: 50 }, scopeEvents);
+
+    const standing: StandingHttpProxy = await serveStandingHttpProxy({
+      upstream: syntheticUpstream(),
+      bindClient,
+      registry,
+      host: "127.0.0.1",
+      port: 0,
+      path: "/mcp"
+    });
+    cleanups.push(() => standing.close());
+
+    const socketPath = join(tmpdir(), `lyhna-supervisor-cli-nojudg-${process.pid}-${Date.now()}.sock`);
+    const control: ControlChannelHandle = await serveControlChannel({
+      transport: "unix",
+      socketPath,
+      registry,
+      receiptSource: recorder,
+      scopeEventSource: scopeEvents
+    });
+    cleanups.push(() => control.close());
+
+    const opened = await sendControl(socketPath, {
+      cmd: "open",
+      session_id: SESSION_ID,
+      loop_id: LOOP_ID,
+      goal: GOAL,
+      scope_capsule: SCOPE_CAPSULE,
+      scope_class_map: SCOPE_CLASS_MAP
+    });
+    expect(opened.ok).toBe(true);
+
+    const agent = await connectStreamableHttpUpstream(standing.sessionUrl(SESSION_ID));
+    try {
+      await agent.client.callTool({ toolName: "write_file", arguments: { path: TARGET, contents: "// fix" } });
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    const closed = await sendControl(socketPath, { cmd: "close", session_id: SESSION_ID, outcome: "COMPLETED", reason: "done" });
+    expect(closed.sealed).toBe(true);
+
+    const outDir = mkdtempSync(join(tmpdir(), "lyhna-export-pack-nojudg-"));
+    cleanups.push(() => rmSync(outDir, { recursive: true, force: true }));
+    const { cli, err } = io();
+    const rc = await runExportPack(["--loop", LOOP_ID, "--out", outDir, "--socket", socketPath], cli, {});
+    expect(rc).toBe(1);
+    expect(err.join("")).toContain("dump_judgment failed");
+    expect(existsSync(join(outDir, "bundle.json"))).toBe(false);
+  });
 });

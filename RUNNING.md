@@ -101,14 +101,15 @@ HTTP mode defaults to:
 ```text
 transport: mcp.client.streamable_http
 url: http://127.0.0.1:8765/mcp
-bind: stub:APPROVED
+bind: stub:REFUSED   (fail closed — this bin is the install path; an allow-all default is not safe)
 upstream: @modelcontextprotocol/server-filesystem
 allowed filesystem root: C:\Users\Adam\lyhna-mcp-proxy
 ```
 
-Start the HTTP proxy:
+Start the HTTP proxy (set the stub outcome explicitly for forwarding shakeout):
 
 ```powershell
+$env:LYHNA_PROXY_STUB_OUTCOME='APPROVED'
 npm.cmd run start:proxy:http
 ```
 
