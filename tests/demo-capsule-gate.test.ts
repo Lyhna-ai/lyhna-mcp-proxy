@@ -127,10 +127,11 @@ describe("capsule gate demo: open(scope) -> in-lane -> out-of-scope BLOCKED -> c
     // In-lane write: forwarded to upstream.
     await agent.callTool({ toolName: "write_file", arguments: { path: "/checkout/cart.ts", contents: "// fix" } });
 
-    // Out-of-scope write: BLOCKED before execution (the MCP call rejects).
+    // Out-of-scope write: BLOCKED before execution — surfaced as a clean
+    // verdict-led isError result, never an opaque protocol error.
     await expect(
       agent.callTool({ toolName: "write_file", arguments: { path: "/billing/migrations/2026_ledger.sql" } })
-    ).rejects.toBeTruthy();
+    ).resolves.toMatchObject({ isError: true });
 
     // Corrected in-lane action: forwarded.
     await agent.callTool({ toolName: "run_tests", arguments: { suite: "checkout" } });

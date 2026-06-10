@@ -332,14 +332,14 @@ export function createProxyCore(options: ProxyCoreOptions): UpstreamMcpClient {
       if (decision === "HOLD_AWAIT_RESOLUTION") {
         throw new BindGateError(
           decision,
-          "Bind escalated; call is held and was not forwarded.",
+          "Bind escalated; the call is held for resolution by the declared resolver and was not forwarded.",
           bindResponse
         );
       }
 
       throw new BindGateError(
         decision,
-        "Bind refused or did not allow forwarding; call was not forwarded.",
+        "Bind refused; the call was not forwarded (fail closed).",
         bindResponse
       );
     }

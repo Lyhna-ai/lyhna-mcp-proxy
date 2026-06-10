@@ -207,7 +207,7 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
       await agent.client.callTool({ toolName: "write_file", arguments: { path: TARGET, contents: "// fix" } });
       await expect(
         agent.client.callTool({ toolName: "write_file", arguments: { path: "/billing/x.sql", contents: "no" } })
-      ).rejects.toThrow();
+      ).resolves.toMatchObject({ isError: true });
       await agent.client.callTool({ toolName: "run_tests", arguments: { suite: "checkout" } });
     } finally {
       await agent.close().catch(() => undefined);
