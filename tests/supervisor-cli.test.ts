@@ -116,6 +116,41 @@ describe("resolveControlTarget precedence", () => {
   });
 });
 
+describe("flag parsing refuses a missing value (never falls back to env)", () => {
+  function io() {
+    const out: string[] = [];
+    const err: string[] = [];
+    const cli: CliIo = { stdout: (t) => out.push(t), stderr: (t) => err.push(t) };
+    return { cli, out, err };
+  }
+
+  it("ctl with a bare --socket fails parsing instead of driving the env-configured proxy", async () => {
+    const { cli, err } = io();
+    // An exported env target is present — a missing --socket value must NOT fall back to it.
+    const rc = await runCtl([JSON.stringify({ cmd: "status" }), "--socket"], cli, {
+      LYHNA_PROXY_CONTROL_SOCKET: "/env/control.sock"
+    });
+    expect(rc).toBe(1);
+    expect(err.join("")).toContain("--socket requires a value");
+  });
+
+  it("ctl with a bare --file fails parsing", async () => {
+    const { cli, err } = io();
+    const rc = await runCtl(["--file"], cli, {});
+    expect(rc).toBe(1);
+    expect(err.join("")).toContain("--file requires a value");
+  });
+
+  it("export-pack with bare value flags fails parsing", async () => {
+    for (const flag of ["--loop", "--out", "--mode", "--source-env", "--port", "--host"]) {
+      const { cli, err } = io();
+      const rc = await runExportPack([flag], cli, { LYHNA_PROXY_CONTROL_SOCKET: "/env/control.sock" });
+      expect(rc, `${flag} must be refused without a value`).toBe(1);
+      expect(err.join("")).toContain(`${flag} requires a value`);
+    }
+  });
+});
+
 describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
   const cleanups: Array<() => Promise<unknown> | unknown> = [];
   afterEach(async () => {

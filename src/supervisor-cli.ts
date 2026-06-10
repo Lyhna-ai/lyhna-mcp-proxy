@@ -120,21 +120,31 @@ export function controlRequest(
 
 type CommonFlags = { socket?: string; host?: string; port?: string };
 
-function takeCommonFlag(flags: CommonFlags, argv: string[], i: number): number | null {
+/**
+ * Read the value of a value-taking flag, REQUIRING a non-empty, non-flag token. A bare
+ * `--socket` (value forgotten) must be a parse error, never a silent `undefined` that lets
+ * resolveControlTarget fall back to an exported env target — that could drive a supervisor
+ * command (e.g. `close`) against the wrong standing proxy.
+ */
+function takeFlagValue(argv: string[], i: number): string | null {
+  const value = argv[i + 1];
+  if (value === undefined || value.length === 0 || value.startsWith("-")) return null;
+  return value;
+}
+
+const COMMON_FLAG_NAMES = new Set(["--socket", "--host", "--port"]);
+
+type CommonFlagParse = { next: number } | { error: string } | null;
+
+function takeCommonFlag(flags: CommonFlags, argv: string[], i: number): CommonFlagParse {
   const a = argv[i]!;
-  if (a === "--socket") {
-    flags.socket = argv[i + 1];
-    return i + 1;
-  }
-  if (a === "--host") {
-    flags.host = argv[i + 1];
-    return i + 1;
-  }
-  if (a === "--port") {
-    flags.port = argv[i + 1];
-    return i + 1;
-  }
-  return null;
+  if (!COMMON_FLAG_NAMES.has(a)) return null;
+  const value = takeFlagValue(argv, i);
+  if (value === null) return { error: `${a} requires a value` };
+  if (a === "--socket") flags.socket = value;
+  else if (a === "--host") flags.host = value;
+  else flags.port = value;
+  return { next: i + 1 };
 }
 
 const NO_TARGET =
@@ -148,13 +158,24 @@ export async function runCtl(argv: string[], io: CliIo, env: NodeJS.ProcessEnv =
   let file: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]!;
-    const skipped = takeCommonFlag(flags, argv, i);
-    if (skipped !== null) {
-      i = skipped;
+    const common = takeCommonFlag(flags, argv, i);
+    if (common !== null) {
+      if ("error" in common) {
+        io.stderr(`${common.error}.\n${CTL_USAGE}`);
+        return 1;
+      }
+      i = common.next;
       continue;
     }
-    if (a === "--file") file = argv[++i];
-    else if (a === "--help" || a === "-h") {
+    if (a === "--file") {
+      const value = takeFlagValue(argv, i);
+      if (value === null) {
+        io.stderr(`--file requires a value.\n${CTL_USAGE}`);
+        return 1;
+      }
+      file = value;
+      i += 1;
+    } else if (a === "--help" || a === "-h") {
       io.stdout(CTL_USAGE);
       return 0;
     } else if (a.startsWith("-")) {
@@ -208,18 +229,30 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   let outDir: string | undefined;
   let modeFlag: ScopePrivacyMode | undefined;
   let sourceEnv = "lyhna-mcp export-pack";
+  const VALUE_FLAGS = new Set(["--loop", "--out", "--mode", "--source-env"]);
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]!;
-    const skipped = takeCommonFlag(flags, argv, i);
-    if (skipped !== null) {
-      i = skipped;
+    const common = takeCommonFlag(flags, argv, i);
+    if (common !== null) {
+      if ("error" in common) {
+        io.stderr(`${common.error}.\n${EXPORT_PACK_USAGE}`);
+        return 1;
+      }
+      i = common.next;
       continue;
     }
-    if (a === "--loop") loopId = argv[++i];
-    else if (a === "--out") outDir = argv[++i];
-    else if (a === "--mode") modeFlag = normalizeMode(argv[++i]);
-    else if (a === "--source-env") sourceEnv = argv[++i] ?? sourceEnv;
-    else if (a === "--help" || a === "-h") {
+    if (VALUE_FLAGS.has(a)) {
+      const value = takeFlagValue(argv, i);
+      if (value === null) {
+        io.stderr(`${a} requires a value.\n${EXPORT_PACK_USAGE}`);
+        return 1;
+      }
+      i += 1;
+      if (a === "--loop") loopId = value;
+      else if (a === "--out") outDir = value;
+      else if (a === "--mode") modeFlag = normalizeMode(value);
+      else sourceEnv = value;
+    } else if (a === "--help" || a === "-h") {
       io.stdout(EXPORT_PACK_USAGE);
       return 0;
     } else {
