@@ -42,6 +42,7 @@ import {
   type ContinuationCapsule,
   type ContinuationJudgmentSection
 } from "./continuation-capsule.js";
+import { renderHandoffMarkdown } from "./handoff.js";
 import {
   JUDGMENT_LEDGER_VERSION,
   projectTurn,
@@ -128,6 +129,8 @@ export type BundleCapsuleSection = {
   scope_ref: string;
   scope_capsule_file: "scope-capsule.json";
   continuation_capsule_file: "continuation-capsule.json";
+  /** The next-agent handoff artifact (THE HANDOFF face of the capsule trio). */
+  handoff_file: "HANDOFF.md";
   /** Attested scope events, referenced by hash (the halt is visible/verifiable here). */
   scope_events: { count: number; event_hashes: string[] };
   /**
@@ -224,6 +227,7 @@ export type BuiltLoopProofBundle = {
   continuation_capsule?: ContinuationCapsule;
   scope_events?: ScopeEvent[];
   proof_card_markdown?: string;
+  handoff_markdown?: string;
   verify_instructions_markdown?: string;
   // --- Capsule Gate 2 artifacts (present only when input.capsule.judgment_turns was supplied) ---
   judgment_ledger?: JudgmentLedgerExport;
@@ -445,6 +449,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
   let continuation_capsule: ContinuationCapsule | undefined;
   let scope_events: ScopeEvent[] | undefined;
   let proof_card_markdown: string | undefined;
+  let handoff_markdown: string | undefined;
   let verify_instructions_markdown: string | undefined;
   let judgment_ledger: JudgmentLedgerExport | undefined;
   let judgment_ledger_markdown: string | undefined;
@@ -852,6 +857,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       scope_ref: finalScope.scope_ref,
       scope_capsule_file: "scope-capsule.json",
       continuation_capsule_file: "continuation-capsule.json",
+      handoff_file: "HANDOFF.md",
       scope_events: {
         count: scope_events.length,
         event_hashes: scope_events.map((e) => e.event_hash)
@@ -870,6 +876,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     };
 
     proof_card_markdown = renderProofCardMarkdown(bundle, continuation_capsule);
+    // THE HANDOFF renders from the PROJECTED continuation (mode-appropriate), so a Proof Mode
+    // handoff is structural-only by construction — it never sees the plaintext sidecar.
+    handoff_markdown = renderHandoffMarkdown(continuation_capsule);
     verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle);
   }
 
@@ -885,6 +894,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     continuation_capsule,
     scope_events,
     proof_card_markdown,
+    handoff_markdown,
     verify_instructions_markdown,
     judgment_ledger,
     judgment_ledger_markdown,
@@ -1250,44 +1260,137 @@ export function renderGraphNodeMarkdown(node: AuthorityContextGraphNode): string
   ].join("\n");
 }
 
+/** Display-only short form of a long ref/hash (the full value stays in the pack's JSON artifacts). */
+function shortRef(value: string): string {
+  const sep = value.lastIndexOf(":");
+  if (sep !== -1 && value.length - sep > 17) {
+    return `${value.slice(0, sep + 1)}${value.slice(sep + 1, sep + 9)}…`;
+  }
+  return value.length > 24 ? `${value.slice(0, 16)}…` : value;
+}
+
 /**
- * proof-card.md — a one-page human summary of the proof pack (Capsule Gate 1). Content-blind:
- * carries goal_hash, scope_ref, structural counts, and attested scope-event hashes — never the
- * plaintext goal or plan.
+ * proof-card.md — THE CARD: the human-facing face of the capsule, sized and shaped to paste
+ * directly into a GitHub PR comment or a Slack thread. Verdict summary first, refused/attested
+ * steps prominent, the verify one-liner at the bottom. Content-blind in Proof Mode: it carries
+ * goal_hash / scope_ref / structural counts / attested hashes — never the plaintext goal or plan
+ * (the Verified Context card may additionally carry the supervisor-declared settled/open/next).
+ *
+ * Every claim on the card is backed by the pack it ships in: the verdict counts and refused
+ * steps render from the continuation's judgment section, which buildLoopProofBundle has already
+ * proven equal to the verified reduced fold (fail closed) before this renderer runs.
  */
 export function renderProofCardMarkdown(
   bundle: LoopProofBundle,
   continuation: ContinuationCapsule
 ): string {
   const cap = bundle.capsule;
+  const j = continuation.judgment;
+  const sealedBadge = bundle.loop.sealed ? "✅ SEALED" : "⚠️ UNSEALED";
+
+  // Scannable verdict summary line. With a judgment ledger the verified verdict counts lead;
+  // without one (a Gate 1 pack) fall back to the structural action/refusal counts.
+  const summary = j
+    ? `**${j.verdict_counts.APPROVED} approved · ${j.verdict_counts.REFUSED} refused · ` +
+      `${j.verdict_counts.ESCALATED} escalated** — ${j.turn_count} judgment turn(s), every verdict ` +
+      `anchored to a signed receipt or an attested scope event.`
+    : `**${bundle.loop.action_count} action(s) ran in-lane · ${cap?.scope_events.count ?? 0} attested ` +
+      `scope event(s)** under a sealed scope capsule.`;
+
   const lines = [
-    `# Loop Proof Card`,
+    `# Lyhna Proof Card — ${sealedBadge}`,
     ``,
-    `| field | value |`,
+    summary,
+    ``,
+    `| | |`,
     `| --- | --- |`,
-    `| loop_id | \`${bundle.loop.loop_id}\` |`,
-    `| goal_hash | \`${bundle.loop.goal_hash}\` |`,
-    `| sealed | **${bundle.loop.sealed ? "SEALED ✓" : "UNSEALED ✗"}** |`,
-    `| action_count | ${bundle.loop.action_count} |`,
-    `| receipt_count | ${bundle.loop.receipt_count} |`,
-    `| scope_ref | \`${cap?.scope_ref ?? "—"}\` |`,
+    `| loop | \`${bundle.loop.loop_id}\` |`,
+    `| outcome | **${bundle.loop.sealed ? "SEALED ✓" : "UNSEALED ✗"}** — ${bundle.loop.action_count} action(s), ${bundle.loop.receipt_count} signed receipt(s) |`,
+    `| scope | \`${cap ? shortRef(cap.scope_ref) : "—"}\` · ${continuation.what_changed.length} amendment(s) |`,
+    ...(j
+      ? [
+          `| judgment ledger | ${j.turn_count} turn(s) · final \`${j.final_turn_ref ? shortRef(j.final_turn_ref) : "—"}\` |`
+        ]
+      : []),
+    `| signer | \`${bundle.trust_root.key_id}\` |`,
     `| mode | \`${cap?.mode ?? "—"}\` |`,
-    `| attested scope events | ${cap?.scope_events.count ?? 0} |`,
-    `| amendments | ${continuation.what_changed.length} |`,
-    `| trust_root.key_id | \`${bundle.trust_root.key_id}\` |`,
-    `| content_digest | \`sha256:${bundle.export.content_digest.value}\` |`,
-    ``,
-    `> Content-blind: only \`goal_hash\` / \`scope_ref\` / hashes are carried — never the`,
-    `> plaintext goal or plan. Verify independently: see \`verify-instructions.md\`.`,
     ``
   ];
-  if ((cap?.scope_events.count ?? 0) > 0) {
-    lines.push(`## Attested scope refusals / escalations`, ``);
+
+  // Refused / attested steps — the load-bearing section. The agent cannot author or omit these:
+  // each is committed by an attested scope event or a signed REFUSED receipt in the pack.
+  const refused = j?.refused_steps ?? [];
+  if (refused.length > 0) {
+    lines.push(
+      `## ⛔ Refused — and attested`,
+      ``,
+      `The gate stopped these steps before execution. Each one is committed by hash in the`,
+      `verified chain — the run cannot report itself clean:`,
+      ``
+    );
+    for (const s of refused) {
+      const anchor = s.scope_event_hash
+        ? `attested event \`${shortRef(s.scope_event_hash)}\``
+        : s.receipt_id
+          ? `signed receipt \`${s.receipt_id}\``
+          : `—`;
+      lines.push(
+        `- **Turn ${s.turn_index} — ${s.kind}** (${s.source}${s.reason_code ? `, rule \`${s.reason_code}\`` : ""}) — ` +
+          `${s.corrected ? "corrected by a later approved step" : "not corrected"} · ${anchor}`
+      );
+    }
+    lines.push(``);
+  } else if ((cap?.scope_events.count ?? 0) > 0) {
+    lines.push(`## ⛔ Attested scope refusals / escalations`, ``);
     for (const e of continuation.scope_events) {
-      lines.push(`- **${e.decision}** ${e.event_type} (rule: ${e.matched_rule ?? "—"}) — \`${e.event_hash}\``);
+      lines.push(`- **${e.decision}** ${e.event_type} (rule: \`${e.matched_rule ?? "—"}\`) — \`${shortRef(e.event_hash)}\``);
     }
     lines.push(``);
   }
+
+  // Verified Context Mode only: the supervisor-declared state of the work. Proof Mode packs are
+  // content-blind and never carry these fields (the export projection already stripped them).
+  if (continuation.settled?.length || continuation.open_questions?.length || continuation.next_actions?.length || continuation.changed?.length) {
+    lines.push(`## Where this run left the work`, ``);
+    if (continuation.settled?.length) lines.push(`**Settled**`, ...continuation.settled.map((s) => `- ${s}`), ``);
+    if (continuation.open_questions?.length) lines.push(`**Open**`, ...continuation.open_questions.map((s) => `- ${s}`), ``);
+    if (continuation.next_actions?.length) lines.push(`**Next**`, ...continuation.next_actions.map((s) => `- ${s}`), ``);
+    if (continuation.changed?.length) lines.push(`**Changed**`, ...continuation.changed.map((s) => `- ${s}`), ``);
+  }
+
+  lines.push(
+    `## Verify it yourself`,
+    ``,
+    "```",
+    `npx lyhna-verify --chain receipts.json`,
+    "```",
+    ``,
+    `No Lyhna account, no network trust: the standalone verifier checks every Ed25519 signature`,
+    `offline against the public key pinned in this pack. The sealed verdict above is advisory`,
+    `until you re-run it.${j ? " Full turn-by-turn path: `judgment-ledger.md`." : ""} Next-agent handoff:`,
+    `\`HANDOFF.md\`.`,
+    ``,
+    `<details>`,
+    `<summary>Full identifiers (pinned key, digests, refs)</summary>`,
+    ``,
+    `| field | value |`,
+    `| --- | --- |`,
+    `| goal_hash | \`${bundle.loop.goal_hash}\` |`,
+    `| scope_ref | \`${cap?.scope_ref ?? "—"}\` |`,
+    ...(j ? [`| final_turn_ref | \`${j.final_turn_ref ?? "—"}\` |`] : []),
+    `| trust_root.ed25519_public_key | \`${bundle.trust_root.ed25519_public_key}\` |`,
+    `| content_digest | \`sha256:${bundle.export.content_digest.value}\` (over \`receipts.json\`) |`,
+    ...(cap && cap.scope_events.count > 0
+      ? cap.scope_events.event_hashes.map((h, i) => `| scope event ${i} | \`${h}\` |`)
+      : []),
+    ``,
+    `</details>`,
+    ``,
+    `> Content-blind: this card carries \`goal_hash\` / \`scope_ref\` / hashes — never the`,
+    `> plaintext goal or plan${cap?.mode === "verified_context" ? " (Verified Context Mode adds only the supervisor-declared sidecar)" : ""}.`,
+    `> Verify instructions: \`verify-instructions.md\`.`,
+    ``
+  );
   return lines.join("\n");
 }
 

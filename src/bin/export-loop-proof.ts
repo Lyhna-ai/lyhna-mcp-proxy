@@ -14,7 +14,8 @@
 //   <out>/scope-capsule.json        the sealed Scope Capsule (structural-only in Proof Mode)
 //   <out>/continuation-capsule.json the Continuation Capsule (settled/open/next + what changed)
 //   <out>/scope-events.json         attested scope refusals/escalations (if any)
-//   <out>/proof-card.md             one-page human summary
+//   <out>/proof-card.md             THE CARD — one-page human summary (PR-comment ready)
+//   <out>/HANDOFF.md                THE HANDOFF — paste-ready next-agent continuation
 //   <out>/verify-instructions.md    how to cold-verify the pack
 //
 // CAPSULE GATE 2 (additive, optional). When --judgment is also supplied, ALSO writes:
@@ -155,6 +156,9 @@ function main(): void {
     }
     if (built.proof_card_markdown) {
       writeFileSync(path.join(args.out, "proof-card.md"), built.proof_card_markdown);
+    }
+    if (built.handoff_markdown) {
+      writeFileSync(path.join(args.out, "HANDOFF.md"), built.handoff_markdown);
     }
     if (built.verify_instructions_markdown) {
       writeFileSync(path.join(args.out, "verify-instructions.md"), built.verify_instructions_markdown);
