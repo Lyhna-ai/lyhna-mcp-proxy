@@ -421,7 +421,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     verifier: {
       name: "lyhna-verify",
       independent: true,
-      reproduce: "lyhna-verify --chain receipts.json"
+      reproduce: "npx -y lyhna-verify --chain receipts.json"
     },
     result: input.advisory_verdict ?? null
   };

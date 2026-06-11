@@ -102,6 +102,9 @@ describe("buildLoopProofBundle (side-car shape)", () => {
     });
     expect(built.bundle.verdict.advisory).toBe(true);
     expect(built.bundle.verdict.verifier.name).toBe("lyhna-verify");
+    // The machine-readable reproduce command must run as written in a cold
+    // environment — same rule as every human-facing verify instruction.
+    expect(built.bundle.verdict.verifier.reproduce).toBe("npx -y lyhna-verify --chain receipts.json");
     expect(built.bundle.verdict.result).toEqual(fakeVerdict);
   });
 
