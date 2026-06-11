@@ -180,6 +180,14 @@ describe("THE CARD — proof-card.md", () => {
     expect(card.indexOf("⛔ Refused")).toBeLessThan(card.indexOf("npx -y lyhna-verify"));
   });
 
+  it("verify-instructions.md's cold-verify command runs as written in a cold environment", () => {
+    const { built } = build("verified_context");
+    const instructions = built.verify_instructions_markdown!;
+    expect(instructions).toContain("npx -y lyhna-verify --chain receipts.json --json");
+    // No bare invocation left: every runnable command line carries npx -y.
+    expect(instructions).not.toMatch(/^lyhna-verify /m);
+  });
+
   it("keeps refused/attested steps prominent with rule, correction status, and anchor", () => {
     const { f, built } = build("verified_context");
     const card = built.proof_card_markdown!;

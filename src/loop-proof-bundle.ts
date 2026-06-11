@@ -1442,7 +1442,7 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
     `## 1. Cold-verify the signed receipt chain`,
     ``,
     `\`\`\``,
-    `lyhna-verify --chain receipts.json --json`,
+    `npx -y lyhna-verify --chain receipts.json --json`,
     `\`\`\``,
     ``,
     `Expect a single chain with \`sealed: true\`, continuity/loop_id/goal_hash consistency, and`,
