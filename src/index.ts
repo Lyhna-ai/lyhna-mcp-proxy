@@ -70,6 +70,7 @@ export type {
   ScopeCapsuleExport,
   ScopeDecision,
   ScopeDecisionKind,
+  ScopeInheritsLoop,
   ScopePrivacyMode,
   ScopeSidecarProjection,
   ScopeStructuralDescriptor,
