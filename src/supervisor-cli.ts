@@ -321,7 +321,7 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
         `handoff / judgment artifacts). Open loops with a scope_capsule to export the full capsule trio.\n`
     );
     io.stdout(`wrote ${files.length} file(s) to ${outDir}: ${files.join(", ")}\n`);
-    io.stdout(`verify: npx lyhna-verify --chain ${outDir}/receipts.json\n`);
+    io.stdout(`verify: npx -y lyhna-verify --chain ${outDir}/receipts.json\n`);
     return 0;
   }
 
@@ -420,7 +420,7 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
     `exported loop ${summary.loop_id} (${summary.sealed ? "SEALED" : "UNSEALED"}, ` +
       `${summary.action_count} action(s), mode ${mode}) -> ${outDir}\n` +
       `  ${files.join(", ")}\n` +
-      `verify: npx lyhna-verify --chain ${outDir}/receipts.json\n`
+      `verify: npx -y lyhna-verify --chain ${outDir}/receipts.json\n`
   );
   return 0;
 }

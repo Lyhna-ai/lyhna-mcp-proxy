@@ -10,7 +10,7 @@ trio for a loop your own agent ran:
 
 All three are folded from the loop's sealed, during-run judgment ledger and anchored to
 signed receipts — the agent cannot author its own report card. Anyone can verify the pack
-offline: `npx lyhna-verify --chain receipts.json`.
+offline: `npx -y lyhna-verify --chain receipts.json`.
 
 Two keys, never conflated: your **API key** (`LYHNA_API_KEY`) is a Bearer credential that
 authenticates your tenant to the hosted gate. The **Ed25519 signing key** that signs
@@ -132,15 +132,21 @@ not a silent error.
 
 ### 4. Close, export, verify, hand off
 
+Save as `close.json`:
+
+```json
+{ "cmd": "close", "session_id": "s1", "outcome": "COMPLETED", "reason": "done" }
+```
+
 ```bash
 # seal the loop (supervisor verb — the agent cannot do this)
-npx -y @lyhna/mcp ctl '{"cmd":"close","session_id":"s1","outcome":"COMPLETED","reason":"done"}'
+npx -y @lyhna/mcp ctl --file close.json
 
 # export the full proof pack — the capsule trio — in one command
 npx -y @lyhna/mcp export-pack --loop loop-quickstart-1 --out ./proof-pack
 
 # verify it yourself: offline, trust-no-one, no Lyhna account
-npx lyhna-verify --chain ./proof-pack/receipts.json
+npx -y lyhna-verify --chain ./proof-pack/receipts.json
 
 # print the paste-ready handoff for your next agent session
 npx -y @lyhna/mcp handoff ./proof-pack
@@ -157,15 +163,28 @@ npx -y @lyhna/mcp post --pr 42 ./proof-pack --repo your-org/your-repo
 ### Recording what the run settled (optional, supervisor-only)
 
 While the loop is open you can attach declared state deltas to approved turns; they fold
-into the continuation/handoff (`settled` / `open_questions` / `next_actions` / `changed`):
+into the continuation/handoff (`settled` / `open_questions` / `next_actions` / `changed`).
+Save as `dump.json` and `delta.json`:
+
+```json
+{ "cmd": "dump_judgment", "loop_id": "loop-quickstart-1" }
+```
+
+```json
+{ "cmd": "record_delta", "loop_id": "loop-quickstart-1", "turn_ref": "<an approved turn_ref>", "delta": { "settled": ["checkout fix written"] } }
+```
 
 ```bash
-npx -y @lyhna/mcp ctl '{"cmd":"dump_judgment","loop_id":"loop-quickstart-1"}'
-npx -y @lyhna/mcp ctl '{"cmd":"record_delta","loop_id":"loop-quickstart-1","turn_ref":"<an approved turn_ref>","delta":{"settled":["checkout fix written"]}}'
+npx -y @lyhna/mcp ctl --file dump.json
+npx -y @lyhna/mcp ctl --file delta.json
 ```
 
 This is a control-channel verb: the agent can never declare its own deltas, and deltas are
 during-run only — a sealed loop refuses them.
+
+> Advanced (POSIX shells only): `ctl` also accepts the JSON inline as a single-quoted
+> argument, e.g. `npx -y @lyhna/mcp ctl '{"cmd":"status"}'`. Quoting rules differ across
+> shells (PowerShell and cmd.exe mangle it) — `--file` is the documented form.
 
 ---
 
@@ -184,9 +203,10 @@ allowed: `export-pack --mode proof`.
   — your key only ever travels to `api.lyhna.com`; use the guarded `http` mode (see
   `RUNNING.md`) for a custom bind URL.
 - The proxy exits with `MCP error -32001: Request timed out` at startup — the upstream
-  `npx` download took longer than the 60s connect window. Warm it once
-  (`npx -y @modelcontextprotocol/server-filesystem --help`, or `npm i` it into your
-  project) and restart.
+  `npx` download took longer than the 60s connect window. Warm the download once
+  (`npm install @modelcontextprotocol/server-filesystem` in your project — the npx cache
+  then has it) and restart. Simply starting the proxy again also works: the partial
+  download resumes from cache.
 - A call fails with a refusal — check the scope: the tool's `action_class` must be in
   `allowed_action_classes`. The class comes from your `scope_class_map`; a tool you did
   not map falls back to a name heuristic (`*test*` → `run_tests`; `*write*`/`*edit*`/

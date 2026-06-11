@@ -85,7 +85,7 @@ export function runHandoff(argv: string[], io: CliIo): number {
   // Reader honesty: stderr only (stdout stays clean for piping/pasting).
   io.stderr(
     `[lyhna] handoff read from ${path.join(packDir, "continuation-capsule.json")} — a pack is untrusted ` +
-      `until verified: npx lyhna-verify --chain ${path.join(packDir, "receipts.json")}\n`
+      `until verified: npx -y lyhna-verify --chain ${path.join(packDir, "receipts.json")}\n`
   );
   return 0;
 }
