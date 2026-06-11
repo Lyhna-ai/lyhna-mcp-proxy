@@ -60,6 +60,8 @@ capsule, attested refusals, judgment ledger) needs the supervisor surface — th
 
 ### 1. Start the governed proxy (standing mode)
 
+macOS / Linux (POSIX shells):
+
 ```bash
 export LYHNA_API_KEY=<your key>                      # or: export LYHNA_PROXY_BIND_MODE=demo
 export LYHNA_PROXY_CONTROL_SOCKET=/tmp/lyhna-control.sock
@@ -69,9 +71,43 @@ export LYHNA_PROXY_UPSTREAM_ARGS_JSON='["-y","@modelcontextprotocol/server-files
 npx -y @lyhna/mcp &
 ```
 
-It prints two addresses: the agent-facing MCP URL (`http://127.0.0.1:8765/mcp/<session_id>`)
-and the supervisor control socket. The agent only ever gets its session URL — it has no verb
-to open, close, or read a loop. You (the supervisor) drive the control channel.
+Windows (PowerShell) — runs as written. Unix sockets are POSIX-only, so the control
+channel is a loopback TCP port here; `ctl` and `export-pack` read the same env vars:
+
+```powershell
+New-Item -ItemType Directory -Force ./workdir | Out-Null
+
+$env:LYHNA_API_KEY = '<your key>'                    # or: $env:LYHNA_PROXY_BIND_MODE = 'demo'
+$env:LYHNA_PROXY_CONTROL_PORT = '8790'
+$env:LYHNA_PROXY_UPSTREAM_COMMAND = 'npx'
+$env:LYHNA_PROXY_UPSTREAM_ARGS_JSON = '["-y","@modelcontextprotocol/server-filesystem","./workdir"]'
+
+npx -y @lyhna/mcp
+```
+
+> Set the env vars in the SAME shell session that starts the proxy and run `npx` directly
+> from it. Do not splice `LYHNA_PROXY_UPSTREAM_ARGS_JSON` through nested quoting
+> (`Start-Process`, `cmd /c`, ssh one-liners): the inner quotes get stripped and the proxy
+> refuses to start with a JSON parse error.
+
+> The PowerShell block runs the proxy in the FOREGROUND. Run the supervisor commands of
+> steps 2 and 4 (`ctl`, `export-pack`) from a SECOND PowerShell window, and give them the
+> control target explicitly — append `--host 127.0.0.1 --port 8790` to each, e.g.
+> `npx -y @lyhna/mcp ctl --host 127.0.0.1 --port 8790 --file open.json` — or set
+> `$env:LYHNA_PROXY_CONTROL_PORT = '8790'` in that window first. A fresh window inherits
+> neither variables nor the running proxy; the flags always win over the environment.
+
+**If a default port is taken** (`8765` agent-facing, or your chosen control port): pick free
+ones with `LYHNA_PROXY_HTTP_PORT` and `LYHNA_PROXY_CONTROL_PORT` — the `LYHNA_MCP_READY`
+block prints the RESOLVED addresses; always use those. Supervisor verbs can also target a
+specific proxy explicitly: `ctl --host 127.0.0.1 --port 8790 --file open.json` (same flags
+on `export-pack`).
+
+The `LYHNA_MCP_READY` block prints two RESOLVED addresses: the agent-facing MCP URL
+(`http://127.0.0.1:8765/mcp/<session_id>` with the defaults — read yours from the block,
+the port moves with `LYHNA_PROXY_HTTP_PORT`) and the supervisor control address. The agent
+only ever gets its session URL — it has no verb to open, close, or read a loop. You (the
+supervisor) drive the control channel.
 
 ### 2. Open a loop with a sealed scope
 
@@ -116,7 +152,8 @@ this loop is allowed to run in. (`goal_hash` is filled at open from the loop's g
 
 ### 3. Point your agent at its session URL and let it work
 
-Any MCP client works. For Claude Code, a project `.mcp.json`:
+Any MCP client works. The URL is your session's `agent_mcp_url` from the `LYHNA_MCP_READY`
+block (shown here with the default port). For Claude Code, a project `.mcp.json`:
 
 ```json
 {
