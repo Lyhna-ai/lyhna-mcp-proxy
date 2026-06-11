@@ -75,6 +75,8 @@ Windows (PowerShell) — runs as written. Unix sockets are POSIX-only, so the co
 channel is a loopback TCP port here; `ctl` and `export-pack` read the same env vars:
 
 ```powershell
+New-Item -ItemType Directory -Force ./workdir | Out-Null
+
 $env:LYHNA_API_KEY = '<your key>'                    # or: $env:LYHNA_PROXY_BIND_MODE = 'demo'
 $env:LYHNA_PROXY_CONTROL_PORT = '8790'
 $env:LYHNA_PROXY_UPSTREAM_COMMAND = 'npx'
