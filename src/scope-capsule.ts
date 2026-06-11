@@ -31,6 +31,21 @@ export type ScopeBounds = {
 };
 
 /**
+ * The cross-loop inheritance edge: the prior loop's emitted capsule this loop opens FROM.
+ * An ATOMIC triple of content-blind refs — the prior continuation capsule's identity
+ * (`cap_v1:` hash), the prior loop's final sealed `scope_ref`, and the prior loop's final
+ * judgment `turn_ref`. Sealed into THIS loop's scope_ref via the structural projection, so
+ * the edge is hash-bound and offline-checkable from the two packs alone. Distinct from the
+ * Continuation Capsule's intra-loop `inherits_from` (this loop's own original scope_ref) —
+ * that field is untouched.
+ */
+export type ScopeInheritsLoop = {
+  capsule_ref: string;
+  scope_ref: string;
+  final_turn_ref: string;
+};
+
+/**
  * The gate-safe, content-blind projection. Every field here is a class, hash, ref, glob,
  * exclusion, or bound — never a plaintext plan field. Only this projection is hashed into
  * `scope_ref` and is eligible for the gate path.
@@ -75,6 +90,12 @@ export type ScopeStructuralProjection = {
   prior_receipt_ref?: string | null;
   prior_proof_bundle_ref?: string;
   prior_capsule_ref?: string;
+  /**
+   * Cross-loop inheritance edge (atomic triple of content-blind refs). When present, this loop
+   * declares it opens FROM the prior loop's emitted capsule; sealing hashes the edge into
+   * scope_ref. Partial / malformed triples fail closed at seal.
+   */
+  inherits_loop?: ScopeInheritsLoop;
 };
 
 /**
@@ -146,8 +167,12 @@ const STRUCTURAL_ALLOWED_KEYS = new Set([
   "bounds",
   "prior_receipt_ref",
   "prior_proof_bundle_ref",
-  "prior_capsule_ref"
+  "prior_capsule_ref",
+  "inherits_loop"
 ]);
+
+/** The closed key set of the cross-loop inheritance triple. Atomic: all three, nothing else. */
+const INHERITS_LOOP_KEYS = ["capsule_ref", "scope_ref", "final_turn_ref"] as const;
 
 // Structural fields that must be string arrays — validated so a nested object can't smuggle a
 // plaintext value past the closed-key allowlist.
@@ -189,6 +214,42 @@ export function assertScopeStructuralClosed(structural: ScopeStructuralProjectio
   if (cm !== undefined) {
     if (cm === null || typeof cm !== "object" || Array.isArray(cm) || Object.values(cm).some((x) => typeof x !== "string")) {
       throw new Error(`Scope structural projection field "class_map" must be a flat object of tool_name -> action_class strings (fail closed).`);
+    }
+  }
+  // inherits_loop is an ATOMIC triple: the cross-loop edge is only meaningful when the prior
+  // capsule_ref, scope_ref, and final_turn_ref are all pinned together. A partial triple, a
+  // non-string ref, or a stray key (which could smuggle non-structural content into the hashed,
+  // exported projection) is rejected rather than sealed (fail closed).
+  const il = (structural as Record<string, unknown>).inherits_loop;
+  if (il !== undefined) {
+    assertInheritsLoopAtomic(il);
+  }
+}
+
+/** Fail-closed validation of the cross-loop inheritance triple (closed keys, non-empty string refs). */
+function assertInheritsLoopAtomic(value: unknown): asserts value is ScopeInheritsLoop {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `Scope structural projection field "inherits_loop" must be an object ` +
+        `{ capsule_ref, scope_ref, final_turn_ref } (fail closed).`
+    );
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!(INHERITS_LOOP_KEYS as readonly string[]).includes(key)) {
+      throw new Error(
+        `Scope structural projection field "inherits_loop" has unknown key "${key}"; it is a closed ` +
+          `triple of capsule_ref / scope_ref / final_turn_ref (fail closed).`
+      );
+    }
+  }
+  for (const key of INHERITS_LOOP_KEYS) {
+    const v = record[key];
+    if (typeof v !== "string" || v.length === 0) {
+      throw new Error(
+        `Scope structural projection field "inherits_loop" requires a non-empty string "${key}"; the ` +
+          `cross-loop edge is an atomic triple (fail closed).`
+      );
     }
   }
 }
