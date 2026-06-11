@@ -295,7 +295,7 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     }
     const card = readFileSync(join(outDir, "proof-card.md"), "utf8");
     expect(card).toContain("✅ SEALED");
-    expect(card).toContain("npx lyhna-verify --chain receipts.json");
+    expect(card).toContain("npx -y lyhna-verify --chain receipts.json");
     // Default mode follows the sealed scope (verified_context here): the folded delta is present.
     const handoff = readFileSync(join(outDir, "HANDOFF.md"), "utf8");
     expect(handoff).toContain("checkout fix written");

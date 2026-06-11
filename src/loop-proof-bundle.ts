@@ -1399,7 +1399,7 @@ export function renderProofCardMarkdown(
     `## Verify it yourself`,
     ``,
     "```",
-    `npx lyhna-verify --chain receipts.json`,
+    `npx -y lyhna-verify --chain receipts.json`,
     "```",
     ``,
     `No Lyhna account, no network trust: the standalone verifier checks every Ed25519 signature`,
