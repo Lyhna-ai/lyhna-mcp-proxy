@@ -32,6 +32,7 @@ import {
   hashTarget,
   projectScopeCapsuleForExport,
   type ScopeCapsuleExport,
+  type ScopeInheritsLoop,
   type ScopePrivacyMode,
   type SealedScope
 } from "./scope-capsule.js";
@@ -532,6 +533,16 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     if (continuation.inherits_from.scope_ref !== original.scope_ref) {
       mismatches.push(`continuation inherits_from != original scope_ref`);
     }
+    // The cross-loop edge the continuation publishes must be EXACTLY the one sealed into the
+    // VERIFIED original scope's structural projection (hash-validated above) — present iff sealed,
+    // and equal member-by-member. A stale/tampered continuation could otherwise claim a false
+    // prior loop (or hide a declared one) while scope-capsule.json carries the truth.
+    if (
+      canonicalScopeJson(continuation.inherits_loop ?? null) !==
+      canonicalScopeJson(original.structural.inherits_loop ?? null)
+    ) {
+      mismatches.push(`continuation inherits_loop != the edge sealed into the original scope`);
+    }
     // The continuation's amendment list must reproduce the VERIFIED history EXACTLY (every
     // amendment, in order) — not merely a subset that happens to end at the right scope_ref.
     // Otherwise an omitted/reordered `what_changed` could report fewer amendments than actually
@@ -844,7 +855,10 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         receipts: input.receipts,
         scope_events: input.capsule.scope_events ?? [],
         turns: input.capsule.judgment_turns,
-        continuation
+        continuation,
+        // Cross-loop edge from the VERIFIED original scope (hash-validated above), never the
+        // unsigned continuation — the memory seed carries only verified refs.
+        inherits_loop: original.structural.inherits_loop
       });
       judgment_ledger = built.ledger;
       judgment_ledger_markdown = built.markdown;
@@ -921,6 +935,8 @@ function buildJudgmentArtifacts(input: {
   scope_events: ScopeEvent[];
   turns: JudgmentTurn[];
   continuation: ContinuationCapsule;
+  /** Cross-loop edge from the VERIFIED original sealed scope (structural refs; both modes). */
+  inherits_loop?: ScopeInheritsLoop;
 }): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
   const { loop_id, scope_ref, mode, turns, continuation } = input;
 
@@ -1241,7 +1257,7 @@ function buildJudgmentArtifacts(input: {
   };
   const markdown = renderJudgmentLedgerMarkdown(loop_id, projectedTurns, mode);
   const capsule_ref = deriveContinuationRef(continuation);
-  const memory = buildMemoryInjection({ loop_id, capsule_ref, scope_ref, reduced });
+  const memory = buildMemoryInjection({ loop_id, capsule_ref, scope_ref, reduced, inherits_loop: input.inherits_loop });
   return { ledger, markdown, memory };
 }
 

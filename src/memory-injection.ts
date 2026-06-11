@@ -7,6 +7,7 @@
 // (those arrays are empty), exactly mirroring the reduced state it is built from.
 
 import type { ReducedJudgmentState } from "./judgment-reducer.js";
+import type { ScopeInheritsLoop } from "./scope-capsule.js";
 
 export const MEMORY_INJECTION_VERSION = "1.0.0";
 
@@ -18,6 +19,11 @@ export type MemoryInjection = {
   capsule_ref: string;
   scope_ref: string;
   final_turn_ref: string | null;
+  /**
+   * Cross-loop inheritance edge: the PRIOR loop's capsule this loop opened FROM (content-blind
+   * refs, sealed into this loop's original scope). Present only for an inheriting loop.
+   */
+  inherits_loop?: ScopeInheritsLoop;
   // Plaintext sidecar — populated in Verified Context Mode, empty in Proof Mode (content-blind).
   settled: string[];
   open_questions: string[];
@@ -36,6 +42,8 @@ export function buildMemoryInjection(input: {
   capsule_ref: string;
   scope_ref: string;
   reduced: ReducedJudgmentState;
+  /** Cross-loop edge from the VERIFIED original sealed scope (structural refs; both modes). */
+  inherits_loop?: ScopeInheritsLoop;
 }): MemoryInjection {
   // The reduced state is already privacy-mode-gated (Proof Mode reduction carries no settled/open/
   // next/changed), so reading from it directly keeps memory-injection content-blind in Proof Mode.
@@ -47,6 +55,15 @@ export function buildMemoryInjection(input: {
     capsule_ref: input.capsule_ref,
     scope_ref: input.scope_ref,
     final_turn_ref: r.final_turn_ref,
+    ...(input.inherits_loop
+      ? {
+          inherits_loop: {
+            capsule_ref: input.inherits_loop.capsule_ref,
+            scope_ref: input.inherits_loop.scope_ref,
+            final_turn_ref: input.inherits_loop.final_turn_ref
+          }
+        }
+      : {}),
     settled: r.settled ? [...r.settled] : [],
     open_questions: r.open_questions ? [...r.open_questions] : [],
     next_actions: r.next_actions ? [...r.next_actions] : [],
