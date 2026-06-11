@@ -175,9 +175,17 @@ describe("THE CARD — proof-card.md", () => {
     const card = built.proof_card_markdown!;
     expect(card).toContain("# Lyhna Proof Card — ✅ SEALED");
     expect(card).toContain("**2 approved · 1 refused · 0 escalated**");
-    expect(card).toContain("npx lyhna-verify --chain receipts.json");
+    expect(card).toContain("npx -y lyhna-verify --chain receipts.json");
     // The verify one-liner is at the BOTTOM section, after the refused section.
-    expect(card.indexOf("⛔ Refused")).toBeLessThan(card.indexOf("npx lyhna-verify"));
+    expect(card.indexOf("⛔ Refused")).toBeLessThan(card.indexOf("npx -y lyhna-verify"));
+  });
+
+  it("verify-instructions.md's cold-verify command runs as written in a cold environment", () => {
+    const { built } = build("verified_context");
+    const instructions = built.verify_instructions_markdown!;
+    expect(instructions).toContain("npx -y lyhna-verify --chain receipts.json --json");
+    // No bare invocation left: every runnable command line carries npx -y.
+    expect(instructions).not.toMatch(/^lyhna-verify /m);
   });
 
   it("keeps refused/attested steps prominent with rule, correction status, and anchor", () => {
@@ -263,7 +271,7 @@ describe("THE HANDOFF — HANDOFF.md + prompt", () => {
     expect(handoff).not.toContain("/checkout/cart.ts");
     expect(handoff).not.toContain("fix checkout bug");
     expect(handoff).toContain("withheld by design");
-    expect(handoff).toContain("npx lyhna-verify --chain receipts.json");
+    expect(handoff).toContain("npx -y lyhna-verify --chain receipts.json");
   });
 
   it("a Gate 1 (judgment-less) continuation still produces a structural handoff", () => {

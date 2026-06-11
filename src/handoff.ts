@@ -94,7 +94,7 @@ export function renderHandoffMarkdown(continuation: ContinuationCapsule): string
       : [`Verify the chain this handoff is folded from:`]),
     ``,
     "```",
-    `npx lyhna-verify --chain receipts.json`,
+    `npx -y lyhna-verify --chain receipts.json`,
     "```",
     ``
   );
