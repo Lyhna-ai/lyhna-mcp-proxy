@@ -94,9 +94,11 @@ block prints the RESOLVED addresses; always use those. Supervisor verbs can also
 specific proxy explicitly: `ctl --host 127.0.0.1 --port 8790 --file open.json` (same flags
 on `export-pack`).
 
-It prints two addresses: the agent-facing MCP URL (`http://127.0.0.1:8765/mcp/<session_id>`)
-and the supervisor control address. The agent only ever gets its session URL — it has no verb
-to open, close, or read a loop. You (the supervisor) drive the control channel.
+The `LYHNA_MCP_READY` block prints two RESOLVED addresses: the agent-facing MCP URL
+(`http://127.0.0.1:8765/mcp/<session_id>` with the defaults — read yours from the block,
+the port moves with `LYHNA_PROXY_HTTP_PORT`) and the supervisor control address. The agent
+only ever gets its session URL — it has no verb to open, close, or read a loop. You (the
+supervisor) drive the control channel.
 
 ### 2. Open a loop with a sealed scope
 
@@ -141,7 +143,8 @@ this loop is allowed to run in. (`goal_hash` is filled at open from the loop's g
 
 ### 3. Point your agent at its session URL and let it work
 
-Any MCP client works. For Claude Code, a project `.mcp.json`:
+Any MCP client works. The URL is your session's `agent_mcp_url` from the `LYHNA_MCP_READY`
+block (shown here with the default port). For Claude Code, a project `.mcp.json`:
 
 ```json
 {
