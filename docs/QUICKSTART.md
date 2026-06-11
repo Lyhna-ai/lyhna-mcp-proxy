@@ -88,6 +88,13 @@ npx -y @lyhna/mcp
 > (`Start-Process`, `cmd /c`, ssh one-liners): the inner quotes get stripped and the proxy
 > refuses to start with a JSON parse error.
 
+> The PowerShell block runs the proxy in the FOREGROUND. Run the supervisor commands of
+> steps 2 and 4 (`ctl`, `export-pack`) from a SECOND PowerShell window, and give them the
+> control target explicitly — append `--host 127.0.0.1 --port 8790` to each, e.g.
+> `npx -y @lyhna/mcp ctl --host 127.0.0.1 --port 8790 --file open.json` — or set
+> `$env:LYHNA_PROXY_CONTROL_PORT = '8790'` in that window first. A fresh window inherits
+> neither variables nor the running proxy; the flags always win over the environment.
+
 **If a default port is taken** (`8765` agent-facing, or your chosen control port): pick free
 ones with `LYHNA_PROXY_HTTP_PORT` and `LYHNA_PROXY_CONTROL_PORT` — the `LYHNA_MCP_READY`
 block prints the RESOLVED addresses; always use those. Supervisor verbs can also target a
