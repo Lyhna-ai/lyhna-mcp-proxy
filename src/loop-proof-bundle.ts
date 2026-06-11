@@ -534,14 +534,21 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       mismatches.push(`continuation inherits_from != original scope_ref`);
     }
     // The cross-loop edge the continuation publishes must be EXACTLY the one sealed into the
-    // VERIFIED original scope's structural projection (hash-validated above) — present iff sealed,
-    // and equal member-by-member. A stale/tampered continuation could otherwise claim a false
-    // prior loop (or hide a declared one) while scope-capsule.json carries the truth.
-    if (
-      canonicalScopeJson(continuation.inherits_loop ?? null) !==
-      canonicalScopeJson(original.structural.inherits_loop ?? null)
-    ) {
-      mismatches.push(`continuation inherits_loop != the edge sealed into the original scope`);
+    // VERIFIED original scope's structural projection (hash-validated above) — PRESENT IFF SEALED
+    // (compared by key presence, so a JSON-loaded `inherits_loop: null` is a malformed PRESENT
+    // value, not "absent" — a VC export emits the continuation verbatim and must never publish a
+    // null edge), and equal member-by-member. A stale/tampered continuation could otherwise claim
+    // a false prior loop (or hide a declared one) while scope-capsule.json carries the truth.
+    const contEdge = (continuation as Record<string, unknown>).inherits_loop;
+    const sealedEdge = original.structural.inherits_loop;
+    if (contEdge !== undefined || sealedEdge !== undefined) {
+      if (
+        contEdge === undefined ||
+        sealedEdge === undefined ||
+        canonicalScopeJson(contEdge) !== canonicalScopeJson(sealedEdge)
+      ) {
+        mismatches.push(`continuation inherits_loop != the edge sealed into the original scope (present iff sealed, exact triple)`);
+      }
     }
     // The continuation's amendment list must reproduce the VERIFIED history EXACTLY (every
     // amendment, in order) — not merely a subset that happens to end at the right scope_ref.

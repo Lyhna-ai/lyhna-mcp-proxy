@@ -718,6 +718,21 @@ describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", (
     ).toThrow(/inherits_loop/);
   });
 
+  it("fails closed on a present-but-null edge (null is malformed PRESENT, not absent)", () => {
+    // A JSON-loaded continuation carrying `inherits_loop: null` against a NO-edge scope must not
+    // pass as "absent" — a Verified Context export emits the continuation verbatim and would
+    // publish the malformed null field in continuation-capsule.json.
+    const f = fixture("verified_context");
+    const nullEdge = { ...f.continuation, inherits_loop: null } as unknown as typeof f.continuation;
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: nullEdge, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/inherits_loop/);
+  });
+
   it("a no-edge pack is unchanged (field absent everywhere)", () => {
     const f = fixture("verified_context");
     const built = buildLoopProofBundle({
