@@ -505,6 +505,22 @@ describe("inherits_loop sealing (Stage D/E Slice A: cross-loop edge is hash-boun
     ).toThrow(/non-empty string "final_turn_ref"/);
   });
 
+  it("rejects a non-ref value in the triple (content-blind: plaintext can never seal/export)", () => {
+    // A non-empty plaintext string is NOT a hash ref; each member must match its emitted format.
+    expect(() =>
+      sealScopeCapsule({
+        capsule: capsule({ inherits_loop: { ...edge, capsule_ref: "carry the checkout plan forward" } })
+      })
+    ).toThrow(/inherits_loop\.capsule_ref.*cap_v1/);
+    expect(() =>
+      sealScopeCapsule({ capsule: capsule({ inherits_loop: { ...edge, scope_ref: "scope_v1:nothex" } }) })
+    ).toThrow(/inherits_loop\.scope_ref.*scope_v1/);
+    // A valid ref of the WRONG kind in a slot is also refused (each member pins its own prefix).
+    expect(() =>
+      sealScopeCapsule({ capsule: capsule({ inherits_loop: { ...edge, final_turn_ref: edge.scope_ref } }) })
+    ).toThrow(/inherits_loop\.final_turn_ref.*turn_v1/);
+  });
+
   it("rejects a stray key inside the triple (closed keys — nothing can smuggle past the allowlist)", () => {
     expect(() =>
       sealScopeCapsule({

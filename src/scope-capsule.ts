@@ -174,6 +174,19 @@ const STRUCTURAL_ALLOWED_KEYS = new Set([
 /** The closed key set of the cross-loop inheritance triple. Atomic: all three, nothing else. */
 const INHERITS_LOOP_KEYS = ["capsule_ref", "scope_ref", "final_turn_ref"] as const;
 
+/**
+ * The exact ref prefix each inherits_loop member must carry — the shapes the proxy itself emits
+ * (deriveContinuationRef / deriveScopeRef / deriveTurnRef), each "<prefix>:" + 64 hex. A non-empty
+ * string that is NOT one of these hash refs (e.g. a plaintext note) would otherwise be hashed into
+ * scope_ref and exported in the structural Proof Mode capsule, breaking the field's content-blind
+ * contract. Fail closed.
+ */
+const INHERITS_LOOP_REF_PREFIXES: Record<(typeof INHERITS_LOOP_KEYS)[number], string> = {
+  capsule_ref: "cap_v1",
+  scope_ref: "scope_v1",
+  final_turn_ref: "turn_v1"
+};
+
 // Structural fields that must be string arrays — validated so a nested object can't smuggle a
 // plaintext value past the closed-key allowlist.
 const STRUCTURAL_STRING_ARRAY_KEYS = [
@@ -249,6 +262,14 @@ function assertInheritsLoopAtomic(value: unknown): asserts value is ScopeInherit
       throw new Error(
         `Scope structural projection field "inherits_loop" requires a non-empty string "${key}"; the ` +
           `cross-loop edge is an atomic triple (fail closed).`
+      );
+    }
+    const prefix = INHERITS_LOOP_REF_PREFIXES[key];
+    if (!new RegExp(`^${prefix}:[0-9a-f]{64}$`).test(v)) {
+      throw new Error(
+        `Scope structural projection field "inherits_loop.${key}" must be a "${prefix}:" + 64-hex ` +
+          `hash ref; a non-ref value (e.g. plaintext) must never be sealed into scope_ref or ` +
+          `exported in the content-blind projection (fail closed).`
       );
     }
   }
