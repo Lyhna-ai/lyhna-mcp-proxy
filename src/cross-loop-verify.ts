@@ -90,6 +90,71 @@ function hasPrefix(a: string[], b: string[]): boolean {
   return b.every((v, i) => a[i] === v);
 }
 
+/**
+ * Bind a ledger's bind-verdict turns to the chain that ships beside it: every cited receipt must be
+ * PRESENT in that pack's receipts.json, in the expected loop, with the EXACT verdict outcome (both
+ * directions — a ledger REFUSED/ESCALATED unbacked by the signed chain is as forged as an APPROVED)
+ * and a PRESENT, agreeing scope stamp. Returns the failing detail, or null when every turn binds.
+ * Used identically for the prior and the current ledgers — a fold's authority always comes from the
+ * chain it ships with, never from the (unsigned) ledger fields alone.
+ */
+function bindLedgerTurnsToChain(turns: unknown[], receipts: unknown[], expected_loop_id: string, label: string): string | null {
+  const byId = new Map<string, { outcome?: unknown; loop_id?: unknown; scope_ref?: unknown }>();
+  for (const r of receipts) {
+    const rec = r as {
+      receipt_id?: unknown;
+      outcome?: unknown;
+      constraints?: { loop?: { loop_id?: unknown }; scope?: { scope_ref?: unknown } };
+    };
+    if (typeof rec.receipt_id === "string") {
+      byId.set(rec.receipt_id, {
+        outcome: rec.outcome,
+        loop_id: rec.constraints?.loop?.loop_id,
+        scope_ref: rec.constraints?.scope?.scope_ref
+      });
+    }
+  }
+  for (const t of turns) {
+    const turn = t as { turn_index?: number; scope_ref?: string; verdict?: { kind?: string; source?: string; receipt_id?: string } };
+    const v = turn.verdict;
+    if (v?.source !== "bind" || typeof v.receipt_id !== "string") continue;
+    const r = byId.get(v.receipt_id);
+    if (!r) {
+      return (
+        `${label} ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which is not present in the ` +
+        `${label} pack's receipts.json — the ledger does not belong to the presented chain (fail closed).`
+      );
+    }
+    if (r.loop_id !== expected_loop_id) {
+      return (
+        `${label} ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which belongs to loop ` +
+        `${JSON.stringify(r.loop_id)} rather than ${expected_loop_id} (fail closed).`
+      );
+    }
+    if (r.outcome !== v.kind) {
+      return (
+        `${label} ledger turn ${turn.turn_index} records a ${v.kind} bind on receipt ${v.receipt_id}, but the ` +
+        `chain receipt's outcome is ${JSON.stringify(r.outcome)} (fail closed).`
+      );
+    }
+    // The stamp must be PRESENT and agree: a bind-cited in-loop receipt with no scope stamp would
+    // let the fold be treated as scoped on the strength of the (unsigned) ledger field alone.
+    if (r.scope_ref === undefined) {
+      return (
+        `${label} ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which carries no ` +
+        `constraints.scope.scope_ref stamp; the turn's scope cannot be substantiated by the chain (fail closed).`
+      );
+    }
+    if (r.scope_ref !== turn.scope_ref) {
+      return (
+        `${label} ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
+        `stamps ${JSON.stringify(r.scope_ref)} (fail closed).`
+      );
+    }
+  }
+  return null;
+}
+
 export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_pack_dir: string }): CrossLoopLinkageReport {
   const checks: CrossLoopCheck[] = [];
   // BELT AND BRACES (report contract): the checker promises a structured fail-closed report —
@@ -365,65 +430,10 @@ function verifyCrossLoopLinkageChecks(
   // A ledger can be internally consistent (turn_refs recompute, fold matches) while citing receipt
   // IDs the supplied receipts.json never contained — e.g. the chain swapped for another valid sealed
   // chain of the same loop_id. The exporter cross-checks receipts<->judgment before accepting the
-  // fold; the offline checker mirrors it read-side: every bind-verdict turn must map to a receipt
-  // present in the prior chain, in the prior loop, with agreeing outcome and scope stamp.
-  const priorReceiptById = new Map<string, { outcome?: unknown; loop_id?: unknown; scope_ref?: unknown }>();
-  for (const r of priorReceiptsR.value) {
-    const rec = r as {
-      receipt_id?: unknown;
-      outcome?: unknown;
-      constraints?: { loop?: { loop_id?: unknown }; scope?: { scope_ref?: unknown } };
-    };
-    if (typeof rec.receipt_id === "string") {
-      priorReceiptById.set(rec.receipt_id, {
-        outcome: rec.outcome,
-        loop_id: rec.constraints?.loop?.loop_id,
-        scope_ref: rec.constraints?.scope?.scope_ref
-      });
-    }
-  }
-  for (const t of priorLedgerR.value.turns) {
-    const turn = t as { turn_index?: number; scope_ref?: string; verdict?: { kind?: string; source?: string; receipt_id?: string } };
-    const v = turn.verdict;
-    if (v?.source !== "bind" || typeof v.receipt_id !== "string") continue;
-    const r = priorReceiptById.get(v.receipt_id);
-    if (!r) {
-      return fail(
-        "prior_ledger_receipts_bind",
-        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which is not present in the prior ` +
-          `pack's receipts.json — the ledger does not belong to the presented chain (fail closed).`
-      );
-    }
-    if (r.loop_id !== priorCont.loop_id) {
-      return fail(
-        "prior_ledger_receipts_bind",
-        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which belongs to loop ` +
-          `${JSON.stringify(r.loop_id)} rather than ${priorCont.loop_id} (fail closed).`
-      );
-    }
-    if (v.kind === "APPROVED" && r.outcome !== "APPROVED") {
-      return fail(
-        "prior_ledger_receipts_bind",
-        `prior ledger turn ${turn.turn_index} records an APPROVED bind on receipt ${v.receipt_id}, but the chain ` +
-          `receipt's outcome is ${JSON.stringify(r.outcome)} (fail closed).`
-      );
-    }
-    // The stamp must be PRESENT and agree: a bind-cited in-loop receipt with no scope stamp would
-    // let the fold be treated as scoped on the strength of the (unsigned) ledger field alone.
-    if (r.scope_ref === undefined) {
-      return fail(
-        "prior_ledger_receipts_bind",
-        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which carries no ` +
-          `constraints.scope.scope_ref stamp; the turn's scope cannot be substantiated by the chain (fail closed).`
-      );
-    }
-    if (r.scope_ref !== turn.scope_ref) {
-      return fail(
-        "prior_ledger_receipts_bind",
-        `prior ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
-          `stamps ${JSON.stringify(r.scope_ref)} (fail closed).`
-      );
-    }
+  // fold; the offline checker mirrors it read-side via bindLedgerTurnsToChain.
+  const priorBindFail = bindLedgerTurnsToChain(priorLedgerR.value.turns, priorReceiptsR.value, priorCont.loop_id, "prior");
+  if (priorBindFail) {
+    return fail("prior_ledger_receipts_bind", priorBindFail);
   }
   pass(
     "prior_ledger_receipts_bind",
@@ -464,6 +474,17 @@ function verifyCrossLoopLinkageChecks(
           `state cannot be verified (fail closed).`
       );
     }
+    // The child ledger gets the SAME receipt binding as the prior: its bind turns must cite
+    // receipts present in the CURRENT chain (loop / exact outcome / scope stamp agree) — otherwise
+    // a valid signed chain could ship beside a ledger citing receipts it never carried.
+    const childBindFail = bindLedgerTurnsToChain(curLedgerR.value.turns, curReceiptsR.value, curCont.loop_id, "current");
+    if (childBindFail) {
+      return fail("child_ledger_receipts_bind", childBindFail);
+    }
+    pass(
+      "child_ledger_receipts_bind",
+      "every bind-verdict turn in the child ledger cites a receipt present in the current chain (loop / outcome / scope agree)"
+    );
     let curFold: ReturnType<typeof reduceJudgmentLedger>;
     try {
       curFold = reduceJudgmentLedger({

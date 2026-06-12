@@ -400,6 +400,50 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: CURRENT receipts.json swapped for another valid chain the child ledger never cited", () => {
+    // The swapped chain is structurally valid, sealed, and stamps the final scope — but its receipt
+    // IDs are not the ones the child ledger's bind turns cite (same gap as the prior-side check).
+    const goal_hash = deriveGoalHash("ship the gate");
+    withTamperedFile(
+      currentDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: string } } }>) => {
+        const finalRef = receipts.find((r) => r.constraints?.loop && !r.constraints?.loop_close)!.constraints!.scope!.scope_ref!;
+        return [
+          inLoopReceipt("loop-2", goal_hash, "rY", null, finalRef),
+          terminalReceipt("loop-2", goal_hash, "closeY", "rY", 1)
+        ] as never;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("child_ledger_receipts_bind");
+      }
+    );
+  });
+
+  it("fails closed: bind verdict outcome must EQUAL the chain receipt's outcome (both directions)", () => {
+    // The comparison is exact equality, so a ledger APPROVED over a chain ESCALATED fails — and the
+    // same line rejects the reverse (a ledger REFUSED/ESCALATED unbacked by the signed chain).
+    withTamperedFile(
+      priorDir,
+      "receipts.json",
+      (receipts: Array<{ outcome?: string; constraints?: { loop?: unknown; loop_close?: unknown } }>) => {
+        for (const r of receipts) {
+          if (r.constraints?.loop && !r.constraints?.loop_close) r.outcome = "ESCALATED";
+        }
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(failed.name).toBe("prior_ledger_receipts_bind");
+        expect(failed.detail).toContain("ESCALATED");
+      }
+    );
+  });
+
   it("fails closed (never crashes): valid JSON with the wrong shape produces the report, not an exception", () => {
     // receipts.json containing {} — must yield a failing report with the signature notice, not throw.
     withTamperedFile(priorDir, "receipts.json", () => ({}) as never, () => {
