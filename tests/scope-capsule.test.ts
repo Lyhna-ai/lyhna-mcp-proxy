@@ -117,6 +117,26 @@ describe("amendScope", () => {
     const original = sealScopeCapsule({ capsule: capsule() });
     expect(() => amendScope(original, capsule({ inherits_loop: edge }))).toThrow(/inherits_loop is open-time, immutable/);
   });
+
+  it("extends immutability to inherits_state_hash (change / drop / add all reject)", () => {
+    const stateHash = "sha256:" + "a".repeat(64);
+    const withCommit = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge, inherits_state_hash: stateHash }) });
+    // Change.
+    expect(() =>
+      amendScope(withCommit, capsule({ inherits_loop: edge, inherits_state_hash: "sha256:" + "b".repeat(64) }))
+    ).toThrow(/inherits_state_hash is.*open-time, immutable/s);
+    // Drop.
+    expect(() => amendScope(withCommit, capsule({ inherits_loop: edge }))).toThrow(/inherits_state_hash/);
+    // Add.
+    const edgeOnly = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    expect(() =>
+      amendScope(edgeOnly, capsule({ inherits_loop: edge, inherits_state_hash: stateHash }))
+    ).toThrow(/inherits_state_hash/);
+    // Byte-identical carry-forward with other changes is fine.
+    expect(() =>
+      amendScope(withCommit, capsule({ inherits_loop: edge, inherits_state_hash: stateHash, allowed_targets: ["/cart/**"] }))
+    ).not.toThrow();
+  });
 });
 
 describe("globToRegExp", () => {
@@ -563,6 +583,26 @@ describe("inherits_loop sealing (Stage D/E Slice A: cross-loop edge is hash-boun
       expect(() =>
         sealScopeCapsule({ capsule: capsule({ inherits_loop: bad as never }) })
       ).toThrow(/inherits_loop.*must be an object/);
+    }
+  });
+
+  it("seals inherits_state_hash beside the edge (moves scope_ref); rejects it WITHOUT the edge", () => {
+    const stateHash = "sha256:" + "a".repeat(64);
+    const withCommit = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge, inherits_state_hash: stateHash }) });
+    const withoutCommit = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    expect(withCommit.scope_ref).not.toBe(withoutCommit.scope_ref);
+    expect(withCommit.structural.inherits_state_hash).toBe(stateHash);
+    // A state commitment with no edge anchors nothing — contradictory shape rejects at seal.
+    expect(() => sealScopeCapsule({ capsule: capsule({ inherits_state_hash: stateHash }) })).toThrow(
+      /without "inherits_loop"|anchors nothing/
+    );
+  });
+
+  it("rejects a malformed inherits_state_hash (must be sha256: + 64 hex)", () => {
+    for (const bad of ["plaintext settled state", "sha256:nothex", "sha1:" + "a".repeat(64), 42]) {
+      expect(() =>
+        sealScopeCapsule({ capsule: capsule({ inherits_loop: edge, inherits_state_hash: bad as never }) })
+      ).toThrow(/inherits_state_hash/);
     }
   });
 

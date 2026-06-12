@@ -55,6 +55,7 @@ export {
   canonicalScopeJson,
   checkScopeStructural,
   deriveActionClass,
+  deriveInheritsStateHash,
   deriveScopeRef,
   deriveSidecarHash,
   globToRegExp,

@@ -27,6 +27,7 @@ import {
   assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
   canonicalScopeJson,
+  deriveInheritsStateHash,
   deriveScopeRef,
   deriveSidecarHash,
   hashTarget,
@@ -554,12 +555,19 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // would omit or contradict the edge the rest of the pack publishes. (No scope-history artifact is
     // added; finalScope's capsule itself substantiates the edge.)
     const originalEdge = canonicalScopeJson(original.structural.inherits_loop ?? null);
+    const originalStateHash = original.structural.inherits_state_hash ?? null;
     for (const entry of history) {
       if (canonicalScopeJson(entry.structural.inherits_loop ?? null) !== originalEdge) {
         throw new Error(
           `Scope version ${entry.scope_ref} carries a different inherits_loop than the original; the ` +
             `cross-loop lineage edge is immutable across amendments and the final scope capsule must ` +
             `substantiate it (fail closed).`
+        );
+      }
+      if ((entry.structural.inherits_state_hash ?? null) !== originalStateHash) {
+        throw new Error(
+          `Scope version ${entry.scope_ref} carries a different inherits_state_hash than the original; ` +
+            `the inherited-state commitment is immutable across amendments (fail closed).`
         );
       }
     }
@@ -916,6 +924,8 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         // Cross-loop edge from the VERIFIED original scope (hash-validated above), never the
         // unsigned continuation — the memory seed carries only verified refs.
         inherits_loop: original.structural.inherits_loop,
+        // The SEALED inherited-state commitment: the supplied prior state must hash to it.
+        inherits_state_hash: original.structural.inherits_state_hash,
         // Lineage passthrough: the prior loop's inherited state, folded before this loop's deltas.
         inherited_state: input.capsule.inherited_state,
         // The prior loop's continuation, identity-bound to the sealed edge before any state folds.
@@ -957,7 +967,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // THE HANDOFF renders from the PROJECTED continuation (mode-appropriate), so a Proof Mode
     // handoff is structural-only by construction — it never sees the plaintext sidecar.
     handoff_markdown = renderHandoffMarkdown(continuation_capsule);
-    verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle);
+    verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle, scope_capsule);
   }
 
   const graph_node = buildGraphNode(bundle);
@@ -1000,6 +1010,8 @@ function buildJudgmentArtifacts(input: {
   continuation: ContinuationCapsule;
   /** Cross-loop edge from the VERIFIED original sealed scope (structural refs; both modes). */
   inherits_loop?: ScopeInheritsLoop;
+  /** SEALED inherited-state commitment from the verified original scope (sha256 over prior state). */
+  inherits_state_hash?: string;
   /** Lineage passthrough seed (Verified Context only): the prior loop's settled/open/next/changed. */
   inherited_state?: JudgmentDelta;
   /** The prior loop's continuation capsule — identity-bound to the sealed edge (fail closed). */
@@ -1267,6 +1279,13 @@ function buildJudgmentArtifacts(input: {
           `compared to itself — supply the prior pack's judgment-ledger.json (fail closed).`
       );
     }
+    if (!input.inherits_state_hash) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but the sealed scope carries no ` +
+          `inherits_state_hash commitment; without it the inherited values are not bound to the signed ` +
+          `chain — no commitment means identity-only inheritance (edge without state). Fail closed.`
+      );
+    }
   }
   if (input.prior_continuation) {
     const edge = input.inherits_loop;
@@ -1291,21 +1310,18 @@ function buildJudgmentArtifacts(input: {
     if ((input.prior_continuation.final_turn_ref ?? null) !== edge.final_turn_ref) {
       throw new Error(`Prior continuation final_turn_ref does not match the sealed inherits_loop.final_turn_ref (fail closed).`);
     }
-    // Value binding (Verified Context, state-bearing seed only): NON-CIRCULAR by construction. The
-    // prior pack's judgment-ledger.json turns are chain-validated (every turn_ref recomputes) and
-    // RE-FOLDED with the same reducer semantics; then THREE things must agree exactly:
-    //   re-fold(prior turns)  ==  prior continuation plaintext  ==  the seed.
-    // Comparing the seed only to the continuation that supplied it would let an edit of that one
-    // file's plaintext pass (capsule_ref is content-blind); binding both to the ledger re-fold means
-    // forging inherited memory requires consistently rewriting the prior ledger's supervisor deltas
-    // AND its continuation — exactly the multi-artifact consistency the prior pack's own export
-    // enforced fail-closed when it was written. The re-folded chain's final_turn_ref must also equal
-    // the sealed edge's final_turn_ref, so the supplied ledger IS the chain the edge pinned.
+    // Value binding (Verified Context, state-bearing seed only) — TWO layers:
     //
-    // HONESTY NOTE (residual, by frozen design): supervisor-declared deltas are additive and
-    // deliberately excluded from turn_ref, so no single hash commits VC plaintext. This binding
-    // makes the check non-circular and multi-artifact; the Stage E two-pack check re-verifies the
-    // actual prior pack offline (digest + cold verify) to complete the chain.
+    //   1) SEALED COMMITMENT (the cryptographic anchor): the supplied prior state must hash
+    //      (deriveInheritsStateHash) to the `inherits_state_hash` SEALED into this loop's original
+    //      scope at open. scope_ref is stamped into the signed receipt chain, so forging inherited
+    //      memory requires forging the signed chain. What remains outside the proof is supervisor
+    //      honesty at open — the system's trust root by design.
+    //   2) NON-CIRCULAR CONSISTENCY: the prior pack's judgment-ledger.json turns are chain-validated
+    //      (every turn_ref recomputes) and RE-FOLDED with the same reducer semantics; then THREE
+    //      things must agree exactly: re-fold(prior turns) == prior continuation plaintext == seed,
+    //      and the re-folded chain's final_turn_ref must equal the sealed edge's — so the supplied
+    //      ledger IS the chain the edge pinned and the two prior sidecars agree with each other.
     //
     // CHAINED-PRIOR LIMITATION (fail closed, not silent): a prior loop that ITSELF inherited state
     // folded its own seed before its deltas, so re-folding its ledger ALONE cannot reproduce its
@@ -1346,6 +1362,17 @@ function buildJudgmentArtifacts(input: {
         throw new Error(
           `Inherited state does not equal the prior capsule's verified state (the re-folded prior judgment ` +
             `ledger); the seed must be exactly the referenced prior capsule's state (fail closed).`
+        );
+      }
+      // Layer 1 — the SEALED commitment: the supplied prior state must hash to the inherits_state_hash
+      // sealed into this loop's scope_ref (and thus stamped into the signed receipt chain). A consistent
+      // edit of BOTH prior sidecars passes layer 2 but cannot match the sealed commitment.
+      const suppliedStateHash = deriveInheritsStateHash(plainState(p));
+      if (suppliedStateHash !== input.inherits_state_hash) {
+        throw new Error(
+          `Supplied prior state hashes to ${suppliedStateHash} but the SEALED inherits_state_hash commitment ` +
+            `is ${input.inherits_state_hash}; the inherited values are not the ones committed at open — bound ` +
+            `to the signed chain via scope_ref (fail closed).`
         );
       }
     }
@@ -1634,7 +1661,7 @@ export function renderProofCardMarkdown(
 }
 
 /** verify-instructions.md — how to cold-verify the pack with the independent verifier. */
-export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): string {
+export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle, scope_capsule?: ScopeCapsuleExport): string {
   const lines = [
     `# Verify Instructions`,
     ``,
@@ -1705,6 +1732,37 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `  stamps is outside this threat model.`,
       ``
     );
+    // Cross-loop lineage guarantee — rendered only for an inheriting loop, stating EXACTLY what is
+    // and is not proven (architect contract: the export must state the guarantee precisely).
+    const lineage = scope_capsule?.structural.inherits_loop;
+    if (lineage) {
+      lines.push(
+        `### Cross-loop lineage (what the inherited edge and state DO and DO NOT prove)`,
+        ``,
+        `- This loop opened FROM a prior capsule. The sealed \`inherits_loop\` triple in`,
+        `  \`scope-capsule.json\` (capsule_ref \`${lineage.capsule_ref}\`, scope_ref, final_turn_ref) is`,
+        `  hashed into \`scope_ref\`, which is stamped into the SIGNED receipt chain — the identity of`,
+        `  the prior capsule is bound to the signatures.`,
+        ...(scope_capsule?.structural.inherits_state_hash
+          ? [
+              `- The inherited settled/open/next/changed state is committed by the sealed`,
+              `  \`inherits_state_hash\` (\`${scope_capsule.structural.inherits_state_hash}\`): sha256 over the`,
+              `  prior continuation's canonical state, sealed into \`scope_ref\` at open. The export verifies`,
+              `  the supplied prior state hashes to this commitment, re-folds the prior judgment ledger, and`,
+              `  requires re-fold == prior continuation plaintext == seed — so forging inherited memory`,
+              `  requires forging the signed receipt chain.`,
+              `- What remains OUTSIDE the proof: supervisor honesty at open (the supervisor read the genuine`,
+              `  prior pack when sealing the commitment) — the system's trust root by design.`
+            ]
+          : [
+              `- No \`inherits_state_hash\` is sealed: this is IDENTITY-ONLY inheritance. The pack proves`,
+              `  which prior capsule was referenced; it carries and proves NO inherited state values.`
+            ]),
+        `- Offline cross-check of the two packs together (digests + both signed chains) is the`,
+        `  Stage E two-pack verification.`,
+        ``
+      );
+    }
   }
   return lines.join("\n");
 }

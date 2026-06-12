@@ -96,6 +96,15 @@ export type ScopeStructuralProjection = {
    * scope_ref. Partial / malformed triples fail closed at seal.
    */
   inherits_loop?: ScopeInheritsLoop;
+  /**
+   * Content-blind COMMITMENT to the inherited state: sha256 over the canonical
+   * { settled, open_questions, next_actions, changed } of the prior loop's continuation
+   * (deriveInheritsStateHash). Sealed into scope_ref — which is stamped into the signed receipt
+   * chain — so forging inherited memory requires forging the signed chain. Requires
+   * `inherits_loop` (a state commitment with no edge anchors nothing; fail closed at seal).
+   * Omit for identity-only inheritance (edge without inherited state).
+   */
+  inherits_state_hash?: string;
 };
 
 /**
@@ -168,7 +177,8 @@ const STRUCTURAL_ALLOWED_KEYS = new Set([
   "prior_receipt_ref",
   "prior_proof_bundle_ref",
   "prior_capsule_ref",
-  "inherits_loop"
+  "inherits_loop",
+  "inherits_state_hash"
 ]);
 
 /** The closed key set of the cross-loop inheritance triple. Atomic: all three, nothing else. */
@@ -237,6 +247,46 @@ export function assertScopeStructuralClosed(structural: ScopeStructuralProjectio
   if (il !== undefined) {
     assertInheritsLoopAtomic(il);
   }
+  // inherits_state_hash commits the inherited state to the sealed scope (and, via scope_ref, to the
+  // signed receipt chain). It must be a structural sha256 ref, and it must be ACCOMPANIED by the
+  // inherits_loop edge — a state commitment with no edge anchors nothing (fail closed at seal).
+  const ish = (structural as Record<string, unknown>).inherits_state_hash;
+  if (ish !== undefined) {
+    if (typeof ish !== "string" || !/^sha256:[0-9a-f]{64}$/.test(ish)) {
+      throw new Error(
+        `Scope structural projection field "inherits_state_hash" must be a "sha256:" + 64-hex hash ` +
+          `(deriveInheritsStateHash over the prior continuation state); fail closed.`
+      );
+    }
+    if (il === undefined) {
+      throw new Error(
+        `Scope structural projection seals "inherits_state_hash" without "inherits_loop"; a state ` +
+          `commitment with no inheritance edge anchors nothing (fail closed).`
+      );
+    }
+  }
+}
+
+/**
+ * Derive the content-blind inherited-state commitment: sha256 over the canonical (recursive
+ * sorted-key) JSON of the prior continuation's { settled, open_questions, next_actions, changed }
+ * (absent arrays normalize to []). Sealed into Loop 2's scope_ref at open as `inherits_state_hash`,
+ * binding the inherited values — through the stamped, signed receipt chain — to what the supervisor
+ * actually read from the prior pack.
+ */
+export function deriveInheritsStateHash(state: {
+  settled?: string[];
+  open_questions?: string[];
+  next_actions?: string[];
+  changed?: string[];
+}): string {
+  const canonical = canonicalScopeJson({
+    settled: state.settled ?? [],
+    open_questions: state.open_questions ?? [],
+    next_actions: state.next_actions ?? [],
+    changed: state.changed ?? []
+  });
+  return `sha256:${sha256Hex(canonical)}`;
 }
 
 /** Fail-closed validation of the cross-loop inheritance triple (closed keys, non-empty string refs). */
@@ -434,6 +484,13 @@ export function amendScope(prior: SealedScope, next: ScopeCapsule, sealed_at?: s
       `Scope amendment may not change the inherited cross-loop edge: inherits_loop is open-time, ` +
         `immutable provenance and must carry forward byte-identical (it cannot be mutated, dropped, ` +
         `or added by an amendment) — fail closed.`
+    );
+  }
+  if ((prior.structural.inherits_state_hash ?? null) !== (next.structural.inherits_state_hash ?? null)) {
+    throw new Error(
+      `Scope amendment may not change the inherited-state commitment: inherits_state_hash is ` +
+        `open-time, immutable provenance and must carry forward byte-identical (it cannot be ` +
+        `mutated, dropped, or added by an amendment) — fail closed.`
     );
   }
   return sealScopeCapsule({ capsule: next, prior_scope_ref: prior.scope_ref, sealed_at });
