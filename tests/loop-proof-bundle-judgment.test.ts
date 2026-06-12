@@ -922,6 +922,37 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     ).toThrow(/not the chain the edge pinned/);
   });
 
+  it("verifies the sealed commitment even when the prior state folds EMPTY (no free pass)", () => {
+    // Same judgment core, no deltas -> same turn_refs, empty fold; continuation without plaintext
+    // -> same capsule_ref (content-blind). Only the sealed commitment distinguishes truth here.
+    const emptyRec = createJudgmentRecorder();
+    emptyRec.append({
+      loop_id: "loop-prior",
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "p1" }
+    });
+    const emptyTurns = emptyRec.judgmentLedgerForLoop("loop-prior");
+    const emptyPrior = { ...priorContinuation } as ContinuationCapsule;
+    delete (emptyPrior as Record<string, unknown>).settled;
+    delete (emptyPrior as Record<string, unknown>).next_actions;
+
+    // A stale/arbitrary sealed commitment must NOT export just because the prior folds empty.
+    expect(() =>
+      buildSeeded({ prior: emptyPrior, priorTurns: emptyTurns, edge, stateHash })
+    ).toThrow(/not the ones committed at open|SEALED inherits_state_hash/);
+
+    // A commitment honestly sealed over the EMPTY state verifies and exports.
+    const emptyHash = deriveInheritsStateHash({});
+    const built = buildSeeded({ prior: emptyPrior, priorTurns: emptyTurns, edge, stateHash: emptyHash });
+    expect(built.continuation_capsule!.settled).toEqual(["wrote cart.ts"]); // own deltas only
+  });
+
+  it("fails closed: a sealed commitment with NO prior pack supplied (commitment may never ride unverified)", () => {
+    expect(() => buildSeeded({ edge, stateHash })).toThrow(/prior_continuation|verify it against/);
+  });
+
   it("fails closed: a prior continuation supplied with NO sealed edge", () => {
     expect(() => buildSeeded({ prior: priorContinuation, priorTurns })).toThrow(/seals no inherits_loop edge/);
   });

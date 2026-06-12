@@ -1258,7 +1258,12 @@ function buildJudgmentArtifacts(input: {
   const seed = input.inherited_state;
   const seedHasState =
     !!seed && [seed.settled, seed.open_questions, seed.next_actions, seed.changed].some((a) => Array.isArray(a) && a.length > 0);
-  if (mode === "verified_context" && seedHasState) {
+  // A Verified Context pack makes a LINEAGE-STATE claim when it folds a state-bearing seed OR when
+  // its sealed scope carries an inherits_state_hash commitment — a sealed commitment that is never
+  // verified (e.g. an empty-folding prior, or no prior supplied) would let an arbitrary/stale
+  // commitment ride in scope-capsule.json as if verified. Either trigger demands the full binding.
+  const lineageStateClaim = mode === "verified_context" && (seedHasState || input.inherits_state_hash !== undefined);
+  if (lineageStateClaim) {
     if (!input.inherits_loop) {
       throw new Error(
         `Verified Context export supplies inherited lineage state but the verified original scope carries ` +
@@ -1267,15 +1272,15 @@ function buildJudgmentArtifacts(input: {
     }
     if (!input.prior_continuation) {
       throw new Error(
-        `Verified Context export supplies inherited lineage state but no prior_continuation to bind it to; ` +
-          `the sealed edge proves which capsule was referenced, not that the inherited values came from it — ` +
-          `supply the prior pack's continuation-capsule.json (fail closed).`
+        `Verified Context export claims inherited lineage state (a state-bearing seed and/or a sealed ` +
+          `inherits_state_hash commitment) but no prior_continuation to verify it against — supply the prior ` +
+          `pack's continuation-capsule.json (fail closed).`
       );
     }
     if (!input.prior_judgment_turns) {
       throw new Error(
-        `Verified Context export supplies inherited lineage state but no prior judgment ledger to re-fold; ` +
-          `the seed's VALUES bind to the prior ledger's re-folded reduction, never to the continuation sidecar ` +
+        `Verified Context export claims inherited lineage state but no prior judgment ledger to re-fold; ` +
+          `the values bind to the prior ledger's re-folded reduction, never to the continuation sidecar ` +
           `compared to itself — supply the prior pack's judgment-ledger.json (fail closed).`
       );
     }
@@ -1328,7 +1333,10 @@ function buildJudgmentArtifacts(input: {
     // continuation plaintext. Verifying such a prior would require ITS prior pack too; until a
     // pack-chain input exists, a multi-hop inheritance export refuses here rather than publish a
     // prefix nothing supplied can verify.
-    if (mode === "verified_context" && seedHasState) {
+    // Runs for EVERY lineage-state claim — including a sealed commitment over an EMPTY prior state
+    // (the empty fold must still hash to the sealed commitment; a stale/arbitrary commitment may
+    // never ride out unverified just because the prior happens to fold empty).
+    if (lineageStateClaim) {
       const p = input.prior_continuation;
       const priorTurns = input.prior_judgment_turns!;
       // Re-fold the prior ledger (validates the chain fail-closed: contiguity, hash links, anchors).
@@ -1358,7 +1366,7 @@ function buildJudgmentArtifacts(input: {
             `pack's continuation-capsule.json and judgment-ledger.json disagree (tampered or stale — fail closed).`
         );
       }
-      if (canonicalScopeJson(plainState(seed!)) !== foldState) {
+      if (canonicalScopeJson(plainState(seed ?? {})) !== foldState) {
         throw new Error(
           `Inherited state does not equal the prior capsule's verified state (the re-folded prior judgment ` +
             `ledger); the seed must be exactly the referenced prior capsule's state (fail closed).`
