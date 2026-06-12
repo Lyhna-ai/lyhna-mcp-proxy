@@ -208,6 +208,27 @@ export { buildGhPostArgs, runHandoff, runPost, HANDOFF_USAGE, POST_USAGE } from 
 export type { CliIo, SpawnGh } from "./capsule-cli.js";
 export { writeProofPackFiles } from "./proof-pack-io.js";
 export {
+  buildLoopArtifactRow,
+  pushPack,
+  PUSH_PACK_SIGNATURE_NOTICE,
+  REQUIRED_PACK_FILES
+} from "./push-pack.js";
+export type {
+  LoopArtifactDestinationClient,
+  LoopArtifactRow,
+  PushPackCheck,
+  PushPackRefs,
+  PushPackReport
+} from "./push-pack.js";
+export {
+  createSupabaseLoopArtifactClient,
+  resolveSupabaseEnv,
+  DEFAULT_SUPABASE_TABLE,
+  SUPABASE_TABLE_NAME_PATTERN
+} from "./destinations/supabase.js";
+export type { SupabaseEnvConfig } from "./destinations/supabase.js";
+export { runPushPack, PUSH_PACK_USAGE } from "./bin/push-pack.js";
+export {
   controlRequest,
   resolveControlTarget,
   runCtl,

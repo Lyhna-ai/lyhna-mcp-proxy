@@ -25,7 +25,10 @@ path from key to capsule: one config block (or one `npx` command), a governed lo
 CLI verbs (`npx -y @lyhna/mcp help`): the bare command starts the proxy (Streamable HTTP;
 `stdio` for MCP client config blocks), `ctl` drives the supervisor control channel,
 `export-pack` exports a closed loop's full pack in one command, `handoff` / `post` read an
-exported pack.
+exported pack, and `push-pack --pack <dir> --destination supabase` persists an exported pack
+as ONE read-back-verified Supabase row — idempotent on `capsule_ref`, fail-closed on any
+missing/malformed/mismatched artifact, and never required for export (proof generation stays
+pure; see [docs/SUPABASE-DESTINATION.md](docs/SUPABASE-DESTINATION.md)).
 
 **Two topologically distinct surfaces** (this separation is the whole point):
 
