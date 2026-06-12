@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -564,6 +564,107 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
       expect(failed.name).toBe("prior_ledger_events_bind");
       expect(failed.detail).toContain("tampered");
     });
+  });
+
+  it("fails closed: a bind turn's PROPOSED descriptor edited away from the signed receipt stamp", () => {
+    // Same receipt_id/outcome/scope_ref, but the ledger's proposed move is rewritten (tool_name).
+    // The reducer would re-fold an action identity the signed receipt never authorized — the
+    // checker now mirrors the exporter's descriptor binding and refuses.
+    withTamperedFile(
+      currentDir,
+      "judgment-ledger.json",
+      (ledger: { turns: Array<{ verdict?: { source?: string }; proposed?: { tool_name?: string } }> }) => {
+        const bind = ledger.turns.find((t) => t.verdict?.source === "bind")!;
+        bind.proposed!.tool_name = "delete_file"; // receipt stamps write_file
+        return ledger;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(failed.name).toBe("child_ledger_receipts_bind");
+        expect(failed.detail).toContain("did not authorize");
+      }
+    );
+  });
+
+  it("fails closed: a scope-event-anchored turn whose CONTENT disagrees with the attested event", () => {
+    // Codex's vector: a prior ledger that chain-validates and re-folds cleanly, yet whose scope_gate
+    // turn anchors a real attested event that DESCRIBES A DIFFERENT MOVE than the turn proposed. The
+    // honest exporter rejects this at export (content binding), so we assemble the prior pack files
+    // directly — exactly the trust-no-one case the offline checker must catch. (Editing an existing
+    // honest ledger cannot reach this rung: any content edit changes the hash-chained final_turn_ref,
+    // which the immutable sealed edge pins, so the re-fold rung fires first.) The checker reads only
+    // continuation / receipts / judgment-ledger / scope-events for the prior pack, so those four
+    // suffice. event.attempted = delete_file; the turn proposes write_file.
+    const craftedPriorDir = join(root, "pack-crafted-prior");
+    const craftedCurrentDir = join(root, "pack-crafted-current");
+    const goal_hash = deriveGoalHash("design with mismatched refusal");
+    const priorScope = sealed("loop-1cr", goal_hash);
+    const priorReceipts: ProofReceipt[] = [
+      inLoopReceipt("loop-1cr", goal_hash, "r1", null, priorScope.scope_ref),
+      terminalReceipt("loop-1cr", goal_hash, "close", "r1", 1)
+    ];
+    const rec = createJudgmentRecorder();
+    const t0 = rec.append({
+      loop_id: "loop-1cr",
+      scope_ref: priorScope.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.attachRuntimeReport("loop-1cr", t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}` });
+    rec.attachDelta("loop-1cr", t0.turn_ref, { settled: ["chose Ed25519"] });
+    const scopeRec = createScopeEventRecorder();
+    const event = scopeRec.record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1cr",
+      scope_ref: priorScope.scope_ref,
+      attempted: { action_class: "write", tool_name: "delete_file", target_descriptor: null }, // event says delete_file
+      matched_rule: "forbidden_targets",
+      decision: "REFUSED",
+      prior_receipt_id: "r1"
+    });
+    rec.append({
+      loop_id: "loop-1cr",
+      scope_ref: priorScope.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null }, // turn says write_file
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: event.event_hash, reason_code: "forbidden_targets" }
+    });
+    const priorTurns = rec.judgmentLedgerForLoop("loop-1cr");
+    const reduced = reduceJudgmentLedger({ loop_id: "loop-1cr", scope_ref: priorScope.scope_ref, turns: priorTurns, mode: "verified_context" });
+    const priorContinuation = buildContinuationCapsule({
+      scope_history: [priorScope],
+      scope_events: [event],
+      loop: { loop_id: "loop-1cr", goal_hash, sealed: true, action_count: 1 },
+      mode: "verified_context",
+      reduced
+    });
+    mkdirSync(craftedPriorDir, { recursive: true });
+    writeFileSync(join(craftedPriorDir, "receipts.json"), JSON.stringify(priorReceipts, null, 2));
+    writeFileSync(join(craftedPriorDir, "judgment-ledger.json"), JSON.stringify({ turns: priorTurns }, null, 2));
+    writeFileSync(join(craftedPriorDir, "scope-events.json"), JSON.stringify([event], null, 2));
+    writeFileSync(join(craftedPriorDir, "continuation-capsule.json"), JSON.stringify(priorContinuation, null, 2));
+
+    const edge: ScopeInheritsLoop = {
+      capsule_ref: deriveContinuationRef(priorContinuation),
+      scope_ref: priorContinuation.scope_ref,
+      final_turn_ref: priorContinuation.final_turn_ref!
+    };
+    exportPack({
+      dir: craftedCurrentDir,
+      loop_id: "loop-2cr",
+      goal: "ship after mismatched refusal",
+      delta: { settled: ["wired export"] },
+      lineage: { edge, stateHash: deriveInheritsStateHash(priorContinuation), prior: priorContinuation, priorTurns },
+      seed: { settled: priorContinuation.settled }
+    });
+
+    const report = verifyCrossLoopLinkage({ prior_pack_dir: craftedPriorDir, current_pack_dir: craftedCurrentDir });
+    expect(report.ok).toBe(false);
+    // The earlier rungs (refold, receipt-bind) pass — only the event CONTENT binding catches it.
+    expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_events_bind");
   });
 
   it("fails closed: a loop receipt with NO goal_hash cannot bind to the continuation's goal", () => {

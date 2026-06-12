@@ -132,10 +132,24 @@ function chainGoalBinds(receipts: unknown[], expected_goal_hash: unknown, label:
  * Without this, a turn's self-reported anchor would be trusted bare and a tampered/missing
  * scope-events.json could ride beside a fold it never substantiated. Returns failing detail or null.
  */
+type AttestedEvent = {
+  decision?: unknown;
+  matched_rule?: unknown;
+  scope_ref?: unknown;
+  prior_receipt_id?: unknown;
+  attempted?: { action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown };
+};
+
 function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop_id: string, label: string): string | null {
-  const anchored = (turns as Array<{ turn_index?: number; verdict?: { source?: string; scope_event_hash?: string } }>).filter(
-    (t) => (t.verdict?.source === "scope_gate" || t.verdict?.source === "loop_bound") && typeof t.verdict?.scope_event_hash === "string"
-  );
+  const anchored = (
+    turns as Array<{
+      turn_index?: number;
+      scope_ref?: unknown;
+      prior_receipt_id?: unknown;
+      proposed?: { action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown };
+      verdict?: { kind?: unknown; source?: string; reason_code?: unknown; scope_event_hash?: string };
+    }>
+  ).filter((t) => (t.verdict?.source === "scope_gate" || t.verdict?.source === "loop_bound") && typeof t.verdict?.scope_event_hash === "string");
   if (anchored.length === 0) return null;
   if (!Array.isArray(events)) {
     return (
@@ -143,9 +157,9 @@ function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop
       `readable scope-events.json array to substantiate them (fail closed).`
     );
   }
-  const verified = new Set<string>();
+  const verified = new Map<string, AttestedEvent>();
   for (const e of events) {
-    const ev = e as Parameters<typeof deriveScopeEventHash>[0] & { event_hash?: unknown; loop_id?: unknown };
+    const ev = e as Parameters<typeof deriveScopeEventHash>[0] & AttestedEvent & { event_hash?: unknown; loop_id?: unknown };
     let recomputed: string;
     try {
       recomputed = deriveScopeEventHash(ev);
@@ -161,14 +175,68 @@ function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop
     if (ev.loop_id !== expected_loop_id) {
       return `${label} pack scope-events.json event ${recomputed} belongs to loop ${JSON.stringify(ev.loop_id)} rather than ${expected_loop_id} (fail closed).`;
     }
-    verified.add(recomputed);
+    verified.set(recomputed, ev);
   }
+  // CONTENT binding (mirror the exporter): the event_hash commits the event's decision, matched_rule,
+  // attempted descriptor, prior_receipt_id, and scope_ref — so a turn anchoring a real event hash is
+  // not enough. The turn's verdict/source/reason_code/proposed/prior_receipt_id/scope_ref must MATCH
+  // the attested event; otherwise, in a pack with several attested events, a turn could cite an
+  // unrelated valid same-loop event and have its (refused/escalated) fold pass unsubstantiated.
+  const anchoredHashes = new Set<string>();
   for (const t of anchored) {
     const h = t.verdict!.scope_event_hash!;
-    if (!verified.has(h)) {
+    const ev = verified.get(h);
+    if (!ev) {
       return (
         `${label} ledger turn ${t.turn_index} cites scope_event_hash ${h}, which is not among the ${label} pack's ` +
         `verified scope events (fail closed).`
+      );
+    }
+    if (anchoredHashes.has(h)) {
+      return `${label} attested scope event ${h} is anchored by more than one judgment turn (fail closed).`;
+    }
+    anchoredHashes.add(h);
+    if (t.verdict!.kind !== ev.decision) {
+      return (
+        `${label} ledger turn ${t.turn_index} verdict ${JSON.stringify(t.verdict!.kind)} does not match attested ` +
+        `scope event ${h} decision ${JSON.stringify(ev.decision)} (fail closed).`
+      );
+    }
+    // A max_steps event is a loop_bound halt; every other attested scope event is a scope_gate refusal.
+    const expectedSource = ev.matched_rule === "max_steps" ? "loop_bound" : "scope_gate";
+    if (t.verdict!.source !== expectedSource) {
+      return (
+        `${label} ledger turn ${t.turn_index} source ${JSON.stringify(t.verdict!.source)} does not match attested ` +
+        `scope event ${h} (matched_rule ${JSON.stringify(ev.matched_rule)} implies ${expectedSource}); fail closed.`
+      );
+    }
+    if ((t.verdict!.reason_code ?? null) !== (ev.matched_rule ?? null)) {
+      return (
+        `${label} ledger turn ${t.turn_index} reason_code ${JSON.stringify(t.verdict!.reason_code ?? null)} does not ` +
+        `match attested scope event ${h} matched_rule ${JSON.stringify(ev.matched_rule ?? null)} (fail closed).`
+      );
+    }
+    const p = t.proposed ?? {};
+    if (
+      p.action_class !== ev.attempted?.action_class ||
+      p.tool_name !== ev.attempted?.tool_name ||
+      (p.target_descriptor ?? null) !== (ev.attempted?.target_descriptor ?? null)
+    ) {
+      return (
+        `${label} ledger turn ${t.turn_index} proposed descriptor does not match the descriptor committed by ` +
+        `attested scope event ${h} (fail closed).`
+      );
+    }
+    if ((t.prior_receipt_id ?? null) !== (ev.prior_receipt_id ?? null)) {
+      return (
+        `${label} ledger turn ${t.turn_index} inherits prior_receipt_id ${JSON.stringify(t.prior_receipt_id ?? null)} ` +
+        `but attested scope event ${h} is anchored to ${JSON.stringify(ev.prior_receipt_id ?? null)} (fail closed).`
+      );
+    }
+    if ((t.scope_ref ?? null) !== (ev.scope_ref ?? null)) {
+      return (
+        `${label} ledger turn ${t.turn_index} cites scope_ref ${JSON.stringify(t.scope_ref ?? null)} but attested ` +
+        `scope event ${h} commits scope_ref ${JSON.stringify(ev.scope_ref ?? null)} (fail closed).`
       );
     }
   }
@@ -184,28 +252,47 @@ function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop
  * chain it ships with, never from the (unsigned) ledger fields alone.
  */
 function bindLedgerTurnsToChain(turns: unknown[], receipts: unknown[], expected_loop_id: string, label: string): string | null {
-  const byId = new Map<string, { outcome?: unknown; loop_id?: unknown; scope_ref?: unknown }>();
+  const byId = new Map<
+    string,
+    { outcome?: unknown; loop_id?: unknown; scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown }
+  >();
   for (const r of receipts) {
     const rec = r as {
       receipt_id?: unknown;
       outcome?: unknown;
-      constraints?: { loop?: { loop_id?: unknown }; scope?: { scope_ref?: unknown } };
+      constraints?: {
+        loop?: { loop_id?: unknown };
+        scope?: { scope_ref?: unknown; action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown };
+      };
     };
     if (typeof rec.receipt_id === "string") {
       byId.set(rec.receipt_id, {
         outcome: rec.outcome,
         loop_id: rec.constraints?.loop?.loop_id,
-        scope_ref: rec.constraints?.scope?.scope_ref
+        scope_ref: rec.constraints?.scope?.scope_ref,
+        action_class: rec.constraints?.scope?.action_class,
+        tool_name: rec.constraints?.scope?.tool_name,
+        target_descriptor: rec.constraints?.scope?.target_descriptor,
+        target_descriptors: rec.constraints?.scope?.target_descriptors
       });
     }
   }
+  // Canonical (order-independent) per-target hash list, mirroring the exporter's bind so a tampered
+  // ledger cannot reorder/alter the individual target hashes while the receipt proves a different set.
+  const canonTargets = (v: unknown): string | undefined =>
+    Array.isArray(v) ? JSON.stringify([...(v as unknown[])].map((x) => String(x)).sort()) : undefined;
   // Forward direction: every bind-verdict turn must cite a receipt the chain carries (checked in
   // the loop below). Reverse direction: count citations, then require every IN-LOOP receipt to be
   // recorded by EXACTLY ONE bind turn — a ledger that omits a turn for a real signed in-loop
   // receipt is truncated, and its fold silently drops that step's delta (fail closed).
   const citedCount = new Map<string, number>();
   for (const t of turns) {
-    const turn = t as { turn_index?: number; scope_ref?: string; verdict?: { kind?: string; source?: string; receipt_id?: string } };
+    const turn = t as {
+      turn_index?: number;
+      scope_ref?: string;
+      proposed?: { action_class?: unknown; tool_name?: unknown; target_descriptor?: unknown; target_descriptors?: unknown };
+      verdict?: { kind?: string; source?: string; receipt_id?: string };
+    };
     const v = turn.verdict;
     if (v?.source !== "bind" || typeof v.receipt_id !== "string") continue;
     citedCount.set(v.receipt_id, (citedCount.get(v.receipt_id) ?? 0) + 1);
@@ -240,6 +327,26 @@ function bindLedgerTurnsToChain(turns: unknown[], receipts: unknown[], expected_
       return (
         `${label} ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
         `stamps ${JSON.stringify(r.scope_ref)} (fail closed).`
+      );
+    }
+    // Bind the turn's PROPOSED MOVE to the signed constraints.scope descriptor — exactly as the
+    // exporter does. Without this, a pack could keep the same receipt_id/outcome/scope_ref but edit
+    // turn.proposed (action_class/tool_name/target hash), and the reducer would re-fold and publish an
+    // action identity the signed receipt never authorized (fail closed). target_descriptors (multi-
+    // target tools) is compared canonically; both absent is a match.
+    const p = turn.proposed ?? {};
+    if (
+      p.action_class !== r.action_class ||
+      p.tool_name !== r.tool_name ||
+      (p.target_descriptor ?? null) !== (r.target_descriptor ?? null) ||
+      canonTargets(p.target_descriptors) !== canonTargets(r.target_descriptors)
+    ) {
+      return (
+        `${label} ledger turn ${turn.turn_index} proposes ` +
+        `${JSON.stringify(p.action_class)}/${JSON.stringify(p.tool_name)}/${JSON.stringify(p.target_descriptor ?? null)} ` +
+        `but receipt ${v.receipt_id}'s signed constraints.scope authorizes ` +
+        `${JSON.stringify(r.action_class)}/${JSON.stringify(r.tool_name)}/${JSON.stringify(r.target_descriptor ?? null)} ` +
+        `(the fold would publish an action identity the receipt did not authorize — fail closed).`
       );
     }
   }
