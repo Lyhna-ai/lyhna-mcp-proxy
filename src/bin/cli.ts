@@ -13,6 +13,7 @@
 
 import { runHandoff, runPost, HANDOFF_USAGE, POST_USAGE } from "../capsule-cli.js";
 import { runCtl, runExportPack, CTL_USAGE, EXPORT_PACK_USAGE } from "../supervisor-cli.js";
+import { runPushPack, PUSH_PACK_USAGE } from "./push-pack.js";
 import { runVerifyCrossLoop } from "./verify-cross-loop.js";
 
 const HELP =
@@ -24,6 +25,8 @@ const HELP =
   "  lyhna-mcp export-pack     export a closed loop's full proof pack in one command\n" +
   "  lyhna-mcp verify-cross-loop --prior <dir> --current <dir>\n" +
   "                            re-verify a cross-loop inheritance linkage offline from two packs\n" +
+  "  lyhna-mcp push-pack --pack <dir> --destination supabase\n" +
+  "                            push an exported pack into one Supabase row (idempotent, read-back verified)\n" +
   "  lyhna-mcp handoff [dir]   print the paste-ready next-agent handoff from a proof pack\n" +
   "  lyhna-mcp post --pr <n>   post the pack's proof card to a GitHub PR (uses YOUR gh login)\n" +
   "  lyhna-mcp export …        package an existing receipts.json (see export-loop-proof usage)\n" +
@@ -34,7 +37,9 @@ const HELP =
   "\n" +
   CTL_USAGE +
   "\n" +
-  EXPORT_PACK_USAGE;
+  EXPORT_PACK_USAGE +
+  "\n" +
+  PUSH_PACK_USAGE;
 
 const argv = process.argv.slice(2);
 const verb = argv[0];
@@ -64,6 +69,8 @@ if (verb === undefined || verb === "proxy") {
   process.exitCode = await runExportPack(argv.slice(1), io);
 } else if (verb === "verify-cross-loop") {
   process.exitCode = runVerifyCrossLoop(argv.slice(1), io);
+} else if (verb === "push-pack") {
+  process.exitCode = await runPushPack(argv.slice(1), io);
 } else if (verb === "handoff") {
   process.exitCode = runHandoff(argv.slice(1), io);
 } else if (verb === "post") {

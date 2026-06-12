@@ -250,6 +250,21 @@ not seal.
 > only by the supervisor identity, never by the governed agent. See
 > `docs/PRODUCTION-ISOLATION.md`.
 
+## Persist An Exported Pack To Supabase (optional, after export)
+
+Once `export-pack` has written a pack, `push-pack` persists it as ONE read-back-verified
+Supabase row (idempotent on `capsule_ref`; fail-closed on any missing/malformed/mismatched
+artifact). Export never depends on this — proof generation stays pure and local.
+
+```powershell
+$env:LYHNA_SUPABASE_URL='https://<project>.supabase.co'
+$env:LYHNA_SUPABASE_SERVICE_ROLE_KEY='<service-role-key>'   # never commit keys
+npx -y @lyhna/mcp push-pack --pack ./proof-pack --destination supabase
+```
+
+Table DDL, env reference, idempotency/conflict semantics, and the manual smoke recipe live in
+[docs/SUPABASE-DESTINATION.md](docs/SUPABASE-DESTINATION.md).
+
 ## Confirm It Mirrors Upstream Tools
 
 This command starts a temporary proxy process with stub `APPROVED`, connects as an MCP client, lists tools, prints the result, and exits:
