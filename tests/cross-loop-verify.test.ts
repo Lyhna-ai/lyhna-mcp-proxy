@@ -9,6 +9,7 @@ import {
   buildContinuationCapsule,
   buildLoopProofBundle,
   createJudgmentRecorder,
+  createScopeEventRecorder,
   deriveContinuationRef,
   deriveGoalHash,
   deriveInheritsStateHash,
@@ -18,6 +19,7 @@ import {
   writeProofPackFiles,
   type ContinuationCapsule,
   type ProofReceipt,
+  type ScopeEvent,
   type ScopeInheritsLoop,
   type SealedScope
 } from "../src/index.js";
@@ -86,6 +88,7 @@ function exportPack(opts: {
   delta: { settled?: string[]; next_actions?: string[]; changed?: string[] };
   lineage?: { edge: ScopeInheritsLoop; stateHash: string; prior: ContinuationCapsule; priorTurns: unknown };
   seed?: { settled?: string[]; open_questions?: string[]; next_actions?: string[]; changed?: string[] };
+  withRefusal?: boolean;
 }) {
   const goal_hash = deriveGoalHash(opts.goal);
   const scope = sealed(opts.loop_id, goal_hash, opts.lineage);
@@ -103,6 +106,28 @@ function exportPack(opts: {
   });
   rec.attachRuntimeReport(opts.loop_id, t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}` });
   rec.attachDelta(opts.loop_id, t0.turn_ref, opts.delta);
+  // Optional attested refusal: a scope event + the scope_gate turn anchored to it.
+  const events: ScopeEvent[] = [];
+  if (opts.withRefusal) {
+    const scopeRec = createScopeEventRecorder();
+    const event = scopeRec.record({
+      event_type: "scope_refusal",
+      loop_id: opts.loop_id,
+      scope_ref: scope.scope_ref,
+      attempted: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      matched_rule: "forbidden_targets",
+      decision: "REFUSED",
+      prior_receipt_id: "r1"
+    });
+    events.push(event);
+    rec.append({
+      loop_id: opts.loop_id,
+      scope_ref: scope.scope_ref,
+      prior_receipt_id: "r1",
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "REFUSED", source: "scope_gate", scope_event_hash: event.event_hash, reason_code: "forbidden_targets" }
+    });
+  }
   const turns = rec.judgmentLedgerForLoop(opts.loop_id);
   const reduced = reduceJudgmentLedger({
     loop_id: opts.loop_id,
@@ -113,7 +138,7 @@ function exportPack(opts: {
   });
   const continuation = buildContinuationCapsule({
     scope_history: [scope],
-    scope_events: [],
+    scope_events: events,
     loop: { loop_id: opts.loop_id, goal_hash, sealed: true, action_count: 1 },
     mode: "verified_context",
     reduced
@@ -126,7 +151,7 @@ function exportPack(opts: {
       sealed_scope: scope,
       scope_history: [scope],
       continuation,
-      scope_events: [],
+      scope_events: events,
       judgment_turns: turns,
       ...(opts.seed ? { inherited_state: opts.seed } : {}),
       ...(opts.lineage ? { prior_continuation: opts.lineage.prior, prior_judgment_turns: opts.lineage.priorTurns as never } : {})
@@ -487,6 +512,76 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
         const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
         expect(report.ok).toBe(false);
         expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_chain_goal_binds");
+      }
+    );
+  });
+
+  it("fails closed: scope-event-anchored turns bind to verified scope-events.json (missing or tampered)", () => {
+    // A prior pack with an attested refusal — its scope_gate turn anchors a scope event.
+    const evPriorDir = join(root, "pack-loop-1-ev");
+    const evCurrentDir = join(root, "pack-loop-2-ev");
+    const evPrior = exportPack({
+      dir: evPriorDir,
+      loop_id: "loop-1ev",
+      goal: "design with refusal",
+      delta: { settled: ["chose Ed25519"] },
+      withRefusal: true
+    });
+    const edge: ScopeInheritsLoop = {
+      capsule_ref: deriveContinuationRef(evPrior.continuation),
+      scope_ref: evPrior.continuation.scope_ref,
+      final_turn_ref: evPrior.continuation.final_turn_ref!
+    };
+    exportPack({
+      dir: evCurrentDir,
+      loop_id: "loop-2ev",
+      goal: "ship after refusal",
+      delta: { settled: ["wired export"] },
+      lineage: { edge, stateHash: deriveInheritsStateHash(evPrior.continuation), prior: evPrior.continuation, priorTurns: evPrior.turns },
+      seed: { settled: evPrior.continuation.settled }
+    });
+    // Genuine pair verifies.
+    expect(verifyCrossLoopLinkage({ prior_pack_dir: evPriorDir, current_pack_dir: evCurrentDir }).ok).toBe(true);
+    // Missing scope-events.json: the anchored turn cannot be substantiated.
+    const evPath = join(evPriorDir, "scope-events.json");
+    const original = readFileSync(evPath, "utf8");
+    try {
+      unlinkSync(evPath);
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: evPriorDir, current_pack_dir: evCurrentDir });
+      expect(report.ok).toBe(false);
+      expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_events_bind");
+    } finally {
+      writeFileSync(evPath, original);
+    }
+    // Tampered event (matched_rule rewritten): recompute no longer equals the declared event_hash.
+    withTamperedFile(evPriorDir, "scope-events.json", (events: Array<{ matched_rule?: string }>) => {
+      events[0]!.matched_rule = "totally_different_rule";
+      return events;
+    }, () => {
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: evPriorDir, current_pack_dir: evCurrentDir });
+      expect(report.ok).toBe(false);
+      const failed = report.checks.find((c) => !c.ok)!;
+      expect(failed.name).toBe("prior_ledger_events_bind");
+      expect(failed.detail).toContain("tampered");
+    });
+  });
+
+  it("fails closed: a loop receipt with NO goal_hash cannot bind to the continuation's goal", () => {
+    withTamperedFile(
+      priorDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: { goal_hash?: string }; loop_close?: { goal_hash?: string } } }>) => {
+        for (const r of receipts) {
+          if (r.constraints?.loop) delete r.constraints.loop.goal_hash;
+          if (r.constraints?.loop_close) delete r.constraints.loop_close.goal_hash;
+        }
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        // Either the structural chain check or the goal binding refuses — both are fail closed.
+        expect(["prior_chain_structural", "prior_chain_goal_binds"]).toContain(report.checks.find((c) => !c.ok)!.name);
       }
     );
   });

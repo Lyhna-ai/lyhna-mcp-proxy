@@ -39,6 +39,7 @@ import {
   type ScopeCapsuleExport,
   type ScopeInheritsLoop
 } from "./scope-capsule.js";
+import { deriveScopeEventHash } from "./scope-event-recorder.js";
 
 export type CrossLoopCheck = {
   name: string;
@@ -101,14 +102,74 @@ function chainGoalBinds(receipts: unknown[], expected_goal_hash: unknown, label:
       receipt_id?: unknown;
       constraints?: { loop?: { goal_hash?: unknown }; loop_close?: { goal_hash?: unknown } };
     };
-    for (const gh of [rec.constraints?.loop?.goal_hash, rec.constraints?.loop_close?.goal_hash]) {
-      if (gh !== undefined && gh !== expected_goal_hash) {
+    // A loop / loop_close constraint with NO goal_hash fails closed too: a chain that never cites
+    // the goal cannot be said to bind to the continuation's goal (absence is not agreement).
+    for (const c of [rec.constraints?.loop, rec.constraints?.loop_close]) {
+      if (c === undefined || c === null) continue;
+      const gh = (c as { goal_hash?: unknown }).goal_hash;
+      if (gh === undefined) {
+        return (
+          `${label} chain receipt ${JSON.stringify(rec.receipt_id)} carries a loop constraint with no goal_hash; ` +
+          `the chain cannot be bound to the ${label} continuation's goal (fail closed).`
+        );
+      }
+      if (gh !== expected_goal_hash) {
         return (
           `${label} chain receipt ${JSON.stringify(rec.receipt_id)} cites goal_hash ${JSON.stringify(gh)} but the ` +
           `${label} continuation claims ${JSON.stringify(expected_goal_hash)}; the signed chain belongs to a ` +
           `different goal than the capsule beside it (fail closed).`
         );
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * Bind a ledger's scope-event-anchored turns (scope_gate / loop_bound verdicts) to the pack's
+ * scope-events.json: each cited scope_event_hash must belong to an event that RECOMPUTES to its own
+ * event_hash (deriveScopeEventHash — a tampered event file fails) and belongs to the expected loop.
+ * Without this, a turn's self-reported anchor would be trusted bare and a tampered/missing
+ * scope-events.json could ride beside a fold it never substantiated. Returns failing detail or null.
+ */
+function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop_id: string, label: string): string | null {
+  const anchored = (turns as Array<{ turn_index?: number; verdict?: { source?: string; scope_event_hash?: string } }>).filter(
+    (t) => (t.verdict?.source === "scope_gate" || t.verdict?.source === "loop_bound") && typeof t.verdict?.scope_event_hash === "string"
+  );
+  if (anchored.length === 0) return null;
+  if (!Array.isArray(events)) {
+    return (
+      `${label} ledger carries ${anchored.length} scope-event-anchored turn(s) but the ${label} pack has no ` +
+      `readable scope-events.json array to substantiate them (fail closed).`
+    );
+  }
+  const verified = new Set<string>();
+  for (const e of events) {
+    const ev = e as Parameters<typeof deriveScopeEventHash>[0] & { event_hash?: unknown; loop_id?: unknown };
+    let recomputed: string;
+    try {
+      recomputed = deriveScopeEventHash(ev);
+    } catch (error) {
+      return `${label} pack scope-events.json contains an event that cannot be hashed (${(error as Error).message}); fail closed.`;
+    }
+    if (recomputed !== ev.event_hash) {
+      return (
+        `${label} pack scope-events.json event recomputes to ${recomputed} but declares event_hash ` +
+        `${JSON.stringify(ev.event_hash)} (tampered — fail closed).`
+      );
+    }
+    if (ev.loop_id !== expected_loop_id) {
+      return `${label} pack scope-events.json event ${recomputed} belongs to loop ${JSON.stringify(ev.loop_id)} rather than ${expected_loop_id} (fail closed).`;
+    }
+    verified.add(recomputed);
+  }
+  for (const t of anchored) {
+    const h = t.verdict!.scope_event_hash!;
+    if (!verified.has(h)) {
+      return (
+        `${label} ledger turn ${t.turn_index} cites scope_event_hash ${h}, which is not among the ${label} pack's ` +
+        `verified scope events (fail closed).`
+      );
     }
   }
   return null;
@@ -523,6 +584,17 @@ function verifyCrossLoopLinkageChecks(
     "prior_ledger_receipts_bind",
     "every bind-verdict turn in the prior ledger cites a receipt present in the prior chain (loop / outcome / scope agree)"
   );
+  // Scope-event-anchored turns (refusals / max-step bounds) bind to the prior pack's verified
+  // scope-events.json — never to the turn's self-reported anchor alone.
+  const priorEventsR = readJson<unknown>(input.prior_pack_dir, "scope-events.json");
+  const priorEventFail = bindEventTurnsToEvents(
+    priorLedgerR.value.turns,
+    priorEventsR.ok ? priorEventsR.value : null,
+    priorCont.loop_id,
+    "prior"
+  );
+  if (priorEventFail) return fail("prior_ledger_events_bind", priorEventFail);
+  pass("prior_ledger_events_bind", "every scope-event-anchored prior turn cites a verified event in the prior pack");
   const foldState = canonicalScopeJson(plainState(priorFold));
   if (canonicalScopeJson(plainState(priorCont)) !== foldState) {
     return fail(
@@ -569,6 +641,15 @@ function verifyCrossLoopLinkageChecks(
       "child_ledger_receipts_bind",
       "every bind-verdict turn in the child ledger cites a receipt present in the current chain (loop / outcome / scope agree)"
     );
+    const curEventsR = readJson<unknown>(input.current_pack_dir, "scope-events.json");
+    const curEventFail = bindEventTurnsToEvents(
+      curLedgerR.value.turns,
+      curEventsR.ok ? curEventsR.value : null,
+      curCont.loop_id,
+      "current"
+    );
+    if (curEventFail) return fail("child_ledger_events_bind", curEventFail);
+    pass("child_ledger_events_bind", "every scope-event-anchored child turn cites a verified event in the current pack");
     let curFold: ReturnType<typeof reduceJudgmentLedger>;
     try {
       curFold = reduceJudgmentLedger({
