@@ -150,13 +150,19 @@ function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop
       verdict?: { kind?: unknown; source?: string; reason_code?: unknown; scope_event_hash?: string };
     }>
   ).filter((t) => (t.verdict?.source === "scope_gate" || t.verdict?.source === "loop_bound") && typeof t.verdict?.scope_event_hash === "string");
-  if (anchored.length === 0) return null;
   if (!Array.isArray(events)) {
+    // No readable scope-events.json. Fine ONLY if the ledger anchors none; if it anchors any, those
+    // turns cannot be substantiated.
+    if (anchored.length === 0) return null;
     return (
       `${label} ledger carries ${anchored.length} scope-event-anchored turn(s) but the ${label} pack has no ` +
       `readable scope-events.json array to substantiate them (fail closed).`
     );
   }
+  // events IS an array (possibly empty) — scan it EVEN WHEN anchored.length === 0. Otherwise a pack
+  // could drop every scope_gate / loop_bound turn from the ledger + continuation while leaving the
+  // attested events in the file; the truncated ledger re-folds to a truncated continuation and the
+  // reverse check below (every verified event must be anchored) is what catches the omission.
   const verified = new Map<string, AttestedEvent>();
   for (const e of events) {
     const ev = e as Parameters<typeof deriveScopeEventHash>[0] & AttestedEvent & { event_hash?: unknown; loop_id?: unknown };

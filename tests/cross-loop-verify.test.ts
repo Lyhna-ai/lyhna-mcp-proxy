@@ -736,6 +736,51 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     });
   });
 
+  it("fails closed: an orphan attested event even when the ledger has ZERO event-anchored turns", () => {
+    // The reverse-binding regression guard: a pack with NO scope_gate / loop_bound turns at all (the
+    // refusal turn was dropped from the ledger + continuation) but a valid same-loop event left in
+    // scope-events.json. The early `anchored.length === 0` return must NOT skip the event scan.
+    const zPriorDir = join(root, "pack-loop-1-zero");
+    const zCurrentDir = join(root, "pack-loop-2-zero");
+    const zPrior = exportPack({
+      dir: zPriorDir,
+      loop_id: "loop-1z",
+      goal: "design with a later-dropped refusal",
+      delta: { settled: ["chose Ed25519"] }
+      // no withRefusal: the ledger has only the bind turn, zero event-anchored turns
+    });
+    const edge: ScopeInheritsLoop = {
+      capsule_ref: deriveContinuationRef(zPrior.continuation),
+      scope_ref: zPrior.continuation.scope_ref,
+      final_turn_ref: zPrior.continuation.final_turn_ref!
+    };
+    exportPack({
+      dir: zCurrentDir,
+      loop_id: "loop-2z",
+      goal: "ship with a later-dropped refusal",
+      delta: { settled: ["wired export"] },
+      lineage: { edge, stateHash: deriveInheritsStateHash(zPrior.continuation), prior: zPrior.continuation, priorTurns: zPrior.turns },
+      seed: { settled: zPrior.continuation.settled }
+    });
+    expect(verifyCrossLoopLinkage({ prior_pack_dir: zPriorDir, current_pack_dir: zCurrentDir }).ok).toBe(true);
+    // Leave a valid same-loop attested event in the file that no turn cites.
+    const orphan = createScopeEventRecorder().record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1z",
+      scope_ref: zPrior.scope.scope_ref,
+      attempted: { action_class: "write", tool_name: "delete_file", target_descriptor: null },
+      matched_rule: "forbidden_targets",
+      decision: "REFUSED",
+      prior_receipt_id: "r1"
+    });
+    writeFileSync(join(zPriorDir, "scope-events.json"), JSON.stringify([orphan], null, 2));
+    const report = verifyCrossLoopLinkage({ prior_pack_dir: zPriorDir, current_pack_dir: zCurrentDir });
+    expect(report.ok).toBe(false);
+    const failed = report.checks.find((c) => !c.ok)!;
+    expect(failed.name).toBe("prior_ledger_events_bind");
+    expect(failed.detail).toContain("NO judgment turn anchors");
+  });
+
   it("fails closed: a loop receipt with NO goal_hash cannot bind to the continuation's goal", () => {
     withTamperedFile(
       priorDir,
