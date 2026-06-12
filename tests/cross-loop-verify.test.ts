@@ -444,6 +444,33 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: a truncated ledger — the chain carries an in-loop receipt no bind turn records", () => {
+    // Append a second signed in-loop receipt (chain stays valid: r1 -> r1b -> close with
+    // action_count 2) while the ledger still records only r1. The fold would silently drop the
+    // second step's delta — reverse binding catches it.
+    const goal_hash = deriveGoalHash("design the gate");
+    withTamperedFile(
+      priorDir,
+      "receipts.json",
+      (receipts: Array<{ receipt_id?: string; constraints?: { loop?: { prior_receipt_id?: string | null }; loop_close?: { prior_receipt_id?: string; action_count?: number }; scope?: { scope_ref?: string } } }>) => {
+        const inLoop = receipts.find((r) => r.constraints?.loop && !r.constraints?.loop_close)!;
+        const close = receipts.find((r) => r.constraints?.loop_close)!;
+        const extra = inLoopReceipt("loop-1", goal_hash, "r1b", inLoop.receipt_id!, inLoop.constraints!.scope!.scope_ref!);
+        close.constraints!.loop!.prior_receipt_id = "r1b";
+        close.constraints!.loop_close!.prior_receipt_id = "r1b";
+        close.constraints!.loop_close!.action_count = 2;
+        return [receipts[0], extra, close] as never;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(failed.name).toBe("prior_ledger_receipts_bind");
+        expect(failed.detail).toContain("truncated");
+      }
+    );
+  });
+
   it("fails closed: a same-loop chain for a DIFFERENT goal_hash cannot stand in for the continuation's chain", () => {
     const otherGoal = deriveGoalHash("an entirely different goal");
     withTamperedFile(

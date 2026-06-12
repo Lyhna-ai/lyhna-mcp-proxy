@@ -138,10 +138,16 @@ function bindLedgerTurnsToChain(turns: unknown[], receipts: unknown[], expected_
       });
     }
   }
+  // Forward direction: every bind-verdict turn must cite a receipt the chain carries (checked in
+  // the loop below). Reverse direction: count citations, then require every IN-LOOP receipt to be
+  // recorded by EXACTLY ONE bind turn — a ledger that omits a turn for a real signed in-loop
+  // receipt is truncated, and its fold silently drops that step's delta (fail closed).
+  const citedCount = new Map<string, number>();
   for (const t of turns) {
     const turn = t as { turn_index?: number; scope_ref?: string; verdict?: { kind?: string; source?: string; receipt_id?: string } };
     const v = turn.verdict;
     if (v?.source !== "bind" || typeof v.receipt_id !== "string") continue;
+    citedCount.set(v.receipt_id, (citedCount.get(v.receipt_id) ?? 0) + 1);
     const r = byId.get(v.receipt_id);
     if (!r) {
       return (
@@ -173,6 +179,28 @@ function bindLedgerTurnsToChain(turns: unknown[], receipts: unknown[], expected_
       return (
         `${label} ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
         `stamps ${JSON.stringify(r.scope_ref)} (fail closed).`
+      );
+    }
+  }
+  // Reverse direction: every in-loop receipt the chain carries must be recorded by exactly one
+  // bind-verdict turn (the exporter's receipts<->judgment mapping, mirrored read-side).
+  for (const r of receipts) {
+    const rec = r as { receipt_id?: unknown; constraints?: { loop?: unknown; loop_close?: unknown } };
+    const isTerminal = typeof rec.constraints?.loop_close === "object" && rec.constraints?.loop_close !== null;
+    const isInLoop = typeof rec.constraints?.loop === "object" && rec.constraints?.loop !== null && !isTerminal;
+    if (!isInLoop || typeof rec.receipt_id !== "string") continue;
+    const count = citedCount.get(rec.receipt_id) ?? 0;
+    if (count === 0) {
+      return (
+        `${label} chain carries in-loop receipt ${rec.receipt_id} that NO bind-verdict turn in the ${label} ` +
+        `ledger records — the ledger is truncated relative to the signed chain, so its fold silently drops ` +
+        `that step (fail closed).`
+      );
+    }
+    if (count > 1) {
+      return (
+        `${label} chain in-loop receipt ${rec.receipt_id} is cited by ${count} bind-verdict turns; exactly one ` +
+        `is expected (fail closed).`
       );
     }
   }
