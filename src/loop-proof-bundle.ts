@@ -746,6 +746,13 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // stateful lineage claim (below) requires at least one — otherwise this loop's commitment-bearing
     // scope_ref is stamped into NO signed receipt and the "bound to the signed chain" claim is vacuous.
     let inLoopScopeStamps = 0;
+    // Of those, how many stamp the FINAL scope_ref specifically. A stateful lineage commitment is
+    // sealed into the final scope_ref, so the binding "commitment is bound to the signed chain" holds
+    // only when a signed in-loop receipt stamps the FINAL version — not merely some earlier amendment
+    // version. (A pack whose final scope_ref is unstamped because a TRAILING amendment followed the
+    // last governed action fails closed here, at the amendment boundary, so it can never be produced;
+    // the offline two-pack checker enforces the same rule read-side.)
+    let finalScopeStamps = 0;
     input.receipts.forEach((r, i) => {
       const c = r.constraints as
         | {
@@ -769,7 +776,10 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
               `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
           );
         }
-        if (isInLoop) inLoopScopeStamps += 1;
+        if (isInLoop) {
+          inLoopScopeStamps += 1;
+          if (sref === finalScope.scope_ref) finalScopeStamps += 1;
+        }
         // FAIL CLOSED (per-step scope anchoring): the scope stamp must cite the SAME predecessor as the
         // signed `constraints.loop`. The runtime stamps both inside one loop mutex with the same
         // `prior_receipt_id` (loop.ts), so a scope anchor pointing at a different predecessor than the
@@ -880,19 +890,39 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       }
     });
 
-    // FAIL CLOSED (stateful lineage must be chain-stamped): a sealed inherits_state_hash claims the
-    // inherited state is bound to the SIGNED chain via this loop's scope_ref. That only holds if some
-    // signed in-loop receipt actually STAMPS a presented scope version (every history version carries
-    // the immutable commitment). A loop with no consequential in-loop receipts — only the exempt
-    // terminal loop_close — stamps the commitment-bearing scope_ref nowhere, so a caller could pair a
-    // genuine terminal chain (same loop_id/goal_hash) with a rewritten sealed scope/continuation
-    // pointing at an arbitrary prior pack. Refuse to claim signed-chain binding the chain doesn't carry.
-    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && inLoopScopeStamps === 0) {
+    // FAIL CLOSED (stateful lineage must be chain-stamped on the FINAL scope_ref): a sealed
+    // inherits_state_hash is committed into the FINAL scope_ref, so "the inherited state is bound to
+    // the signed chain" holds only when a signed in-loop receipt stamps THAT final scope_ref. Two
+    // ways this fails:
+    //   (1) no in-loop scope stamp at all (only the exempt terminal loop_close) — a caller could pair
+    //       a genuine terminal chain with a rewritten sealed scope/continuation pointing at an
+    //       arbitrary prior pack; OR
+    //   (2) the only in-loop stamps cite an EARLIER amendment version because a TRAILING amendment
+    //       followed the last governed action, leaving the final scope_ref unstamped.
+    // Both are refused HERE, at the amendment boundary, so a pack the offline two-pack checker would
+    // reject (it enforces the same final-scope_ref stamp rule, and packs ship no scope-history to
+    // re-derive earlier versions) can never be produced in the first place.
+    //
+    // MODE-AGNOSTIC (architect ruling): the guard's predicate is the COMMITMENT's presence, not the
+    // privacy mode. inherits_state_hash seals into the final scope_ref in BOTH modes; a lineage claim
+    // no signed receipt stamps is equally vacuous in either, and the offline checker enforces the
+    // final-scope_ref stamp mode-agnostically. Proof Mode only removes plaintext STATE — it does NOT
+    // exempt a stateful lineage commitment. Gating this on verified_context would let Proof Mode
+    // produce the exact shape the checker rejects.
+    if (original.structural.inherits_state_hash !== undefined && finalScopeStamps === 0) {
+      const trailingAmendment = inLoopScopeStamps > 0;
       throw new Error(
-        `Verified Context export claims inherited state bound to the signed chain (inherits_state_hash), but ` +
-          `no signed in-loop receipt stamps this loop's scope_ref — only the exempt terminal loop_close is ` +
-          `present, so the commitment is anchored to no signature. Refusing to claim signed-chain binding the ` +
-          `receipt chain does not substantiate (fail closed).`
+        `This export seals a stateful lineage commitment (inherits_state_hash) bound to the signed chain, but ` +
+          `no signed in-loop receipt stamps the FINAL scope_ref ${finalScope.scope_ref}` +
+          (trailingAmendment
+            ? ` — the final scope version was produced by a TRAILING amendment after the last governed action, so ` +
+              `the commitment is anchored to no signature. Remedy: perform a governed action AFTER the amendment ` +
+              `(so a signed receipt stamps the final scope_ref) before close, avoid amending after the last action, ` +
+              `or remove the stateful inheritance claim (inherits_state_hash); then re-export (fail closed).`
+            : ` — only the exempt terminal loop_close is present (no governed in-loop action), so the commitment is ` +
+              `anchored to no signature. Remedy: perform a governed action before close so a signed receipt stamps ` +
+              `the final scope_ref, or remove the stateful inheritance claim (inherits_state_hash); then re-export ` +
+              `(fail closed).`)
       );
     }
 
@@ -1807,7 +1837,14 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle, scope_
                     `  this loop and by the Stage E two-pack check.`
                   ]),
               `- What remains OUTSIDE the proof: supervisor honesty at open (the supervisor read the genuine`,
-              `  prior pack when sealing the commitment) — the system's trust root by design.`
+              `  prior pack when sealing the commitment) — the system's trust root by design.`,
+              `- KNOWN BOUNDARY (what this does NOT assert): the commitment is bound to the signed chain via the`,
+              `  FINAL \`scope_ref\`, so a signed in-loop receipt must stamp that final version. A TRAILING`,
+              `  amendment (amending the scope AFTER the last governed action) leaves the final \`scope_ref\``,
+              `  unstamped; the pack ships no scope-history to re-derive earlier versions, so this is refused`,
+              `  fail-closed at EXPORT and by the Stage E checker. Remedy: don't amend an inheriting loop after`,
+              `  its last action, or perform a governed action after the amendment so a signed receipt stamps`,
+              `  the final \`scope_ref\` before export.`
             ]
           : [
               `- No \`inherits_state_hash\` is sealed: this is IDENTITY-ONLY inheritance. The pack proves`,

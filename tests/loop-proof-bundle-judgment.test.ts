@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  amendScope,
   buildContinuationCapsule,
   buildLoopProofBundle,
   createJudgmentRecorder,
@@ -805,13 +806,15 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     priorTurns?: JudgmentTurn[];
     edge?: ScopeInheritsLoop;
     stateHash?: string;
+    mode?: ScopePrivacyMode;
   }) {
-    const f = fixture("verified_context", overrides.edge, overrides.seed as never, overrides.stateHash);
+    const mode = overrides.mode ?? "verified_context";
+    const f = fixture(mode, overrides.edge, overrides.seed as never, overrides.stateHash);
     return buildLoopProofBundle({
       receipts: f.receipts,
       source_env: "test",
       capsule: {
-        mode: "verified_context",
+        mode,
         sealed_scope: f.sealed,
         scope_history: [f.sealed],
         continuation: f.continuation,
@@ -823,6 +826,81 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
       }
     });
   }
+
+  it("export SUCCEEDS: a genuine stateful PROOF export whose in-loop receipt stamps the final scope_ref", () => {
+    // The mode-agnostic guard must NOT over-block: a real working loop stamps its final scope_ref via
+    // an in-loop receipt, so the stateful commitment IS chain-bound — valid in proof mode too (proof
+    // only strips plaintext STATE). The pack is content-blind: it publishes no state and claims none.
+    const built = buildSeeded({ seed, prior: priorContinuation, priorTurns, edge, stateHash, mode: "proof" });
+    expect(built.continuation_capsule!.inherits_loop).toEqual(edge);
+    expect(built.verify_instructions_markdown).toContain("performed NO state verification");
+    expect(built.verify_instructions_markdown).not.toContain("THIS export verified it");
+  });
+
+  it("export fails closed: a TRAILING amendment leaves the final scope_ref unstamped (commitment not chain-bound)", () => {
+    // Loop seals a commitment under scope v1, the only governed action stamps v1, THEN the scope is
+    // amended to v2 (commitment carried forward immutably). No receipt stamps v2 (the final), so the
+    // commitment is anchored to no signature — the exporter must refuse at the amendment boundary.
+    const v1 = sealedScope("verified_context", edge, stateHash);
+    const v2 = amendScope(
+      v1,
+      {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: LOOP_ID,
+          goal_hash: GOAL_HASH,
+          privacy_mode: "verified_context",
+          allowed_action_classes: ["write", "run_tests"],
+          class_map: { write_file: "write", run_tests: "run_tests" },
+          allowed_targets: ["/checkout/**"], // the amendment
+          inherits_loop: edge,
+          inherits_state_hash: stateHash
+        },
+        sidecar: { goal_summary: "fix checkout bug" }
+      }
+    );
+    const receipts: ProofReceipt[] = [
+      inLoopReceipt("r1", null, v1.scope_ref), // stamps v1 only
+      terminalReceipt("close", "r1", 1)
+    ];
+    const rec = createJudgmentRecorder();
+    const t0 = rec.append({
+      loop_id: LOOP_ID,
+      scope_ref: v1.scope_ref,
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "r1" }
+    });
+    rec.attachRuntimeReport(LOOP_ID, t0.turn_ref, { returned: true, result_hash: `sha256:${"a".repeat(64)}` });
+    rec.attachDelta(LOOP_ID, t0.turn_ref, { settled: ["wrote cart.ts"] });
+    const turns = rec.judgmentLedgerForLoop(LOOP_ID);
+    const reduced = reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref: v2.scope_ref, turns, mode: "verified_context", seed });
+    const continuation = buildContinuationCapsule({
+      scope_history: [v1, v2],
+      scope_events: [],
+      loop: { loop_id: LOOP_ID, goal_hash: GOAL_HASH, sealed: true, action_count: 1 },
+      mode: "verified_context",
+      reduced
+    });
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "test",
+        capsule: {
+          mode: "verified_context",
+          sealed_scope: v2,
+          scope_history: [v1, v2],
+          continuation,
+          scope_events: [],
+          judgment_turns: turns,
+          inherited_state: seed,
+          prior_continuation: priorContinuation,
+          prior_judgment_turns: priorTurns
+        }
+      })
+    ).toThrow(/TRAILING amendment|final scope_ref/);
+  });
 
   it("Verified Context: a fold-BOUND, commitment-SEALED prior pack seeds continuation + memory-injection BEFORE this loop's deltas", () => {
     const built = buildSeeded({ seed, prior: priorContinuation, priorTurns, edge, stateHash });
