@@ -15,7 +15,7 @@
 //   - The PLAINTEXT sidecar (settled / open_questions / next_actions) is carried ONLY in
 //     Verified Context Mode. Proof Mode projects it away so the content-blind pack stays blind.
 
-import { canonicalScopeJson, type ScopePrivacyMode, type SealedScope } from "./scope-capsule.js";
+import { canonicalScopeJson, type ScopeInheritsLoop, type ScopePrivacyMode, type SealedScope } from "./scope-capsule.js";
 import type { ScopeEvent } from "./scope-event-recorder.js";
 import { JUDGMENT_LEDGER_VERSION, type JudgmentVerdictKind, type JudgmentVerdictSource } from "./judgment-ledger.js";
 import type { ReducedJudgmentState, RefusedStepRef } from "./judgment-reducer.js";
@@ -69,6 +69,13 @@ export type ContinuationCapsule = {
   scope_ref: string;
   /** The original Scope Capsule this loop inherited from. */
   inherits_from: { scope_ref: string };
+  /**
+   * Cross-loop inheritance edge: the PRIOR loop's emitted capsule this loop opened FROM, as sealed
+   * into the original Scope Capsule's structural projection (inherits_loop). Content-blind refs
+   * only, so it is carried in BOTH modes. Absent when the loop declared no prior. Distinct from
+   * `inherits_from` (this loop's own original scope_ref).
+   */
+  inherits_loop?: ScopeInheritsLoop;
   sealed: boolean;
   action_count: number;
   closed_at: string;
@@ -163,6 +170,12 @@ export function buildContinuationCapsule(input: BuildContinuationCapsuleInput): 
     scope_events
   };
 
+  // Cross-loop edge: read from the ORIGINAL sealed scope (the open-time declaration; amendments
+  // surface in what_changed). Structural refs only — carried in both modes.
+  if (original.structural.inherits_loop) {
+    capsule.inherits_loop = projectInheritsLoop(original.structural.inherits_loop);
+  }
+
   // Capsule Gate 2: fold the reduced judgment ledger in. The STRUCTURAL summary (counts, refs,
   // refused steps, final_turn_ref) is content-blind and carried in BOTH modes.
   if (input.reduced) {
@@ -198,6 +211,15 @@ export function buildContinuationCapsule(input: BuildContinuationCapsuleInput): 
     if (input.reduced) capsule.continuation_prompt = buildContinuationPrompt(capsule);
   }
   return capsule;
+}
+
+/** Rebuild the cross-loop edge from its explicit (closed) triple — never spread JSON input. */
+function projectInheritsLoop(edge: ScopeInheritsLoop): ScopeInheritsLoop {
+  return {
+    capsule_ref: edge.capsule_ref,
+    scope_ref: edge.scope_ref,
+    final_turn_ref: edge.final_turn_ref
+  };
 }
 
 /** Rebuild a judgment section from its explicit (structural) allowlist — never spread JSON input. */
@@ -298,6 +320,9 @@ export function projectContinuationProofMode(capsule: ContinuationCapsule): Cont
       return ref;
     })
   };
+  // The cross-loop edge is structural refs only (content-blind), so it is carried in Proof Mode —
+  // reconstructed from the closed triple, never spread.
+  if (capsule.inherits_loop) projected.inherits_loop = projectInheritsLoop(capsule.inherits_loop);
   // Capsule Gate 2: the judgment summary is STRUCTURAL (counts, refs, hashes, structural refused-step
   // codes), so it is carried in the content-blind Proof Mode projection. The plaintext sidecar
   // (settled / open_questions / next_actions / changed / continuation_prompt) is omitted by the
@@ -316,6 +341,13 @@ export function renderContinuationCardMarkdown(capsule: ContinuationCapsule): st
     `| loop_id | \`${capsule.loop_id}\` |`,
     `| scope_ref | \`${capsule.scope_ref}\` |`,
     `| inherits_from | \`${capsule.inherits_from.scope_ref}\` |`,
+    ...(capsule.inherits_loop
+      ? [
+          `| inherits_loop.capsule_ref | \`${capsule.inherits_loop.capsule_ref}\` |`,
+          `| inherits_loop.scope_ref | \`${capsule.inherits_loop.scope_ref}\` |`,
+          `| inherits_loop.final_turn_ref | \`${capsule.inherits_loop.final_turn_ref}\` |`
+        ]
+      : []),
     `| goal_hash | \`${capsule.goal_hash}\` |`,
     `| sealed | **${capsule.sealed ? "SEALED ✓" : "UNSEALED ✗"}** |`,
     `| action_count | ${capsule.action_count} |`,

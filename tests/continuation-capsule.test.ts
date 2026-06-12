@@ -129,6 +129,57 @@ describe("buildContinuationCapsule", () => {
     );
   });
 
+  it("carries the cross-loop edge from the ORIGINAL sealed scope; absent when undeclared", () => {
+    const edge = {
+      capsule_ref: "cap_v1:" + "1".repeat(64),
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      final_turn_ref: "turn_v1:" + "3".repeat(64)
+    };
+    const original = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    // Amendment keeps the edge but widens targets — the continuation still reads the ORIGINAL's edge.
+    const amended = amendScope(original, capsule({ inherits_loop: edge, allowed_targets: ["/checkout/**", "/cart/**"] }));
+    const cont = buildContinuationCapsule({
+      scope_history: [original, amended],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 1 },
+      mode: "verified_context"
+    });
+    expect(cont.inherits_loop).toEqual(edge);
+    // The intra-loop field is untouched by the edge.
+    expect(cont.inherits_from.scope_ref).toBe(original.scope_ref);
+
+    const noEdge = buildContinuationCapsule({
+      scope_history: [sealScopeCapsule({ capsule: capsule() })],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 0 },
+      mode: "verified_context"
+    });
+    expect(noEdge.inherits_loop).toBeUndefined();
+  });
+
+  it("Proof Mode projection RETAINS the edge (content-blind refs) and rebuilds the closed triple", () => {
+    const edge = {
+      capsule_ref: "cap_v1:" + "1".repeat(64),
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      final_turn_ref: "turn_v1:" + "3".repeat(64)
+    };
+    const original = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    const cont = buildContinuationCapsule({
+      scope_history: [original],
+      scope_events: [],
+      loop: { loop_id: "loop-1", goal_hash: "a".repeat(64), sealed: true, action_count: 0 },
+      mode: "verified_context"
+    });
+    const proof = projectContinuationProofMode(cont);
+    expect(proof.inherits_loop).toEqual(edge);
+    // A JSON-loaded continuation smuggling a stray key INSIDE the edge: the projection rebuilds
+    // the closed triple, so the stray never reaches a content-blind pack.
+    const tainted = { ...cont, inherits_loop: { ...edge, notes: "secret prior plan" } } as unknown as typeof cont;
+    const projected = projectContinuationProofMode(tainted);
+    expect(projected.inherits_loop).toEqual(edge);
+    expect(JSON.stringify(projected)).not.toContain("secret prior plan");
+  });
+
   it("Proof Mode build omits sidecar fields from the start (mode=proof)", () => {
     const original = sealScopeCapsule({ capsule: capsule() });
     const cont = buildContinuationCapsule({

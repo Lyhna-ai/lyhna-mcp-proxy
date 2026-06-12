@@ -75,6 +75,11 @@ export function renderHandoffMarkdown(continuation: ContinuationCapsule): string
     `| --- | --- |`,
     `| loop | \`${continuation.loop_id}\` |`,
     `| scope_ref | \`${continuation.scope_ref}\` (inherits \`${continuation.inherits_from.scope_ref}\`) |`,
+    ...(continuation.inherits_loop
+      ? [
+          `| opened from prior loop | capsule \`${continuation.inherits_loop.capsule_ref}\` · scope \`${continuation.inherits_loop.scope_ref}\` · final turn \`${continuation.inherits_loop.final_turn_ref}\` |`
+        ]
+      : []),
     `| sealed | **${continuation.sealed ? "SEALED ✓" : "UNSEALED ✗"}** — ${continuation.action_count} action(s) |`,
     ...(continuation.final_turn_ref !== undefined ? [`| final_turn_ref | \`${continuation.final_turn_ref ?? "—"}\` |`] : []),
     ...(j

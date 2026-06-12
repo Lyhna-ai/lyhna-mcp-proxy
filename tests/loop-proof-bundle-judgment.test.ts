@@ -11,6 +11,7 @@ import {
   type JudgmentTurn,
   type ProofReceipt,
   type ScopeEvent,
+  type ScopeInheritsLoop,
   type ScopePrivacyMode,
   type SealedScope
 } from "../src/index.js";
@@ -20,7 +21,7 @@ const LOOP_ID = "loop-cg2-fixture";
 const GOAL = "fix checkout bug";
 const GOAL_HASH = deriveGoalHash(GOAL);
 
-function sealedScope(privacy_mode: ScopePrivacyMode): SealedScope {
+function sealedScope(privacy_mode: ScopePrivacyMode, inherits_loop?: ScopeInheritsLoop): SealedScope {
   return sealScopeCapsule({
     capsule: {
       structural: {
@@ -30,7 +31,8 @@ function sealedScope(privacy_mode: ScopePrivacyMode): SealedScope {
         goal_hash: GOAL_HASH,
         privacy_mode,
         allowed_action_classes: ["write", "run_tests"],
-        class_map: { write_file: "write", run_tests: "run_tests" }
+        class_map: { write_file: "write", run_tests: "run_tests" },
+        ...(inherits_loop ? { inherits_loop } : {})
       },
       sidecar: { goal_summary: "fix checkout bug" }
     }
@@ -81,8 +83,8 @@ function terminalReceipt(receipt_id: string, prior: string, action_count: number
  * a sealed scope, the matching judgment ledger, a scope event, and a continuation folded from the
  * reduced ledger. Everything cross-references so buildLoopProofBundle validates green.
  */
-function fixture(mode: ScopePrivacyMode) {
-  const sealed = sealedScope(mode);
+function fixture(mode: ScopePrivacyMode, inherits_loop?: ScopeInheritsLoop) {
+  const sealed = sealedScope(mode, inherits_loop);
   const scope_ref = sealed.scope_ref;
 
   const receipts: ProofReceipt[] = [
@@ -639,5 +641,106 @@ describe("Capsule Gate 2 — LoopProofBundle judgment artifacts", () => {
     });
     expect(built.judgment_ledger).toBeUndefined();
     expect(built.bundle.capsule).toBeUndefined();
+  });
+});
+
+describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", () => {
+  const edge: ScopeInheritsLoop = {
+    capsule_ref: "cap_v1:" + "1".repeat(64),
+    scope_ref: "scope_v1:" + "2".repeat(64),
+    final_turn_ref: "turn_v1:" + "3".repeat(64)
+  };
+
+  function buildEdgePack(mode: ScopePrivacyMode) {
+    const f = fixture(mode, edge);
+    return {
+      f,
+      built: buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: {
+          mode,
+          sealed_scope: f.sealed,
+          scope_history: [f.sealed],
+          continuation: f.continuation,
+          scope_events: [f.event],
+          judgment_turns: f.turns
+        }
+      })
+    };
+  }
+
+  it("carries the edge through continuation-capsule.json and memory-injection.json in BOTH modes", () => {
+    for (const mode of ["verified_context", "proof"] as const) {
+      const { built } = buildEdgePack(mode);
+      expect(built.continuation_capsule!.inherits_loop).toEqual(edge);
+      expect(built.memory_injection!.inherits_loop).toEqual(edge);
+      // The handoff face shows the prior-loop refs (structural, content-blind).
+      expect(built.handoff_markdown).toContain(edge.capsule_ref);
+      expect(built.handoff_markdown).toContain(edge.final_turn_ref);
+    }
+  });
+
+  it("fails closed when the continuation HIDES the edge the original scope sealed", () => {
+    const f = fixture("verified_context", edge);
+    const hiding = { ...f.continuation };
+    delete (hiding as Record<string, unknown>).inherits_loop;
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: hiding, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/inherits_loop/);
+  });
+
+  it("fails closed when the continuation CLAIMS an edge the original scope never sealed", () => {
+    const f = fixture("verified_context");
+    const claiming = { ...f.continuation, inherits_loop: edge };
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: claiming, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/inherits_loop/);
+  });
+
+  it("fails closed when the continuation's edge DIFFERS from the sealed one (member-by-member)", () => {
+    const f = fixture("verified_context", edge);
+    const swapped = { ...f.continuation, inherits_loop: { ...edge, final_turn_ref: "turn_v1:" + "9".repeat(64) } };
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: swapped, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/inherits_loop/);
+  });
+
+  it("fails closed on a present-but-null edge (null is malformed PRESENT, not absent)", () => {
+    // A JSON-loaded continuation carrying `inherits_loop: null` against a NO-edge scope must not
+    // pass as "absent" — a Verified Context export emits the continuation verbatim and would
+    // publish the malformed null field in continuation-capsule.json.
+    const f = fixture("verified_context");
+    const nullEdge = { ...f.continuation, inherits_loop: null } as unknown as typeof f.continuation;
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: nullEdge, scope_events: [f.event], judgment_turns: f.turns }
+      })
+    ).toThrow(/inherits_loop/);
+  });
+
+  it("a no-edge pack is unchanged (field absent everywhere)", () => {
+    const f = fixture("verified_context");
+    const built = buildLoopProofBundle({
+      receipts: f.receipts,
+      source_env: "test",
+      capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: f.turns }
+    });
+    expect(built.continuation_capsule!.inherits_loop).toBeUndefined();
+    expect(built.memory_injection!.inherits_loop).toBeUndefined();
   });
 });
