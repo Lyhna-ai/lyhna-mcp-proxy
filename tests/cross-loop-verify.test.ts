@@ -366,6 +366,40 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: a bind-cited prior receipt with its scope stamp REMOVED (absence is not agreement)", () => {
+    withTamperedFile(
+      priorDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: unknown; loop_close?: unknown; scope?: unknown } }>) => {
+        for (const r of receipts) {
+          if (r.constraints?.loop && !r.constraints?.loop_close) delete r.constraints.scope;
+        }
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_receipts_bind");
+      }
+    );
+  });
+
+  it("fails closed: child sidecar edited after export — prefix intact, but its own ledger never produced it", () => {
+    // Appending to settled keeps the inherited PREFIX valid, so a bare prefix check would pass;
+    // the child re-fold (over the verified prior seed) catches that the presented ledger never
+    // produced the published arrays.
+    withTamperedFile(
+      currentDir,
+      "continuation-capsule.json",
+      (c: { settled?: string[] }) => ({ ...c, settled: [...(c.settled ?? []), "INJECTED after export"] }),
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("child_state_refolds");
+      }
+    );
+  });
+
   it("fails closed (never crashes): valid JSON with the wrong shape produces the report, not an exception", () => {
     // receipts.json containing {} — must yield a failing report with the signature notice, not throw.
     withTamperedFile(priorDir, "receipts.json", () => ({}) as never, () => {

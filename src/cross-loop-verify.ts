@@ -408,7 +408,16 @@ function verifyCrossLoopLinkageChecks(
           `receipt's outcome is ${JSON.stringify(r.outcome)} (fail closed).`
       );
     }
-    if (r.scope_ref !== undefined && r.scope_ref !== turn.scope_ref) {
+    // The stamp must be PRESENT and agree: a bind-cited in-loop receipt with no scope stamp would
+    // let the fold be treated as scoped on the strength of the (unsigned) ledger field alone.
+    if (r.scope_ref === undefined) {
+      return fail(
+        "prior_ledger_receipts_bind",
+        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which carries no ` +
+          `constraints.scope.scope_ref stamp; the turn's scope cannot be substantiated by the chain (fail closed).`
+      );
+    }
+    if (r.scope_ref !== turn.scope_ref) {
       return fail(
         "prior_ledger_receipts_bind",
         `prior ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
@@ -439,8 +448,42 @@ function verifyCrossLoopLinkageChecks(
   }
   pass("state_commitment_binds", "prior state hashes to the sealed inherits_state_hash commitment");
 
-  // --- 9) The child actually carries the inherited prefix (Verified Context child only) ---------
+  // --- 9) The child's published state is its OWN ledger's re-fold over the prior seed -----------
+  // (Verified Context child only.) The child continuation's plaintext is never trusted bare: the
+  // current pack's judgment ledger must re-fold — SEEDED by the verified prior state — to exactly
+  // the arrays the continuation publishes, mirroring the export-time continuation binding. An
+  // after-export edit of the child sidecar (e.g. prepending the prior arrays by hand) fails here
+  // even though a bare prefix comparison would pass.
   if (curScope.privacy_mode === "verified_context") {
+    const curLedgerR = readJson<{ turns: JudgmentTurn[] }>(input.current_pack_dir, "judgment-ledger.json");
+    if (!curLedgerR.ok || !isRecord(curLedgerR.value) || !Array.isArray(curLedgerR.value.turns)) {
+      return fail(
+        "child_state_refolds",
+        `the child claims inherited state but its pack has no readable judgment ledger to re-fold ` +
+          `(${curLedgerR.ok ? "judgment-ledger.json has no turns array" : curLedgerR.detail}); the published ` +
+          `state cannot be verified (fail closed).`
+      );
+    }
+    let curFold: ReturnType<typeof reduceJudgmentLedger>;
+    try {
+      curFold = reduceJudgmentLedger({
+        loop_id: curCont.loop_id,
+        scope_ref: curCont.scope_ref,
+        turns: curLedgerR.value.turns,
+        mode: "verified_context",
+        seed: plainState(priorCont)
+      });
+    } catch (error) {
+      return fail("child_state_refolds", `current judgment ledger fails chain validation / re-fold: ${(error as Error).message}`);
+    }
+    if (canonicalScopeJson(plainState(curFold)) !== canonicalScopeJson(plainState(curCont))) {
+      return fail(
+        "child_state_refolds",
+        "the child continuation's plaintext does not equal its own judgment ledger re-folded over the verified " +
+          "prior state; the published state was not produced by the presented ledger (tampered or stale — fail closed)."
+      );
+    }
+    pass("child_state_refolds", "child continuation state equals its ledger re-folded over the verified prior seed");
     const prior = plainState(priorCont);
     const cur = plainState(curCont);
     const prefixOk =
