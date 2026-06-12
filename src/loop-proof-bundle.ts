@@ -1206,9 +1206,25 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
+  // FAIL CLOSED (anchored lineage): inherited lineage state may be folded ONLY when this pack carries
+  // a sealed `inherits_loop` edge proving WHICH prior capsule it came from. Without the edge, a
+  // Verified Context export could publish prior-loop plaintext (settled/open/next/changed) into
+  // continuation-capsule.json / memory-injection.json as "verified memory" whose lineage nothing in
+  // the pack anchors. Proof Mode folds no seed at all (content-blind), so this only bites the mode
+  // that would actually publish the state.
+  const seed = input.inherited_state;
+  const seedHasState =
+    !!seed && [seed.settled, seed.open_questions, seed.next_actions, seed.changed].some((a) => Array.isArray(a) && a.length > 0);
+  if (mode === "verified_context" && seedHasState && !input.inherits_loop) {
+    throw new Error(
+      `Verified Context export supplies inherited lineage state but the verified original scope carries ` +
+        `no sealed inherits_loop edge; refusing to publish prior-loop state with unanchored lineage (fail closed).`
+    );
+  }
+
   // 5) Fold + project under the privacy mode. The lineage seed (prior loop's inherited state) is
   // folded BEFORE this loop's deltas (Verified Context only; Proof Mode ignores it — content-blind).
-  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode, seed: input.inherited_state });
+  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode, seed });
   const projectedTurns = turns.map((t) => projectTurn(t, mode));
 
   // Proof Mode is content-blind: no projected turn may carry a plaintext delta.

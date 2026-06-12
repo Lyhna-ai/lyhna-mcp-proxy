@@ -753,9 +753,15 @@ describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", (
 
 describe("lineage passthrough (inherited_state) — prior loop's state folded before this loop's", () => {
   const seed = { settled: ["loop1: chose Ed25519"], next_actions: ["loop1: wire export"] };
+  // Inherited lineage state is anchored ONLY when the pack carries a sealed inherits_loop edge.
+  const edge: ScopeInheritsLoop = {
+    capsule_ref: "cap_v1:" + "1".repeat(64),
+    scope_ref: "scope_v1:" + "2".repeat(64),
+    final_turn_ref: "turn_v1:" + "3".repeat(64)
+  };
 
   it("Verified Context: seeds continuation + memory-injection BEFORE this loop's deltas", () => {
-    const f = fixture("verified_context", undefined, seed);
+    const f = fixture("verified_context", edge, seed);
     const built = buildLoopProofBundle({
       receipts: f.receipts,
       source_env: "test",
@@ -774,6 +780,19 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     expect(built.memory_injection!.next_actions).toEqual(["loop1: wire export"]);
     expect(built.continuation_capsule!.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
     expect(built.continuation_capsule!.next_actions).toEqual(["loop1: wire export"]);
+  });
+
+  it("fails closed: Verified Context inherited_state WITHOUT a sealed inherits_loop edge (unanchored lineage)", () => {
+    // No edge on the scope, but a seed with real state -> the pack would publish prior-loop plaintext
+    // as 'verified memory' with nothing anchoring its lineage. Refuse.
+    const f = fixture("verified_context", undefined, seed);
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: f.receipts,
+        source_env: "test",
+        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: f.turns, inherited_state: seed }
+      })
+    ).toThrow(/unanchored lineage|inherits_loop edge/);
   });
 
   it("Proof Mode: inherited_state is ignored — pack stays content-blind", () => {
