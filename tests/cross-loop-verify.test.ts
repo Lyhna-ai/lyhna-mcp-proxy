@@ -690,6 +690,52 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_events_bind");
   });
 
+  it("fails closed: an attested scope event that NO judgment turn anchors (under-reported refusal)", () => {
+    // A genuine refusal-bearing pair, then a SECOND valid event (recomputes, same loop) appended to
+    // scope-events.json that no turn cites. The forward binding passes for the real event; the reverse
+    // binding catches the orphan — the ledger/continuation would under-report a refused step.
+    const evPriorDir = join(root, "pack-loop-1-orphan");
+    const evCurrentDir = join(root, "pack-loop-2-orphan");
+    const evPrior = exportPack({
+      dir: evPriorDir,
+      loop_id: "loop-1orph",
+      goal: "design with dropped refusal",
+      delta: { settled: ["chose Ed25519"] },
+      withRefusal: true
+    });
+    const edge: ScopeInheritsLoop = {
+      capsule_ref: deriveContinuationRef(evPrior.continuation),
+      scope_ref: evPrior.continuation.scope_ref,
+      final_turn_ref: evPrior.continuation.final_turn_ref!
+    };
+    exportPack({
+      dir: evCurrentDir,
+      loop_id: "loop-2orph",
+      goal: "ship after dropped refusal",
+      delta: { settled: ["wired export"] },
+      lineage: { edge, stateHash: deriveInheritsStateHash(evPrior.continuation), prior: evPrior.continuation, priorTurns: evPrior.turns },
+      seed: { settled: evPrior.continuation.settled }
+    });
+    expect(verifyCrossLoopLinkage({ prior_pack_dir: evPriorDir, current_pack_dir: evCurrentDir }).ok).toBe(true);
+    // A second, internally-valid attested event for the prior loop that no turn anchors.
+    const orphan = createScopeEventRecorder().record({
+      event_type: "scope_refusal",
+      loop_id: "loop-1orph",
+      scope_ref: evPrior.scope.scope_ref,
+      attempted: { action_class: "write", tool_name: "delete_file", target_descriptor: null },
+      matched_rule: "forbidden_targets",
+      decision: "REFUSED",
+      prior_receipt_id: "r1"
+    });
+    withTamperedFile(evPriorDir, "scope-events.json", (events: unknown[]) => [...events, orphan], () => {
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: evPriorDir, current_pack_dir: evCurrentDir });
+      expect(report.ok).toBe(false);
+      const failed = report.checks.find((c) => !c.ok)!;
+      expect(failed.name).toBe("prior_ledger_events_bind");
+      expect(failed.detail).toContain("NO judgment turn anchors");
+    });
+  });
+
   it("fails closed: a loop receipt with NO goal_hash cannot bind to the continuation's goal", () => {
     withTamperedFile(
       priorDir,

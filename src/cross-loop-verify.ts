@@ -240,6 +240,18 @@ function bindEventTurnsToEvents(turns: unknown[], events: unknown, expected_loop
       );
     }
   }
+  // REVERSE direction (mirror the exporter): every verified attested event must be anchored by a turn.
+  // Otherwise a pack could drop an attested refusal / loop-bound step from the ledger + continuation
+  // while leaving the (verified) event file in place — the fold would then UNDER-report refused /
+  // max-step steps and still certify. Exactly-once is already enforced by the duplicate guard above.
+  for (const h of verified.keys()) {
+    if (!anchoredHashes.has(h)) {
+      return (
+        `${label} pack scope-events.json carries attested scope event ${h} that NO judgment turn anchors — the ` +
+        `ledger / continuation under-reports a refused / loop-bound step (fail closed).`
+      );
+    }
+  }
   return null;
 }
 
