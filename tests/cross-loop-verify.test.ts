@@ -366,6 +366,41 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed (never crashes): valid JSON with the wrong shape produces the report, not an exception", () => {
+    // receipts.json containing {} — must yield a failing report with the signature notice, not throw.
+    withTamperedFile(priorDir, "receipts.json", () => ({}) as never, () => {
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+      expect(report.ok).toBe(false);
+      expect(report.checks.find((c) => !c.ok)!.name).toBe("read_prior_receipts");
+      expect(report.signature_notice).toContain("Signature verification not performed here");
+    });
+    // scope-capsule.json without a structural projection — same contract.
+    withTamperedFile(currentDir, "scope-capsule.json", () => ({ scope_ref: "scope_v1:" + "a".repeat(64) }) as never, () => {
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+      expect(report.ok).toBe(false);
+      expect(report.checks.find((c) => !c.ok)!.name).toBe("read_current_scope_capsule");
+    });
+    // judgment-ledger.json with no turns array — same contract.
+    withTamperedFile(priorDir, "judgment-ledger.json", () => ({ judgment_ledger_version: "x" }) as never, () => {
+      const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+      expect(report.ok).toBe(false);
+      expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_present");
+    });
+    // CLI smoke over a malformed pack: exit 1, no throw, notice printed.
+    withTamperedFile(priorDir, "receipts.json", () => ({}) as never, () => {
+      let out = "";
+      const code = runVerifyCrossLoop(["--prior", priorDir, "--current", currentDir], {
+        stdout: (t: string) => {
+          out += t;
+        },
+        stderr: () => {}
+      });
+      expect(code).toBe(1);
+      expect(out).toContain("Linkage NOT verified");
+      expect(out).toContain("npx -y lyhna-verify --chain");
+    });
+  });
+
   it("every report carries the signature notice — failure included (never implies full verification)", () => {
     const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: priorDir });
     expect(report.ok).toBe(false);

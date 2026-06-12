@@ -92,6 +92,39 @@ function hasPrefix(a: string[], b: string[]): boolean {
 
 export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_pack_dir: string }): CrossLoopLinkageReport {
   const checks: CrossLoopCheck[] = [];
+  // BELT AND BRACES (report contract): the checker promises a structured fail-closed report —
+  // signature notice and verify commands included — on EVERY outcome. A malformed artifact that
+  // slips past the shape checks must degrade to a failing report, never an uncaught exception.
+  try {
+    return verifyCrossLoopLinkageChecks(input, checks);
+  } catch (error) {
+    checks.push({
+      name: "unexpected_error",
+      ok: false,
+      detail: `internal error while checking (treat as NOT verified): ${(error as Error).message}`
+    });
+    return {
+      ok: false,
+      prior_pack: input.prior_pack_dir,
+      current_pack: input.current_pack_dir,
+      checks,
+      signature_notice: SIGNATURE_NOTICE,
+      verify_commands: [
+        `npx -y lyhna-verify --chain ${join(input.prior_pack_dir, "receipts.json")}`,
+        `npx -y lyhna-verify --chain ${join(input.current_pack_dir, "receipts.json")}`
+      ]
+    };
+  }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function verifyCrossLoopLinkageChecks(
+  input: { prior_pack_dir: string; current_pack_dir: string },
+  checks: CrossLoopCheck[]
+): CrossLoopLinkageReport {
   const report = (ok: boolean): CrossLoopLinkageReport => ({
     ok,
     prior_pack: input.prior_pack_dir,
@@ -141,7 +174,33 @@ export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_
   const curScope = curScopeR.value;
   const curCont = curContR.value;
   const priorCont = priorContR.value;
-  pass("read_packs", "required artifacts present and parse in both packs");
+
+  // SHAPE VALIDATION (fail closed, not crash): valid JSON with the wrong shape must produce a
+  // failing report, never reach the typed ladder as if it were a real artifact.
+  if (!isRecord(curScope) || !isRecord(curScope.structural) || typeof curScope.scope_ref !== "string") {
+    return fail(
+      "read_current_scope_capsule",
+      "scope-capsule.json parses but is not a scope capsule (object with a structural projection and a scope_ref string); fail closed."
+    );
+  }
+  for (const [name, cont, file] of [
+    ["read_current_continuation", curCont, "current"],
+    ["read_prior_continuation", priorCont, "prior"]
+  ] as const) {
+    if (!isRecord(cont) || typeof cont.loop_id !== "string" || typeof cont.scope_ref !== "string") {
+      return fail(
+        name,
+        `${file} pack continuation-capsule.json parses but is not a continuation capsule (object with loop_id and scope_ref strings); fail closed.`
+      );
+    }
+  }
+  if (!Array.isArray(curReceiptsR.value)) {
+    return fail("read_current_receipts", "current pack receipts.json parses but is not a JSON array of receipts; fail closed.");
+  }
+  if (!Array.isArray(priorReceiptsR.value)) {
+    return fail("read_prior_receipts", "prior pack receipts.json parses but is not a JSON array of receipts; fail closed.");
+  }
+  pass("read_packs", "required artifacts present, parse, and have the expected shapes in both packs");
 
   // --- 2) Child scope-capsule internal integrity: scope_ref recomputes from the structural ------
   const recomputedScopeRef = deriveScopeRef(curScope.structural);
@@ -273,6 +332,12 @@ export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_
       "prior_ledger_present",
       `the child seals inherits_state_hash but the prior pack has no readable judgment ledger to re-fold ` +
         `(${priorLedgerR.detail}) — the state values cannot be verified (fail closed).`
+    );
+  }
+  if (!isRecord(priorLedgerR.value) || !Array.isArray(priorLedgerR.value.turns)) {
+    return fail(
+      "prior_ledger_present",
+      "prior pack judgment-ledger.json parses but is not a judgment ledger (object with a turns array); fail closed."
     );
   }
   let priorFold: ReturnType<typeof reduceJudgmentLedger>;
