@@ -537,7 +537,20 @@ function verifyCrossLoopLinkageChecks(
         `continuation's goal_hash is ${JSON.stringify(curCont.goal_hash)}; this scope was not sealed for this goal (fail closed).`
     );
   }
-  pass("current_scope_loop_binds", "the sealed scope's structural loop_id / goal_hash match the current continuation");
+  // The continuation publishes the FINAL scope_ref the loop ran under, and the exporter builds it FROM
+  // the sealed scope — so it must equal curScope.scope_ref. Without this, a continuation edited to
+  // publish a different final scope_ref rides through: the commitment stamp check counts receipts for
+  // curScope.scope_ref while the published continuation (and any grandchild edge that pins its
+  // scope_ref) belongs to an UNSTAMPED scope version.
+  if (curCont.scope_ref !== curScope.scope_ref) {
+    return fail(
+      "current_scope_loop_binds",
+      `continuation-capsule.json publishes final scope_ref ${JSON.stringify(curCont.scope_ref)} but the sealed ` +
+        `scope-capsule.json scope_ref is ${JSON.stringify(curScope.scope_ref)}; the continuation belongs to a ` +
+        `different scope version than the one sealed/stamped for this loop (fail closed).`
+    );
+  }
+  pass("current_scope_loop_binds", "the sealed scope's structural loop_id / goal_hash / scope_ref match the current continuation");
 
   // --- 2b) Mode honesty: the top-level privacy_mode is the EXPORT mode and is NOT covered by ----
   // scope_ref, so it can be edited freely. Two contradictions are forged shapes (mirroring the

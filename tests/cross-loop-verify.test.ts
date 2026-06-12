@@ -589,6 +589,24 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: the current continuation publishes a different final scope_ref than the sealed scope", () => {
+    // loop_id / goal_hash still match, but continuation.scope_ref is edited to another version. The
+    // commitment stamp check counts receipts for the SEALED scope_ref, so without this binding the
+    // pack would ship a continuation (and any grandchild edge pinning it) under an unstamped scope.
+    withTamperedFile(
+      currentDir,
+      "continuation-capsule.json",
+      (c: { scope_ref?: string }) => ({ ...c, scope_ref: "scope_v1:" + "e".repeat(64) }),
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(failed.name).toBe("current_scope_loop_binds");
+        expect(failed.detail).toContain("different scope version");
+      }
+    );
+  });
+
   it("fails closed: a bind turn's PROPOSED descriptor edited away from the signed receipt stamp", () => {
     // Same receipt_id/outcome/scope_ref, but the ledger's proposed move is rewritten (tool_name).
     // The reducer would re-fold an action identity the signed receipt never authorized — the
