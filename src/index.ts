@@ -124,6 +124,12 @@ export type {
 export { createJudgmentRecorder } from "./judgment-recorder.js";
 export type { JudgmentLedgerRecorder, JudgmentLedgerSource } from "./judgment-recorder.js";
 export { reduceJudgmentLedger } from "./judgment-reducer.js";
+export {
+  CROSS_LOOP_SUCCESS_WORDING,
+  verifyCrossLoopLinkage,
+  type CrossLoopCheck,
+  type CrossLoopLinkageReport
+} from "./cross-loop-verify.js";
 export type {
   ReduceJudgmentLedgerInput,
   ReducedJudgmentState,
