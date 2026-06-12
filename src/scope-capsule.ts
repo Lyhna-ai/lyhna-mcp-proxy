@@ -422,8 +422,20 @@ export function sealScopeCapsule(input: {
  * Amend a sealed scope: seal a NEW scope version whose structural projection replaces the
  * prior, chained via `prior_scope_ref`. Supervisor-only by call site. The amendment is never
  * silent: it produces a distinct `scope_ref` surfaced in the Continuation Capsule.
+ *
+ * LINEAGE IS IMMUTABLE: the cross-loop `inherits_loop` edge is OPEN-TIME provenance — it records
+ * which prior loop this one opened FROM and can never change mid-loop. An amendment that would
+ * mutate, drop, or add the inherited edge is rejected here at the amendment boundary (fail closed);
+ * the export carries a backstop for imported/tampered history.
  */
 export function amendScope(prior: SealedScope, next: ScopeCapsule, sealed_at?: string): SealedScope {
+  if (canonicalScopeJson(prior.structural.inherits_loop ?? null) !== canonicalScopeJson(next.structural.inherits_loop ?? null)) {
+    throw new Error(
+      `Scope amendment may not change the inherited cross-loop edge: inherits_loop is open-time, ` +
+        `immutable provenance and must carry forward byte-identical (it cannot be mutated, dropped, ` +
+        `or added by an amendment) — fail closed.`
+    );
+  }
   return sealScopeCapsule({ capsule: next, prior_scope_ref: prior.scope_ref, sealed_at });
 }
 

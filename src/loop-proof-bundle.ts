@@ -514,6 +514,25 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     const chainRefs = new Set<string>(history.map((h) => h.scope_ref));
     const byRef = new Map(history.map((h) => [h.scope_ref, h]));
 
+    // FAIL CLOSED (lineage immutability backstop): the cross-loop `inherits_loop` edge is open-time,
+    // immutable provenance. The amendment boundary (amendScope) already rejects any change, but the
+    // export reads scope material from JSON and could be handed an imported/tampered history. The
+    // public `scope-capsule.json` is projected from `finalScope`, while the continuation / HANDOFF /
+    // memory seed claim the ORIGINAL's edge — so EVERY verified history version (especially
+    // finalScope) must carry the byte-identical edge sealed in the original, else the final capsule
+    // would omit or contradict the edge the rest of the pack publishes. (No scope-history artifact is
+    // added; finalScope's capsule itself substantiates the edge.)
+    const originalEdge = canonicalScopeJson(original.structural.inherits_loop ?? null);
+    for (const entry of history) {
+      if (canonicalScopeJson(entry.structural.inherits_loop ?? null) !== originalEdge) {
+        throw new Error(
+          `Scope version ${entry.scope_ref} carries a different inherits_loop than the original; the ` +
+            `cross-loop lineage edge is immutable across amendments and the final scope capsule must ` +
+            `substantiate it (fail closed).`
+        );
+      }
+    }
+
     // FAIL CLOSED (identity binding): the declared sealed scope must BE the verified final version,
     // the continuation must inherit from the verified original and end at the verified final, its
     // amendments must all reference verified versions, and scope events must belong to this loop.

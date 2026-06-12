@@ -82,11 +82,40 @@ describe("sealScopeCapsule", () => {
 });
 
 describe("amendScope", () => {
+  const edge = {
+    capsule_ref: "cap_v1:" + "b".repeat(64),
+    scope_ref: "scope_v1:" + "c".repeat(64),
+    final_turn_ref: "turn_v1:" + "d".repeat(64)
+  };
+
   it("chains a new sealed scope_ref to the prior", () => {
     const original = sealScopeCapsule({ capsule: capsule() });
     const amended = amendScope(original, capsule({ allowed_targets: ["/checkout/**", "/cart/**"] }));
     expect(amended.prior_scope_ref).toBe(original.scope_ref);
     expect(amended.scope_ref).not.toBe(original.scope_ref);
+  });
+
+  it("carries the immutable inherited edge forward byte-identical while changing other fields", () => {
+    const original = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    const amended = amendScope(original, capsule({ inherits_loop: edge, allowed_targets: ["/checkout/**", "/cart/**"] }));
+    expect(amended.structural.inherits_loop).toEqual(edge);
+    expect(amended.scope_ref).not.toBe(original.scope_ref);
+  });
+
+  it("rejects an amendment that DROPS the inherited edge (lineage is immutable)", () => {
+    const original = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    expect(() => amendScope(original, capsule({ allowed_targets: ["/cart/**"] }))).toThrow(/inherits_loop is open-time, immutable/);
+  });
+
+  it("rejects an amendment that CHANGES the inherited edge", () => {
+    const original = sealScopeCapsule({ capsule: capsule({ inherits_loop: edge }) });
+    const changed = { ...edge, final_turn_ref: "turn_v1:" + "9".repeat(64) };
+    expect(() => amendScope(original, capsule({ inherits_loop: changed }))).toThrow(/inherits_loop is open-time, immutable/);
+  });
+
+  it("rejects an amendment that ADDS an edge the original never declared", () => {
+    const original = sealScopeCapsule({ capsule: capsule() });
+    expect(() => amendScope(original, capsule({ inherits_loop: edge }))).toThrow(/inherits_loop is open-time, immutable/);
   });
 });
 

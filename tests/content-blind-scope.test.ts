@@ -269,6 +269,44 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/verified final scope's privacy_mode/);
   });
 
+  it("export backstop: fails closed when finalScope drops the inherited edge the original sealed (imported/tampered history)", () => {
+    // The amendment boundary (amendScope) already rejects a changed edge; this proves the EXPORT
+    // backstop independently, by hand-building a 2-version history that bypasses amendScope: the
+    // original carries inherits_loop, the final version (which becomes the public scope-capsule.json)
+    // does not. buildLoopProofBundle must refuse it — the final capsule would not substantiate the
+    // edge the continuation / HANDOFF / memory seed claim.
+    const edge = {
+      capsule_ref: "cap_v1:" + "1".repeat(64),
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      final_turn_ref: "turn_v1:" + "3".repeat(64)
+    };
+    const base = (overrides: Record<string, unknown>): ScopeCapsule => ({
+      structural: {
+        capsule_type: "scope_capsule",
+        capsule_version: "scope-capsule/v1",
+        loop_id: "loop-1",
+        goal_hash: "a".repeat(64),
+        privacy_mode: "proof",
+        allowed_targets: ["/checkout/**"],
+        ...overrides
+      } as ScopeCapsule["structural"]
+    });
+    const original = sealScopeCapsule({ capsule: base({ inherits_loop: edge }) });
+    const finalNoEdge = sealScopeCapsule({
+      capsule: base({ allowed_targets: ["/checkout/**", "/cart/**"] }),
+      prior_scope_ref: original.scope_ref
+    });
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = continuationFor("loop-1", "a".repeat(64), finalNoEdge.scope_ref);
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "t",
+        capsule: { mode: "proof", sealed_scope: finalNoEdge, scope_history: [original, finalNoEdge], continuation, scope_events: [] }
+      })
+    ).toThrow(/inherits_loop|lineage edge is immutable/);
+  });
+
   it("fails closed when a verified-context scope event's retained plaintext target does not hash to its descriptor (round 22)", () => {
     // A verified-context scope (plaintext retained in the sidecar). `event_hash` covers only the
     // structural target_descriptor (a hash), NOT the plaintext target — so a tampered scope-events.json
