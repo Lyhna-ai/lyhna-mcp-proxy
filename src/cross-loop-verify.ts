@@ -91,6 +91,30 @@ function hasPrefix(a: string[], b: string[]): boolean {
 }
 
 /**
+ * Every receipt in the chain that carries a loop / loop_close constraint must cite the SAME
+ * goal_hash the continuation claims — the structural chain check verifies internal consistency,
+ * not that the chain belongs to THIS capsule's goal. Returns the failing detail or null.
+ */
+function chainGoalBinds(receipts: unknown[], expected_goal_hash: unknown, label: string): string | null {
+  for (const r of receipts) {
+    const rec = r as {
+      receipt_id?: unknown;
+      constraints?: { loop?: { goal_hash?: unknown }; loop_close?: { goal_hash?: unknown } };
+    };
+    for (const gh of [rec.constraints?.loop?.goal_hash, rec.constraints?.loop_close?.goal_hash]) {
+      if (gh !== undefined && gh !== expected_goal_hash) {
+        return (
+          `${label} chain receipt ${JSON.stringify(rec.receipt_id)} cites goal_hash ${JSON.stringify(gh)} but the ` +
+          `${label} continuation claims ${JSON.stringify(expected_goal_hash)}; the signed chain belongs to a ` +
+          `different goal than the capsule beside it (fail closed).`
+        );
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Bind a ledger's bind-verdict turns to the chain that ships beside it: every cited receipt must be
  * PRESENT in that pack's receipts.json, in the expected loop, with the EXACT verdict outcome (both
  * directions — a ledger REFUSED/ESCALATED unbacked by the signed chain is as forged as an APPROVED)
@@ -359,6 +383,9 @@ function verifyCrossLoopLinkageChecks(
     );
   }
   pass("prior_chain_structural", `prior chain is structurally contiguous and sealed (loop ${priorChain.loop_id})`);
+  const priorGoalFail = chainGoalBinds(priorReceiptsR.value, priorCont.goal_hash, "prior");
+  if (priorGoalFail) return fail("prior_chain_goal_binds", priorGoalFail);
+  pass("prior_chain_goal_binds", "every prior chain receipt cites the prior continuation's goal_hash");
   const curChain = verifyLoopChain(asChainLinks(curReceiptsR.value));
   if (!curChain.valid) {
     return fail("current_chain_structural", `current receipts.json fails the structural chain check: ${curChain.reason} (fail closed).`);
@@ -371,6 +398,9 @@ function verifyCrossLoopLinkageChecks(
     );
   }
   pass("current_chain_structural", `current chain is structurally contiguous and sealed (loop ${curChain.loop_id})`);
+  const curGoalFail = chainGoalBinds(curReceiptsR.value, curCont.goal_hash, "current");
+  if (curGoalFail) return fail("current_chain_goal_binds", curGoalFail);
+  pass("current_chain_goal_binds", "every current chain receipt cites the current continuation's goal_hash");
 
   // --- 7) The commitment-bearing scope_ref is stamped by a signed in-loop receipt ---------------
   // (Signature VALIDITY is out of scope here; presence of the stamp in the chain is what links the

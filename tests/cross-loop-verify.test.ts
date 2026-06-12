@@ -444,6 +444,26 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: a same-loop chain for a DIFFERENT goal_hash cannot stand in for the continuation's chain", () => {
+    const otherGoal = deriveGoalHash("an entirely different goal");
+    withTamperedFile(
+      priorDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: { goal_hash?: string }; loop_close?: { goal_hash?: string } } }>) => {
+        for (const r of receipts) {
+          if (r.constraints?.loop) r.constraints.loop.goal_hash = otherGoal;
+          if (r.constraints?.loop_close) r.constraints.loop_close.goal_hash = otherGoal;
+        }
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_chain_goal_binds");
+      }
+    );
+  });
+
   it("fails closed: the unhashed top-level privacy_mode cannot be flipped to 'proof' to skip child-state checks", () => {
     // privacy_mode (top level) is the EXPORT mode and is not covered by scope_ref. Editing it to
     // "proof" while the continuation still publishes plaintext is the contradiction the checker
