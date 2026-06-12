@@ -444,6 +444,22 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     );
   });
 
+  it("fails closed: the unhashed top-level privacy_mode cannot be flipped to 'proof' to skip child-state checks", () => {
+    // privacy_mode (top level) is the EXPORT mode and is not covered by scope_ref. Editing it to
+    // "proof" while the continuation still publishes plaintext is the contradiction the checker
+    // refuses — the child-state checks cannot be skipped this way.
+    withTamperedFile(
+      currentDir,
+      "scope-capsule.json",
+      (s: { privacy_mode: string }) => ({ ...s, privacy_mode: "proof" }),
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("current_privacy_mode_consistent");
+      }
+    );
+  });
+
   it("fails closed (never crashes): valid JSON with the wrong shape produces the report, not an exception", () => {
     // receipts.json containing {} — must yield a failing report with the signature notice, not throw.
     withTamperedFile(priorDir, "receipts.json", () => ({}) as never, () => {

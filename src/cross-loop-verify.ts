@@ -278,6 +278,32 @@ function verifyCrossLoopLinkageChecks(
   }
   pass("current_scope_ref_recomputes", `scope_ref ${curScope.scope_ref} recomputes from the structural projection`);
 
+  // --- 2b) Mode honesty: the top-level privacy_mode is the EXPORT mode and is NOT covered by ----
+  // scope_ref, so it can be edited freely. Two contradictions are forged shapes (mirroring the
+  // exporter's mode contract — downgrading a VC-sealed scope to a proof EXPORT remains legitimate):
+  //   (a) an UPGRADE claim: top-level "verified_context" over a sealed structural that is not VC;
+  //   (b) a pack CLAIMING proof while its continuation PUBLISHES plaintext state — the classic
+  //       dodge: edit the unhashed top-level mode to "proof" so the child-state checks are skipped
+  //       while the edited plaintext rides along as if content-blind.
+  const curPublishesState = Object.values(plainState(curCont)).some((a) => a.length > 0);
+  if (curScope.privacy_mode === "verified_context" && curScope.structural.privacy_mode !== "verified_context") {
+    return fail(
+      "current_privacy_mode_consistent",
+      `scope-capsule.json claims a verified_context export but the SEALED structural privacy_mode is ` +
+        `${JSON.stringify(curScope.structural.privacy_mode)}; an export may never be more permissive than the ` +
+        `sealed scope (fail closed).`
+    );
+  }
+  if (curScope.privacy_mode !== "verified_context" && curPublishesState) {
+    return fail(
+      "current_privacy_mode_consistent",
+      "scope-capsule.json claims a content-blind (proof) export but the continuation publishes plaintext " +
+        "settled/open/next/changed; a proof pack carrying plaintext state is contradictory — the unhashed " +
+        "top-level mode cannot be used to skip the child-state checks (fail closed)."
+    );
+  }
+  pass("current_privacy_mode_consistent", "export mode is consistent with the sealed structural privacy_mode and the published artifacts");
+
   // --- 3) The child seals an inheritance edge ---------------------------------------------------
   const edge = curScope.structural.inherits_loop as ScopeInheritsLoop | undefined;
   if (!edge) {
