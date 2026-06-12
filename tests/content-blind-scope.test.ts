@@ -307,6 +307,51 @@ describe("export identity binding + mode contract (fail closed)", () => {
     ).toThrow(/inherits_loop|lineage edge is immutable/);
   });
 
+  it("fails closed: a VC Gate 1 export (no judgment ledger) of a scope that commits inherited state", () => {
+    // The sealed inherits_state_hash claims committed inherited state; only the judgment path can
+    // verify it. A Gate 1 VC export would publish the commitment as if verified without ever
+    // running the binding — refuse the contradictory shape.
+    const edge = {
+      capsule_ref: "cap_v1:" + "1".repeat(64),
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      final_turn_ref: "turn_v1:" + "3".repeat(64)
+    };
+    const stateHash = "sha256:" + "a".repeat(64);
+    const vcSealed = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: "loop-1",
+          goal_hash: "a".repeat(64),
+          privacy_mode: "verified_context",
+          allowed_targets: ["/checkout/**"],
+          inherits_loop: edge,
+          inherits_state_hash: stateHash
+        }
+      }
+    });
+    const receipts = loopCloseReceipts("loop-1", "a".repeat(64));
+    const continuation = { ...continuationFor("loop-1", "a".repeat(64), vcSealed.scope_ref), inherits_loop: edge };
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "t",
+        capsule: { mode: "verified_context", sealed_scope: vcSealed, scope_history: [vcSealed], continuation, scope_events: [] }
+      })
+    ).toThrow(/never verified|lineage binding cannot run|no signed in-loop receipt stamps/);
+
+    // The PROOF Mode export of the same shape is valid (no state published) and its verify
+    // instructions explicitly claim NO state verification was performed.
+    const built = buildLoopProofBundle({
+      receipts,
+      source_env: "t",
+      capsule: { mode: "proof", sealed_scope: vcSealed, scope_history: [vcSealed], continuation, scope_events: [] }
+    });
+    expect(built.verify_instructions_markdown).toContain("performed NO state verification");
+    expect(built.verify_instructions_markdown).not.toContain("THIS export verified it");
+  });
+
   it("fails closed when a verified-context scope event's retained plaintext target does not hash to its descriptor (round 22)", () => {
     // A verified-context scope (plaintext retained in the sidecar). `event_hash` covers only the
     // structural target_descriptor (a hash), NOT the plaintext target — so a tampered scope-events.json

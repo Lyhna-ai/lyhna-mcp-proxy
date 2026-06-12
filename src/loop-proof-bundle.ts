@@ -27,6 +27,7 @@ import {
   assertScopeStructuralClosed,
   assertScopeStructuralContentBlind,
   canonicalScopeJson,
+  deriveInheritsStateHash,
   deriveScopeRef,
   deriveSidecarHash,
   hashTarget,
@@ -50,6 +51,7 @@ import {
   projectTurn,
   renderJudgmentLedgerMarkdown,
   validateJudgmentChain,
+  type JudgmentDelta,
   type JudgmentTurn
 } from "./judgment-ledger.js";
 import { reduceJudgmentLedger, type ReducedJudgmentState } from "./judgment-reducer.js";
@@ -215,6 +217,36 @@ export type BuildLoopProofBundleInput = {
      * Omit for a Capsule Gate 1 (judgment-less) pack — the output is then byte-for-byte unchanged.
      */
     judgment_turns?: JudgmentTurn[];
+    /**
+     * Capsule Gate 2 lineage passthrough (ADDITIVE, Verified Context only): the PRIOR loop's
+     * settled/open/next/changed, folded into the reduced state BEFORE this loop's turn deltas so the
+     * continuation / memory seed carry the inherited state extended by this loop. The supplied
+     * continuation MUST already be folded over the same seed (the export re-folds and binds the
+     * continuation's plaintext to it). Proof Mode ignores it (content-blind).
+     *
+     * BINDING REQUIRED: a state-bearing seed is published ONLY when `prior_continuation` is also
+     * supplied and binds — the prior capsule's recomputed capsule_ref must equal the sealed
+     * inherits_loop.capsule_ref and the seed must equal the prior capsule's verified state (fail
+     * closed otherwise). Omit both for a non-inheriting loop — output is then byte-for-byte unchanged.
+     */
+    inherited_state?: JudgmentDelta;
+    /**
+     * The PRIOR loop's continuation capsule (its pack's continuation-capsule.json). Identity-bound
+     * to the sealed inherits_loop edge: recomputed capsule_ref, scope_ref, and final_turn_ref must
+     * all equal the sealed triple (fail closed). In Verified Context Mode a state-bearing
+     * inherited_state must equal this capsule's settled/open/next/changed — the seed is never
+     * trusted bare.
+     */
+    prior_continuation?: ContinuationCapsule;
+    /**
+     * The PRIOR loop's ordered judgment turns (its pack's judgment-ledger.json `turns`). REQUIRED
+     * for a state-bearing Verified Context seed: the prior ledger is chain-validated and RE-FOLDED
+     * with the same reducer semantics, and BOTH the seed AND the prior continuation's plaintext must
+     * equal that re-fold — so the value binding is never the continuation sidecar compared to itself
+     * (fail closed on any mismatch). The re-folded chain's final_turn_ref must also equal the sealed
+     * edge's final_turn_ref.
+     */
+    prior_judgment_turns?: JudgmentTurn[];
   };
 };
 
@@ -523,12 +555,19 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // would omit or contradict the edge the rest of the pack publishes. (No scope-history artifact is
     // added; finalScope's capsule itself substantiates the edge.)
     const originalEdge = canonicalScopeJson(original.structural.inherits_loop ?? null);
+    const originalStateHash = original.structural.inherits_state_hash ?? null;
     for (const entry of history) {
       if (canonicalScopeJson(entry.structural.inherits_loop ?? null) !== originalEdge) {
         throw new Error(
           `Scope version ${entry.scope_ref} carries a different inherits_loop than the original; the ` +
             `cross-loop lineage edge is immutable across amendments and the final scope capsule must ` +
             `substantiate it (fail closed).`
+        );
+      }
+      if ((entry.structural.inherits_state_hash ?? null) !== originalStateHash) {
+        throw new Error(
+          `Scope version ${entry.scope_ref} carries a different inherits_state_hash than the original; ` +
+            `the inherited-state commitment is immutable across amendments (fail closed).`
         );
       }
     }
@@ -703,6 +742,10 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // The i-th forwarded step requires its version's max_steps >= i (a tampered/imported chain that runs
     // more executed steps than the sealed bound allows must not export as a valid scoped proof).
     let inLoopStepCount = 0;
+    // Count in-loop receipts that carry a signed scope stamp citing a presented scope version. A
+    // stateful lineage claim (below) requires at least one — otherwise this loop's commitment-bearing
+    // scope_ref is stamped into NO signed receipt and the "bound to the signed chain" claim is vacuous.
+    let inLoopScopeStamps = 0;
     input.receipts.forEach((r, i) => {
       const c = r.constraints as
         | {
@@ -726,6 +769,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
               `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
           );
         }
+        if (isInLoop) inLoopScopeStamps += 1;
         // FAIL CLOSED (per-step scope anchoring): the scope stamp must cite the SAME predecessor as the
         // signed `constraints.loop`. The runtime stamps both inside one loop mutex with the same
         // `prior_receipt_id` (loop.ts), so a scope anchor pointing at a different predecessor than the
@@ -836,6 +880,22 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
       }
     });
 
+    // FAIL CLOSED (stateful lineage must be chain-stamped): a sealed inherits_state_hash claims the
+    // inherited state is bound to the SIGNED chain via this loop's scope_ref. That only holds if some
+    // signed in-loop receipt actually STAMPS a presented scope version (every history version carries
+    // the immutable commitment). A loop with no consequential in-loop receipts — only the exempt
+    // terminal loop_close — stamps the commitment-bearing scope_ref nowhere, so a caller could pair a
+    // genuine terminal chain (same loop_id/goal_hash) with a rewritten sealed scope/continuation
+    // pointing at an arbitrary prior pack. Refuse to claim signed-chain binding the chain doesn't carry.
+    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && inLoopScopeStamps === 0) {
+      throw new Error(
+        `Verified Context export claims inherited state bound to the signed chain (inherits_state_hash), but ` +
+          `no signed in-loop receipt stamps this loop's scope_ref — only the exempt terminal loop_close is ` +
+          `present, so the commitment is anchored to no signature. Refusing to claim signed-chain binding the ` +
+          `receipt chain does not substantiate (fail closed).`
+      );
+    }
+
     // FAIL CLOSED (mode contract): an export mode must never be MORE permissive than the sealed
     // scope declared. A Verified Context (plaintext-sidecar) export is permitted ONLY when the
     // sealed scope declared EXACTLY "verified_context" — any other value (proof, or a malformed
@@ -873,6 +933,21 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
 
     // Capsule Gate 2 (ADDITIVE): when the judgment ledger was dumped, validate it against the
     // receipts + scope events, fold it, and emit judgment-ledger.json/.md + memory-injection.json.
+    // FAIL CLOSED (no unverified lineage claim): a sealed inherits_state_hash claims committed
+    // inherited state, which only the judgment path can verify (prior pack + ledger re-fold +
+    // commitment hash, inside buildJudgmentArtifacts). A Verified Context Gate 1 export (no
+    // judgment_turns) would skip that binding entirely while still publishing the commitment as if
+    // verified. Refuse the contradictory shape. (A Proof Mode Gate 1 export remains valid: it
+    // publishes no state and its verify instructions claim no state verification — the commitment
+    // is sealed, content-blind, and checked by VC exports / the Stage E two-pack check.)
+    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && !input.capsule.judgment_turns) {
+      throw new Error(
+        `Verified Context export: the sealed scope commits inherited state (inherits_state_hash) but no ` +
+          `judgment ledger was supplied, so the lineage binding cannot run; refusing to emit a pack that ` +
+          `claims verified inherited state it never verified (fail closed).`
+      );
+    }
+
     if (input.capsule.judgment_turns) {
       const built = buildJudgmentArtifacts({
         loop_id: loop.loop_id,
@@ -884,7 +959,15 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         continuation,
         // Cross-loop edge from the VERIFIED original scope (hash-validated above), never the
         // unsigned continuation — the memory seed carries only verified refs.
-        inherits_loop: original.structural.inherits_loop
+        inherits_loop: original.structural.inherits_loop,
+        // The SEALED inherited-state commitment: the supplied prior state must hash to it.
+        inherits_state_hash: original.structural.inherits_state_hash,
+        // Lineage passthrough: the prior loop's inherited state, folded before this loop's deltas.
+        inherited_state: input.capsule.inherited_state,
+        // The prior loop's continuation, identity-bound to the sealed edge before any state folds.
+        prior_continuation: input.capsule.prior_continuation,
+        // The prior loop's ledger turns: the seed's value binding re-folds these (never sidecar-vs-itself).
+        prior_judgment_turns: input.capsule.prior_judgment_turns
       });
       judgment_ledger = built.ledger;
       judgment_ledger_markdown = built.markdown;
@@ -920,7 +1003,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // THE HANDOFF renders from the PROJECTED continuation (mode-appropriate), so a Proof Mode
     // handoff is structural-only by construction — it never sees the plaintext sidecar.
     handoff_markdown = renderHandoffMarkdown(continuation_capsule);
-    verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle);
+    verify_instructions_markdown = renderVerifyInstructionsMarkdown(bundle, scope_capsule);
   }
 
   const graph_node = buildGraphNode(bundle);
@@ -963,6 +1046,14 @@ function buildJudgmentArtifacts(input: {
   continuation: ContinuationCapsule;
   /** Cross-loop edge from the VERIFIED original sealed scope (structural refs; both modes). */
   inherits_loop?: ScopeInheritsLoop;
+  /** SEALED inherited-state commitment from the verified original scope (sha256 over prior state). */
+  inherits_state_hash?: string;
+  /** Lineage passthrough seed (Verified Context only): the prior loop's settled/open/next/changed. */
+  inherited_state?: JudgmentDelta;
+  /** The prior loop's continuation capsule — identity-bound to the sealed edge (fail closed). */
+  prior_continuation?: ContinuationCapsule;
+  /** The prior loop's judgment turns — re-folded to bind the seed's VALUES (fail closed). */
+  prior_judgment_turns?: JudgmentTurn[];
 }): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
   const { loop_id, scope_ref, mode, turns, continuation } = input;
 
@@ -1192,8 +1283,148 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
-  // 5) Fold + project under the privacy mode.
-  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode });
+  // FAIL CLOSED (anchored + BOUND lineage): inherited lineage state may be folded ONLY when
+  //   (a) this pack carries a sealed `inherits_loop` edge proving WHICH prior capsule it came from, AND
+  //   (b) the PRIOR loop's continuation capsule is supplied and binds to that edge, AND
+  //   (c) the seed EQUALS the prior capsule's verified settled/open/next/changed.
+  // The edge alone proves only which capsule was referenced — not that the inherited VALUES came from
+  // it. Without (b)+(c), a caller could pass arbitrary "prior" plaintext plus a continuation folded
+  // over the same forged seed and the export would publish it as verified memory. Proof Mode folds no
+  // seed at all (content-blind), so the state checks bite only the mode that publishes the state.
+  const seed = input.inherited_state;
+  const seedHasState =
+    !!seed && [seed.settled, seed.open_questions, seed.next_actions, seed.changed].some((a) => Array.isArray(a) && a.length > 0);
+  // A Verified Context pack makes a LINEAGE-STATE claim when it folds a state-bearing seed OR when
+  // its sealed scope carries an inherits_state_hash commitment — a sealed commitment that is never
+  // verified (e.g. an empty-folding prior, or no prior supplied) would let an arbitrary/stale
+  // commitment ride in scope-capsule.json as if verified. Either trigger demands the full binding.
+  const lineageStateClaim = mode === "verified_context" && (seedHasState || input.inherits_state_hash !== undefined);
+  if (lineageStateClaim) {
+    if (!input.inherits_loop) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but the verified original scope carries ` +
+          `no sealed inherits_loop edge; refusing to publish prior-loop state with unanchored lineage (fail closed).`
+      );
+    }
+    if (!input.prior_continuation) {
+      throw new Error(
+        `Verified Context export claims inherited lineage state (a state-bearing seed and/or a sealed ` +
+          `inherits_state_hash commitment) but no prior_continuation to verify it against — supply the prior ` +
+          `pack's continuation-capsule.json (fail closed).`
+      );
+    }
+    if (!input.prior_judgment_turns) {
+      throw new Error(
+        `Verified Context export claims inherited lineage state but no prior judgment ledger to re-fold; ` +
+          `the values bind to the prior ledger's re-folded reduction, never to the continuation sidecar ` +
+          `compared to itself — supply the prior pack's judgment-ledger.json (fail closed).`
+      );
+    }
+    if (!input.inherits_state_hash) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but the sealed scope carries no ` +
+          `inherits_state_hash commitment; without it the inherited values are not bound to the signed ` +
+          `chain — no commitment means identity-only inheritance (edge without state). Fail closed.`
+      );
+    }
+  }
+  if (input.prior_continuation) {
+    const edge = input.inherits_loop;
+    if (!edge) {
+      throw new Error(
+        `A prior_continuation was supplied but the verified original scope seals no inherits_loop edge; ` +
+          `nothing anchors which prior capsule this loop opened from (fail closed).`
+      );
+    }
+    // Identity binding: the prior capsule's content-blind identity (recomputed, mode-independent),
+    // final scope_ref, and final judgment turn must all equal the SEALED edge triple.
+    const recomputedRef = deriveContinuationRef(input.prior_continuation);
+    if (recomputedRef !== edge.capsule_ref) {
+      throw new Error(
+        `Prior continuation capsule_ref ${recomputedRef} does not match the sealed inherits_loop.capsule_ref ` +
+          `${edge.capsule_ref}; the supplied prior capsule is not the one this loop opened from (fail closed).`
+      );
+    }
+    if (input.prior_continuation.scope_ref !== edge.scope_ref) {
+      throw new Error(`Prior continuation scope_ref does not match the sealed inherits_loop.scope_ref (fail closed).`);
+    }
+    if ((input.prior_continuation.final_turn_ref ?? null) !== edge.final_turn_ref) {
+      throw new Error(`Prior continuation final_turn_ref does not match the sealed inherits_loop.final_turn_ref (fail closed).`);
+    }
+    // Value binding (Verified Context, state-bearing seed only) — TWO layers:
+    //
+    //   1) SEALED COMMITMENT (the cryptographic anchor): the supplied prior state must hash
+    //      (deriveInheritsStateHash) to the `inherits_state_hash` SEALED into this loop's original
+    //      scope at open. scope_ref is stamped into the signed receipt chain, so forging inherited
+    //      memory requires forging the signed chain. What remains outside the proof is supervisor
+    //      honesty at open — the system's trust root by design.
+    //   2) NON-CIRCULAR CONSISTENCY: the prior pack's judgment-ledger.json turns are chain-validated
+    //      (every turn_ref recomputes) and RE-FOLDED with the same reducer semantics; then THREE
+    //      things must agree exactly: re-fold(prior turns) == prior continuation plaintext == seed,
+    //      and the re-folded chain's final_turn_ref must equal the sealed edge's — so the supplied
+    //      ledger IS the chain the edge pinned and the two prior sidecars agree with each other.
+    //
+    // CHAINED-PRIOR LIMITATION (fail closed, not silent): a prior loop that ITSELF inherited state
+    // folded its own seed before its deltas, so re-folding its ledger ALONE cannot reproduce its
+    // continuation plaintext. Verifying such a prior would require ITS prior pack too; until a
+    // pack-chain input exists, a multi-hop inheritance export refuses here rather than publish a
+    // prefix nothing supplied can verify.
+    // Runs for EVERY lineage-state claim — including a sealed commitment over an EMPTY prior state
+    // (the empty fold must still hash to the sealed commitment; a stale/arbitrary commitment may
+    // never ride out unverified just because the prior happens to fold empty).
+    if (lineageStateClaim) {
+      const p = input.prior_continuation;
+      const priorTurns = input.prior_judgment_turns!;
+      // Re-fold the prior ledger (validates the chain fail-closed: contiguity, hash links, anchors).
+      const priorFold = reduceJudgmentLedger({
+        loop_id: p.loop_id,
+        scope_ref: p.scope_ref,
+        turns: priorTurns,
+        mode: "verified_context"
+      });
+      if ((priorFold.final_turn_ref ?? null) !== edge.final_turn_ref) {
+        throw new Error(
+          `Prior judgment ledger re-folds to final_turn_ref ${priorFold.final_turn_ref ?? "null"} but the sealed ` +
+            `inherits_loop.final_turn_ref is ${edge.final_turn_ref}; the supplied ledger is not the chain the ` +
+            `edge pinned (fail closed).`
+        );
+      }
+      const plainState = (s: { settled?: string[]; open_questions?: string[]; next_actions?: string[]; changed?: string[] }) => ({
+        settled: s.settled ?? [],
+        open_questions: s.open_questions ?? [],
+        next_actions: s.next_actions ?? [],
+        changed: s.changed ?? []
+      });
+      const foldState = canonicalScopeJson(plainState(priorFold));
+      if (canonicalScopeJson(plainState(p)) !== foldState) {
+        throw new Error(
+          `Prior continuation plaintext does not equal the re-fold of the prior judgment ledger; the prior ` +
+            `pack's continuation-capsule.json and judgment-ledger.json disagree (tampered or stale — fail closed).`
+        );
+      }
+      if (canonicalScopeJson(plainState(seed ?? {})) !== foldState) {
+        throw new Error(
+          `Inherited state does not equal the prior capsule's verified state (the re-folded prior judgment ` +
+            `ledger); the seed must be exactly the referenced prior capsule's state (fail closed).`
+        );
+      }
+      // Layer 1 — the SEALED commitment: the supplied prior state must hash to the inherits_state_hash
+      // sealed into this loop's scope_ref (and thus stamped into the signed receipt chain). A consistent
+      // edit of BOTH prior sidecars passes layer 2 but cannot match the sealed commitment.
+      const suppliedStateHash = deriveInheritsStateHash(plainState(p));
+      if (suppliedStateHash !== input.inherits_state_hash) {
+        throw new Error(
+          `Supplied prior state hashes to ${suppliedStateHash} but the SEALED inherits_state_hash commitment ` +
+            `is ${input.inherits_state_hash}; the inherited values are not the ones committed at open — bound ` +
+            `to the signed chain via scope_ref (fail closed).`
+        );
+      }
+    }
+  }
+
+  // 5) Fold + project under the privacy mode. The lineage seed (prior loop's inherited state) is
+  // folded BEFORE this loop's deltas (Verified Context only; Proof Mode ignores it — content-blind).
+  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode, seed });
   const projectedTurns = turns.map((t) => projectTurn(t, mode));
 
   // Proof Mode is content-blind: no projected turn may carry a plaintext delta.
@@ -1288,7 +1519,7 @@ function buildJudgmentArtifacts(input: {
 }
 
 /** Content-blind, mode-independent identity of a continuation capsule (over its structural projection). */
-function deriveContinuationRef(continuation: ContinuationCapsule): string {
+export function deriveContinuationRef(continuation: ContinuationCapsule): string {
   return `cap_v1:${sha256Hex(canonicalScopeJson(projectContinuationProofMode(continuation)))}`;
 }
 
@@ -1474,7 +1705,7 @@ export function renderProofCardMarkdown(
 }
 
 /** verify-instructions.md — how to cold-verify the pack with the independent verifier. */
-export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): string {
+export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle, scope_capsule?: ScopeCapsuleExport): string {
   const lines = [
     `# Verify Instructions`,
     ``,
@@ -1545,6 +1776,48 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle): strin
       `  stamps is outside this threat model.`,
       ``
     );
+    // Cross-loop lineage guarantee — rendered only for an inheriting loop, stating EXACTLY what is
+    // and is not proven (architect contract: the export must state the guarantee precisely).
+    const lineage = scope_capsule?.structural.inherits_loop;
+    if (lineage) {
+      lines.push(
+        `### Cross-loop lineage (what the inherited edge and state DO and DO NOT prove)`,
+        ``,
+        `- This loop opened FROM a prior capsule. The sealed \`inherits_loop\` triple in`,
+        `  \`scope-capsule.json\` (capsule_ref \`${lineage.capsule_ref}\`, scope_ref, final_turn_ref) is`,
+        `  hashed into \`scope_ref\`, which is stamped into the SIGNED receipt chain — the identity of`,
+        `  the prior capsule is bound to the signatures.`,
+        ...(scope_capsule?.structural.inherits_state_hash
+          ? [
+              `- The inherited settled/open/next/changed state is committed by the sealed`,
+              `  \`inherits_state_hash\` (\`${scope_capsule.structural.inherits_state_hash}\`): sha256 over the`,
+              `  prior continuation's canonical state, sealed into \`scope_ref\` at open.`,
+              // The verification CLAIM must match what this export actually ran: only the Verified
+              // Context judgment path executes the lineage binding. A Proof Mode pack publishes no
+              // state and must not claim a verification it never performed.
+              ...(bundle.capsule?.mode === "verified_context"
+                ? [
+                    `- THIS export verified it: the supplied prior state hashes to the sealed commitment, the`,
+                    `  prior judgment ledger re-folds (chain-validated), and re-fold == prior continuation`,
+                    `  plaintext == seed — so forging inherited memory requires forging the signed receipt chain.`
+                  ]
+                : [
+                    `- This Proof Mode export publishes NO state and performed NO state verification; the`,
+                    `  commitment is sealed (content-blind) and is verified by a Verified Context export of`,
+                    `  this loop and by the Stage E two-pack check.`
+                  ]),
+              `- What remains OUTSIDE the proof: supervisor honesty at open (the supervisor read the genuine`,
+              `  prior pack when sealing the commitment) — the system's trust root by design.`
+            ]
+          : [
+              `- No \`inherits_state_hash\` is sealed: this is IDENTITY-ONLY inheritance. The pack proves`,
+              `  which prior capsule was referenced; it carries and proves NO inherited state values.`
+            ]),
+        `- Offline cross-check of the two packs together (digests + both signed chains) is the`,
+        `  Stage E two-pack verification.`,
+        ``
+      );
+    }
   }
   return lines.join("\n");
 }

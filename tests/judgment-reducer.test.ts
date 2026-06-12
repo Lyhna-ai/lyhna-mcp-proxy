@@ -137,6 +137,48 @@ describe("Capsule Gate 2 — Judgment Ledger Reducer", () => {
     expect(() => reduceJudgmentLedger({ loop_id: "L", scope_ref: "scope_v1:final", turns: [t], mode: "proof" })).toThrow(/no scope_event_hash anchor/);
   });
 
+  it("lineage seed: prepends the prior loop's state BEFORE this loop's deltas (Verified Context)", () => {
+    const turns = buildLedger();
+    const seed = {
+      settled: ["loop1: chose Ed25519"],
+      open_questions: ["loop1: which corpus?"],
+      next_actions: ["loop1: wire export"],
+      changed: ["loop1: scope-capsule.ts"]
+    };
+    const reduced = reduceJudgmentLedger({ loop_id: "L", scope_ref: "scope_v1:final", turns, mode: "verified_context", seed });
+    // Seed first (lineage order), then this loop's own folded deltas.
+    expect(reduced.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
+    expect(reduced.open_questions).toEqual(["loop1: which corpus?", "rounding?"]);
+    expect(reduced.next_actions).toEqual(["loop1: wire export", "land the fix"]);
+    expect(reduced.changed).toEqual(["loop1: scope-capsule.ts", "/checkout/cart.ts"]);
+  });
+
+  it("lineage seed: Proof Mode ignores it entirely (content-blind — no plaintext seed)", () => {
+    const turns = buildLedger();
+    const reduced = reduceJudgmentLedger({
+      loop_id: "L",
+      scope_ref: "scope_v1:final",
+      turns,
+      mode: "proof",
+      seed: { settled: ["loop1: secret prior state"] }
+    });
+    expect(reduced.settled).toBeUndefined();
+    expect(JSON.stringify(reduced)).not.toContain("loop1: secret prior state");
+  });
+
+  it("lineage seed: fails closed on a malformed seed (Verified Context)", () => {
+    const turns = buildLedger();
+    expect(() =>
+      reduceJudgmentLedger({
+        loop_id: "L",
+        scope_ref: "scope_v1:final",
+        turns,
+        mode: "verified_context",
+        seed: { settled: ["ok"], bogus: ["nope"] } as never
+      })
+    ).toThrow(/unknown field|fail closed/i);
+  });
+
   it("accumulates distinct scope_refs across amendments", () => {
     const rec = createJudgmentRecorder();
     rec.append({

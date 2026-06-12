@@ -15,16 +15,17 @@
 // reshaped; the bytes written to receipts.json are the bytes digested.
 
 import { connect as netConnect, type Socket } from "node:net";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { CliIo } from "./capsule-cli.js";
-import { buildContinuationCapsule } from "./continuation-capsule.js";
+import { buildContinuationCapsule, type ContinuationCapsule } from "./continuation-capsule.js";
 import { reduceJudgmentLedger } from "./judgment-reducer.js";
 import { buildLoopProofBundle, deriveLoopSummary, type ProofReceipt } from "./loop-proof-bundle.js";
 import { writeProofPackFiles } from "./proof-pack-io.js";
 import type { ScopePrivacyMode, SealedScope } from "./scope-capsule.js";
 import type { ScopeEvent } from "./scope-event-recorder.js";
-import type { JudgmentTurn } from "./judgment-ledger.js";
+import type { JudgmentDelta, JudgmentTurn } from "./judgment-ledger.js";
 
 export const CTL_USAGE =
   "usage: lyhna-mcp ctl --file <command.json>      (recommended — shell-quoting-safe, incl. PowerShell)\n" +
@@ -37,11 +38,15 @@ export const CTL_USAGE =
 
 export const EXPORT_PACK_USAGE =
   "usage: lyhna-mcp export-pack --loop <loop_id> --out <dir> [--mode proof|verified-context]\n" +
-  "                [--source-env <env>] [--socket <path> | --host <host> --port <port>]\n" +
+  "                [--source-env <env>] [--prior-pack <dir>]\n" +
+  "                [--socket <path> | --host <host> --port <port>]\n" +
   "  Reads a closed loop's sealed chain, scope history, and judgment ledger over the supervisor\n" +
   "  control channel, folds the continuation capsule, and writes the full proof pack (receipts,\n" +
   "  bundle, proof-card.md, HANDOFF.md, judgment ledger, memory-injection.json) to <dir>.\n" +
-  "  Default --mode is the scope's sealed privacy_mode (downgrading to proof is always allowed).\n";
+  "  Default --mode is the scope's sealed privacy_mode (downgrading to proof is always allowed).\n" +
+  "  --prior-pack: the PRIOR loop's exported pack dir (cross-loop lineage). Its continuation is\n" +
+  "  identity-bound to this loop's sealed inherits_loop edge and, in verified-context mode, its\n" +
+  "  settled/open/next/changed seed this loop's fold (fail closed on any mismatch).\n";
 
 export type ControlTarget = { socketPath: string } | { host: string; port: number };
 
@@ -237,7 +242,8 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   let outDir: string | undefined;
   let modeFlag: ScopePrivacyMode | undefined;
   let sourceEnv = "lyhna-mcp export-pack";
-  const VALUE_FLAGS = new Set(["--loop", "--out", "--mode", "--source-env"]);
+  let priorPackDir: string | undefined;
+  const VALUE_FLAGS = new Set(["--loop", "--out", "--mode", "--source-env", "--prior-pack"]);
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]!;
     const common = takeCommonFlag(flags, argv, i);
@@ -259,6 +265,7 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
       if (a === "--loop") loopId = value;
       else if (a === "--out") outDir = value;
       else if (a === "--mode") modeFlag = normalizeMode(value);
+      else if (a === "--prior-pack") priorPackDir = value;
       else sourceEnv = value;
     } else if (a === "--help" || a === "-h") {
       io.stdout(EXPORT_PACK_USAGE);
@@ -376,11 +383,37 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // judgment-less loop (no in-loop receipts) still validates green with the empty ledger.
   let files: string[];
   try {
+    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json AND
+    // judgment-ledger.json. The seed is derived FROM the prior continuation (never a bare
+    // caller-supplied delta); buildLoopProofBundle fail-closes unless the prior capsule binds to this
+    // loop's sealed inherits_loop edge and — in verified-context mode — the seed AND the prior
+    // continuation plaintext both equal the RE-FOLD of the prior judgment ledger (non-circular).
+    let prior_continuation: ContinuationCapsule | undefined;
+    let prior_judgment_turns: JudgmentTurn[] | undefined;
+    let inherited_state: JudgmentDelta | undefined;
+    if (priorPackDir) {
+      prior_continuation = JSON.parse(
+        readFileSync(join(priorPackDir, "continuation-capsule.json"), "utf8")
+      ) as ContinuationCapsule;
+      const priorLedgerPath = join(priorPackDir, "judgment-ledger.json");
+      if (existsSync(priorLedgerPath)) {
+        prior_judgment_turns = (JSON.parse(readFileSync(priorLedgerPath, "utf8")) as { turns: JudgmentTurn[] }).turns;
+      }
+      const seed: JudgmentDelta = {
+        ...(prior_continuation.settled?.length ? { settled: prior_continuation.settled } : {}),
+        ...(prior_continuation.open_questions?.length ? { open_questions: prior_continuation.open_questions } : {}),
+        ...(prior_continuation.next_actions?.length ? { next_actions: prior_continuation.next_actions } : {}),
+        ...(prior_continuation.changed?.length ? { changed: prior_continuation.changed } : {})
+      };
+      if (Object.keys(seed).length > 0) inherited_state = seed;
+    }
+
     const reduced = reduceJudgmentLedger({
       loop_id: loopId,
       scope_ref: finalScope.scope_ref,
       turns: judgmentTurns,
-      mode
+      mode,
+      seed: inherited_state
     });
     const continuation = buildContinuationCapsule({
       scope_history: scopeHistory,
@@ -405,7 +438,10 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
         scope_history: scopeHistory,
         continuation,
         scope_events: scopeEvents,
-        judgment_turns: judgmentTurns
+        judgment_turns: judgmentTurns,
+        inherited_state,
+        prior_continuation,
+        prior_judgment_turns
       }
     });
 
