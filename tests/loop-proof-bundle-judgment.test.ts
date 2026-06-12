@@ -806,13 +806,15 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     priorTurns?: JudgmentTurn[];
     edge?: ScopeInheritsLoop;
     stateHash?: string;
+    mode?: ScopePrivacyMode;
   }) {
-    const f = fixture("verified_context", overrides.edge, overrides.seed as never, overrides.stateHash);
+    const mode = overrides.mode ?? "verified_context";
+    const f = fixture(mode, overrides.edge, overrides.seed as never, overrides.stateHash);
     return buildLoopProofBundle({
       receipts: f.receipts,
       source_env: "test",
       capsule: {
-        mode: "verified_context",
+        mode,
         sealed_scope: f.sealed,
         scope_history: [f.sealed],
         continuation: f.continuation,
@@ -824,6 +826,16 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
       }
     });
   }
+
+  it("export SUCCEEDS: a genuine stateful PROOF export whose in-loop receipt stamps the final scope_ref", () => {
+    // The mode-agnostic guard must NOT over-block: a real working loop stamps its final scope_ref via
+    // an in-loop receipt, so the stateful commitment IS chain-bound — valid in proof mode too (proof
+    // only strips plaintext STATE). The pack is content-blind: it publishes no state and claims none.
+    const built = buildSeeded({ seed, prior: priorContinuation, priorTurns, edge, stateHash, mode: "proof" });
+    expect(built.continuation_capsule!.inherits_loop).toEqual(edge);
+    expect(built.verify_instructions_markdown).toContain("performed NO state verification");
+    expect(built.verify_instructions_markdown).not.toContain("THIS export verified it");
+  });
 
   it("export fails closed: a TRAILING amendment leaves the final scope_ref unstamped (commitment not chain-bound)", () => {
     // Loop seals a commitment under scope v1, the only governed action stamps v1, THEN the scope is

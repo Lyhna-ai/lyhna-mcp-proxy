@@ -341,14 +341,43 @@ describe("export identity binding + mode contract (fail closed)", () => {
       })
     ).toThrow(/never verified|lineage binding cannot run|no signed in-loop receipt stamps/);
 
-    // The PROOF Mode export of the same shape is valid (no state published) and its verify
-    // instructions explicitly claim NO state verification was performed.
+    // RULING (mode-agnostic stateful binding): the SAME stateful shape in PROOF Mode is no longer
+    // valid. inherits_state_hash seals into the final scope_ref in both modes; a degenerate loop
+    // (only a terminal close, no governed action) stamps it into no signed receipt, so the commitment
+    // is anchored to no signature. Proof Mode removes plaintext STATE, not the stateful lineage
+    // commitment — it fails closed too, with the remedy taught.
+    expect(() =>
+      buildLoopProofBundle({
+        receipts,
+        source_env: "t",
+        capsule: { mode: "proof", sealed_scope: vcSealed, scope_history: [vcSealed], continuation, scope_events: [] }
+      })
+    ).toThrow(/no signed in-loop receipt stamps the FINAL scope_ref|remove the stateful inheritance claim/);
+
+    // A NON-stateful PROOF Mode export of the same degenerate loop remains valid: identity-only
+    // inheritance (an edge, NO inherits_state_hash) makes no stateful binding claim, so the
+    // final-scope stamp is not required. Its verify instructions say IDENTITY-ONLY / NO state.
+    const idOnlySealed = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: "loop-1",
+          goal_hash: "a".repeat(64),
+          privacy_mode: "verified_context",
+          allowed_targets: ["/checkout/**"],
+          inherits_loop: edge
+          // no inherits_state_hash: identity-only inheritance
+        }
+      }
+    });
+    const idContinuation = { ...continuationFor("loop-1", "a".repeat(64), idOnlySealed.scope_ref), inherits_loop: edge };
     const built = buildLoopProofBundle({
       receipts,
       source_env: "t",
-      capsule: { mode: "proof", sealed_scope: vcSealed, scope_history: [vcSealed], continuation, scope_events: [] }
+      capsule: { mode: "proof", sealed_scope: idOnlySealed, scope_history: [idOnlySealed], continuation: idContinuation, scope_events: [] }
     });
-    expect(built.verify_instructions_markdown).toContain("performed NO state verification");
+    expect(built.verify_instructions_markdown).toContain("IDENTITY-ONLY inheritance");
     expect(built.verify_instructions_markdown).not.toContain("THIS export verified it");
   });
 

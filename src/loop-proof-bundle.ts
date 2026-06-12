@@ -902,17 +902,27 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // Both are refused HERE, at the amendment boundary, so a pack the offline two-pack checker would
     // reject (it enforces the same final-scope_ref stamp rule, and packs ship no scope-history to
     // re-derive earlier versions) can never be produced in the first place.
-    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && finalScopeStamps === 0) {
+    //
+    // MODE-AGNOSTIC (architect ruling): the guard's predicate is the COMMITMENT's presence, not the
+    // privacy mode. inherits_state_hash seals into the final scope_ref in BOTH modes; a lineage claim
+    // no signed receipt stamps is equally vacuous in either, and the offline checker enforces the
+    // final-scope_ref stamp mode-agnostically. Proof Mode only removes plaintext STATE — it does NOT
+    // exempt a stateful lineage commitment. Gating this on verified_context would let Proof Mode
+    // produce the exact shape the checker rejects.
+    if (original.structural.inherits_state_hash !== undefined && finalScopeStamps === 0) {
       const trailingAmendment = inLoopScopeStamps > 0;
       throw new Error(
-        `Verified Context export claims inherited state bound to the signed chain (inherits_state_hash), but ` +
+        `This export seals a stateful lineage commitment (inherits_state_hash) bound to the signed chain, but ` +
           `no signed in-loop receipt stamps the FINAL scope_ref ${finalScope.scope_ref}` +
           (trailingAmendment
             ? ` — the final scope version was produced by a TRAILING amendment after the last governed action, so ` +
-              `the commitment is anchored to no signature. Perform a governed action AFTER the amendment (so a ` +
-              `signed receipt stamps the final scope_ref), or avoid amending after the last action, then re-export (fail closed).`
-            : ` — only the exempt terminal loop_close is present, so the commitment is anchored to no signature. ` +
-              `Refusing to claim signed-chain binding the receipt chain does not substantiate (fail closed).`)
+              `the commitment is anchored to no signature. Remedy: perform a governed action AFTER the amendment ` +
+              `(so a signed receipt stamps the final scope_ref) before close, avoid amending after the last action, ` +
+              `or remove the stateful inheritance claim (inherits_state_hash); then re-export (fail closed).`
+            : ` — only the exempt terminal loop_close is present (no governed in-loop action), so the commitment is ` +
+              `anchored to no signature. Remedy: perform a governed action before close so a signed receipt stamps ` +
+              `the final scope_ref, or remove the stateful inheritance claim (inherits_state_hash); then re-export ` +
+              `(fail closed).`)
       );
     }
 
