@@ -513,11 +513,20 @@ function verifyCrossLoopLinkageChecks(
   }).length;
   const stateHash = curScope.structural.inherits_state_hash;
   if (stateHash !== undefined && stampCount === 0) {
+    // KNOWN BOUNDARY (adjudicated; see verify-instructions.md trust boundary): the only way a VALID
+    // exported pack reaches here is a TRAILING amendment — the final scope_ref was produced by an
+    // amendment AFTER the last governed action, so no signed receipt stamps it, and packs ship no
+    // scope-history to re-derive earlier versions (and trusting the unsigned what_changed ancestry
+    // would reopen the vacuous-binding hole). The exporter fails closed on this same shape, so it
+    // cannot produce such a pack; the message teaches the remedy regardless.
     return fail(
       "commitment_scope_ref_stamped",
-      "the sealed inherits_state_hash claims signed-chain binding, but no in-loop receipt OF THIS LOOP in this " +
-        "pack stamps the commitment-bearing scope_ref (note: stamps citing amendment versions not shipped in " +
-        "the pack are not visible to this check) — the commitment is anchored to no presented signature (fail closed)."
+      `the sealed inherits_state_hash claims signed-chain binding, but no in-loop receipt OF THIS LOOP stamps the ` +
+        `final scope_ref ${curScope.scope_ref}. Why: either the chain stamps the commitment-bearing scope nowhere ` +
+        `(forged lineage), or the final scope_ref was produced by a TRAILING amendment after the last governed ` +
+        `action (packs ship no scope-history to verify earlier versions, by design). Remedy: do not amend an ` +
+        `inheriting loop after its last action, or perform a governed action AFTER the amendment so a signed ` +
+        `receipt stamps the final scope_ref before export (fail closed).`
     );
   }
   pass(
