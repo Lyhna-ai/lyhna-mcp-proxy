@@ -28,7 +28,7 @@ import { runVerifyCrossLoop } from "../src/bin/verify-cross-loop.js";
 
 const PUBKEY = "2ecb73042161b7b0008971499b191ec9e3824cd4a6e058a8cede90b04e1efff2";
 
-function sealed(loop_id: string, goal_hash: string, lineage?: { edge: ScopeInheritsLoop; stateHash: string }): SealedScope {
+function sealed(loop_id: string, goal_hash: string, lineage?: { edge: ScopeInheritsLoop; stateHash?: string }): SealedScope {
   return sealScopeCapsule({
     capsule: {
       structural: {
@@ -39,7 +39,8 @@ function sealed(loop_id: string, goal_hash: string, lineage?: { edge: ScopeInher
         privacy_mode: "verified_context",
         allowed_action_classes: ["write"],
         class_map: { write_file: "write" },
-        ...(lineage ? { inherits_loop: lineage.edge, inherits_state_hash: lineage.stateHash } : {})
+        // An edge WITHOUT stateHash is identity-only inheritance (no state commitment).
+        ...(lineage ? { inherits_loop: lineage.edge, ...(lineage.stateHash ? { inherits_state_hash: lineage.stateHash } : {}) } : {})
       },
       sidecar: { goal_summary: `goal of ${loop_id}` }
     }
@@ -87,7 +88,7 @@ function exportPack(opts: {
   loop_id: string;
   goal: string;
   delta: { settled?: string[]; next_actions?: string[]; changed?: string[] };
-  lineage?: { edge: ScopeInheritsLoop; stateHash: string; prior: ContinuationCapsule; priorTurns: unknown };
+  lineage?: { edge: ScopeInheritsLoop; stateHash?: string; prior: ContinuationCapsule; priorTurns: unknown };
   seed?: { settled?: string[]; open_questions?: string[]; next_actions?: string[]; changed?: string[] };
   withRefusal?: boolean;
 }) {
@@ -215,6 +216,33 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     expect(report.signature_notice).toContain("Signature verification not performed here");
     expect(report.verify_commands[0]).toContain(join(priorDir, "receipts.json"));
     expect(report.verify_commands[1]).toContain(join(currentDir, "receipts.json"));
+  });
+
+  it("verifies an identity-only VC child (edge, NO inherits_state_hash): no seeding / prefix check", () => {
+    // Regression guard: an inheriting child whose sealed edge carries NO inherits_state_hash makes no
+    // state claim, so the checker must verify the EDGE and stop — never seed the child fold with prior
+    // state nor require the child's arrays to begin with the prior prefix. The child here publishes
+    // ONLY its own state ("my own state only"), not prefixed by the prior loop's ["chose Ed25519"].
+    const idDir = join(root, "pack-id-only");
+    const edge: ScopeInheritsLoop = {
+      capsule_ref: deriveContinuationRef(prior.continuation),
+      scope_ref: prior.continuation.scope_ref,
+      final_turn_ref: prior.continuation.final_turn_ref!
+    };
+    exportPack({
+      dir: idDir,
+      loop_id: "loop-2id",
+      goal: "ship identity-only",
+      delta: { settled: ["my own state only"] },
+      lineage: { edge, prior: prior.continuation, priorTurns: prior.turns } // NO stateHash, NO seed
+    });
+    const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: idDir });
+    expect(report.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(report.ok).toBe(true);
+    // It short-circuits at the identity-only guard; the stateful rungs never run.
+    expect(report.checks.some((c) => c.name === "identity_only_inheritance" && c.ok)).toBe(true);
+    expect(report.checks.some((c) => c.name === "child_state_refolds")).toBe(false);
+    expect(report.checks.some((c) => c.name === "child_carries_inherited_prefix")).toBe(false);
   });
 
   it("CLI: exits 0 and prints the exact contract wording + both lyhna-verify commands", () => {
