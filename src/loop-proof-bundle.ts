@@ -50,6 +50,7 @@ import {
   projectTurn,
   renderJudgmentLedgerMarkdown,
   validateJudgmentChain,
+  type JudgmentDelta,
   type JudgmentTurn
 } from "./judgment-ledger.js";
 import { reduceJudgmentLedger, type ReducedJudgmentState } from "./judgment-reducer.js";
@@ -215,6 +216,15 @@ export type BuildLoopProofBundleInput = {
      * Omit for a Capsule Gate 1 (judgment-less) pack — the output is then byte-for-byte unchanged.
      */
     judgment_turns?: JudgmentTurn[];
+    /**
+     * Capsule Gate 2 lineage passthrough (ADDITIVE, Verified Context only): the PRIOR loop's
+     * settled/open/next/changed, folded into the reduced state BEFORE this loop's turn deltas so the
+     * continuation / memory seed carry the inherited state extended by this loop. The supplied
+     * continuation MUST already be folded over the same seed (the export re-folds and binds the
+     * continuation's plaintext to it). Proof Mode ignores it (content-blind). Omit for a non-inheriting
+     * loop — output is then byte-for-byte unchanged.
+     */
+    inherited_state?: JudgmentDelta;
   };
 };
 
@@ -884,7 +894,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         continuation,
         // Cross-loop edge from the VERIFIED original scope (hash-validated above), never the
         // unsigned continuation — the memory seed carries only verified refs.
-        inherits_loop: original.structural.inherits_loop
+        inherits_loop: original.structural.inherits_loop,
+        // Lineage passthrough: the prior loop's inherited state, folded before this loop's deltas.
+        inherited_state: input.capsule.inherited_state
       });
       judgment_ledger = built.ledger;
       judgment_ledger_markdown = built.markdown;
@@ -963,6 +975,8 @@ function buildJudgmentArtifacts(input: {
   continuation: ContinuationCapsule;
   /** Cross-loop edge from the VERIFIED original sealed scope (structural refs; both modes). */
   inherits_loop?: ScopeInheritsLoop;
+  /** Lineage passthrough seed (Verified Context only): the prior loop's settled/open/next/changed. */
+  inherited_state?: JudgmentDelta;
 }): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
   const { loop_id, scope_ref, mode, turns, continuation } = input;
 
@@ -1192,8 +1206,9 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
-  // 5) Fold + project under the privacy mode.
-  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode });
+  // 5) Fold + project under the privacy mode. The lineage seed (prior loop's inherited state) is
+  // folded BEFORE this loop's deltas (Verified Context only; Proof Mode ignores it — content-blind).
+  const reduced = reduceJudgmentLedger({ loop_id, scope_ref, turns, mode, seed: input.inherited_state });
   const projectedTurns = turns.map((t) => projectTurn(t, mode));
 
   // Proof Mode is content-blind: no projected turn may carry a plaintext delta.

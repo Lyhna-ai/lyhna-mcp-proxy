@@ -83,7 +83,11 @@ function terminalReceipt(receipt_id: string, prior: string, action_count: number
  * a sealed scope, the matching judgment ledger, a scope event, and a continuation folded from the
  * reduced ledger. Everything cross-references so buildLoopProofBundle validates green.
  */
-function fixture(mode: ScopePrivacyMode, inherits_loop?: ScopeInheritsLoop) {
+function fixture(
+  mode: ScopePrivacyMode,
+  inherits_loop?: ScopeInheritsLoop,
+  seed?: { settled?: string[]; open_questions?: string[]; next_actions?: string[]; changed?: string[] }
+) {
   const sealed = sealedScope(mode, inherits_loop);
   const scope_ref = sealed.scope_ref;
 
@@ -132,7 +136,9 @@ function fixture(mode: ScopePrivacyMode, inherits_loop?: ScopeInheritsLoop) {
   rec.attachRuntimeReport(LOOP_ID, t2.turn_ref, { returned: true, result_hash: `sha256:${"d".repeat(64)}` });
   const turns = rec.judgmentLedgerForLoop(LOOP_ID);
 
-  const reduced = reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref, turns, mode });
+  // The continuation is folded over the SAME seed the export will re-fold with, so the export's
+  // continuation<->reduced binding holds.
+  const reduced = reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref, turns, mode, seed });
   const continuation = buildContinuationCapsule({
     scope_history: [sealed],
     scope_events: [event],
@@ -742,5 +748,63 @@ describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", (
     });
     expect(built.continuation_capsule!.inherits_loop).toBeUndefined();
     expect(built.memory_injection!.inherits_loop).toBeUndefined();
+  });
+});
+
+describe("lineage passthrough (inherited_state) — prior loop's state folded before this loop's", () => {
+  const seed = { settled: ["loop1: chose Ed25519"], next_actions: ["loop1: wire export"] };
+
+  it("Verified Context: seeds continuation + memory-injection BEFORE this loop's deltas", () => {
+    const f = fixture("verified_context", undefined, seed);
+    const built = buildLoopProofBundle({
+      receipts: f.receipts,
+      source_env: "test",
+      capsule: {
+        mode: "verified_context",
+        sealed_scope: f.sealed,
+        scope_history: [f.sealed],
+        continuation: f.continuation,
+        scope_events: [f.event],
+        judgment_turns: f.turns,
+        inherited_state: seed
+      }
+    });
+    // Seed first (lineage order), then this loop's own folded delta ("wrote cart.ts").
+    expect(built.memory_injection!.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
+    expect(built.memory_injection!.next_actions).toEqual(["loop1: wire export"]);
+    expect(built.continuation_capsule!.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
+    expect(built.continuation_capsule!.next_actions).toEqual(["loop1: wire export"]);
+  });
+
+  it("Proof Mode: inherited_state is ignored — pack stays content-blind", () => {
+    const f = fixture("proof", undefined, seed);
+    const built = buildLoopProofBundle({
+      receipts: f.receipts,
+      source_env: "test",
+      capsule: {
+        mode: "proof",
+        sealed_scope: f.sealed,
+        scope_history: [f.sealed],
+        continuation: f.continuation,
+        scope_events: [f.event],
+        judgment_turns: f.turns,
+        inherited_state: seed
+      }
+    });
+    expect(built.memory_injection!.settled).toEqual([]);
+    expect(built.memory_injection!.next_actions).toEqual([]);
+    const blob = JSON.stringify(built.judgment_ledger) + (built.judgment_ledger_markdown ?? "") + JSON.stringify(built.memory_injection) + JSON.stringify(built.continuation_capsule);
+    expect(blob).not.toContain("loop1: chose Ed25519");
+    expect(blob).not.toContain("loop1: wire export");
+  });
+
+  it("a no-seed pack is unchanged (lineage passthrough is opt-in)", () => {
+    const f = fixture("verified_context");
+    const built = buildLoopProofBundle({
+      receipts: f.receipts,
+      source_env: "test",
+      capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: f.turns }
+    });
+    expect(built.memory_injection!.settled).toEqual(["wrote cart.ts"]);
   });
 });

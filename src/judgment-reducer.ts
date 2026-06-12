@@ -18,8 +18,10 @@
 // scope_event_hash) — it will not emit a reduced state over an unverifiable ledger.
 
 import {
+  assertValidDelta,
   projectTurn,
   validateJudgmentChain,
+  type JudgmentDelta,
   type JudgmentTurn,
   type JudgmentVerdictKind,
   type JudgmentVerdictSource
@@ -75,6 +77,14 @@ export type ReduceJudgmentLedgerInput = {
   scope_ref: string;
   turns: readonly JudgmentTurn[];
   mode: ScopePrivacyMode;
+  /**
+   * Optional inherited state seed (lineage passthrough): the PRIOR loop's settled/open/next/changed,
+   * folded in BEFORE this loop's own turn deltas (append-only lineage order — Loop 1's state comes
+   * first, then Loop 2 extends it). VERIFIED CONTEXT ONLY: Proof Mode ignores the seed entirely — a
+   * Proof reduction carries no plaintext, and the prior loop's Proof pack carries no plaintext state
+   * to seed from, so the content-blind reduction stays content-blind. A malformed seed fails closed.
+   */
+  seed?: JudgmentDelta;
 };
 
 export function reduceJudgmentLedger(input: ReduceJudgmentLedgerInput): ReducedJudgmentState {
@@ -106,6 +116,17 @@ export function reduceJudgmentLedger(input: ReduceJudgmentLedgerInput): ReducedJ
   const open_questions: string[] = [];
   const next_actions: string[] = [];
   const changed: string[] = [];
+
+  // Lineage passthrough (Verified Context only): seed the fold with the PRIOR loop's inherited state
+  // BEFORE this loop's turn deltas, so the reduced state reads Loop 1's settled/open/next/changed
+  // first and Loop 2 extends it (append-only). Proof Mode never folds the seed (content-blind).
+  if (input.mode === "verified_context" && input.seed) {
+    assertValidDelta(input.seed); // fail closed on a malformed seed (unknown field / non-string array)
+    if (input.seed.settled) settled.push(...input.seed.settled);
+    if (input.seed.open_questions) open_questions.push(...input.seed.open_questions);
+    if (input.seed.next_actions) next_actions.push(...input.seed.next_actions);
+    if (input.seed.changed) changed.push(...input.seed.changed);
+  }
 
   // A later-approval lookup for the structural "corrected" signal.
   const hasLaterApproval = (afterIndex: number): boolean =>
