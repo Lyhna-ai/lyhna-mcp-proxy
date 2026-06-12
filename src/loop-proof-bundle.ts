@@ -742,6 +742,10 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
     // The i-th forwarded step requires its version's max_steps >= i (a tampered/imported chain that runs
     // more executed steps than the sealed bound allows must not export as a valid scoped proof).
     let inLoopStepCount = 0;
+    // Count in-loop receipts that carry a signed scope stamp citing a presented scope version. A
+    // stateful lineage claim (below) requires at least one — otherwise this loop's commitment-bearing
+    // scope_ref is stamped into NO signed receipt and the "bound to the signed chain" claim is vacuous.
+    let inLoopScopeStamps = 0;
     input.receipts.forEach((r, i) => {
       const c = r.constraints as
         | {
@@ -765,6 +769,7 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
               `chain; the receipts were authorized under a scope this pack does not present (fail closed).`
           );
         }
+        if (isInLoop) inLoopScopeStamps += 1;
         // FAIL CLOSED (per-step scope anchoring): the scope stamp must cite the SAME predecessor as the
         // signed `constraints.loop`. The runtime stamps both inside one loop mutex with the same
         // `prior_receipt_id` (loop.ts), so a scope anchor pointing at a different predecessor than the
@@ -874,6 +879,22 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         );
       }
     });
+
+    // FAIL CLOSED (stateful lineage must be chain-stamped): a sealed inherits_state_hash claims the
+    // inherited state is bound to the SIGNED chain via this loop's scope_ref. That only holds if some
+    // signed in-loop receipt actually STAMPS a presented scope version (every history version carries
+    // the immutable commitment). A loop with no consequential in-loop receipts — only the exempt
+    // terminal loop_close — stamps the commitment-bearing scope_ref nowhere, so a caller could pair a
+    // genuine terminal chain (same loop_id/goal_hash) with a rewritten sealed scope/continuation
+    // pointing at an arbitrary prior pack. Refuse to claim signed-chain binding the chain doesn't carry.
+    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && inLoopScopeStamps === 0) {
+      throw new Error(
+        `Verified Context export claims inherited state bound to the signed chain (inherits_state_hash), but ` +
+          `no signed in-loop receipt stamps this loop's scope_ref — only the exempt terminal loop_close is ` +
+          `present, so the commitment is anchored to no signature. Refusing to claim signed-chain binding the ` +
+          `receipt chain does not substantiate (fail closed).`
+      );
+    }
 
     // FAIL CLOSED (mode contract): an export mode must never be MORE permissive than the sealed
     // scope declared. A Verified Context (plaintext-sidecar) export is permitted ONLY when the

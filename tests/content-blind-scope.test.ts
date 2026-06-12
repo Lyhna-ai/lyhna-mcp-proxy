@@ -339,7 +339,7 @@ describe("export identity binding + mode contract (fail closed)", () => {
         source_env: "t",
         capsule: { mode: "verified_context", sealed_scope: vcSealed, scope_history: [vcSealed], continuation, scope_events: [] }
       })
-    ).toThrow(/never verified|lineage binding cannot run/);
+    ).toThrow(/never verified|lineage binding cannot run|no signed in-loop receipt stamps/);
 
     // The PROOF Mode export of the same shape is valid (no state published) and its verify
     // instructions explicitly claim NO state verification was performed.

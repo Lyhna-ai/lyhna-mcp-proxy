@@ -953,6 +953,52 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     expect(() => buildSeeded({ edge, stateHash })).toThrow(/prior_continuation|verify it against/);
   });
 
+  it("fails closed: stateful lineage on a loop with NO in-loop scope stamp (terminal close only)", () => {
+    // The commitment-bearing scope_ref is stamped into no signed receipt, so "bound to the signed
+    // chain" would be vacuous — a genuine terminal chain paired with a rewritten sealed scope.
+    const sealed = sealScopeCapsule({
+      capsule: {
+        structural: {
+          capsule_type: "scope_capsule",
+          capsule_version: "scope-capsule/v1",
+          loop_id: LOOP_ID,
+          goal_hash: GOAL_HASH,
+          privacy_mode: "verified_context",
+          allowed_action_classes: ["write", "run_tests"],
+          class_map: { write_file: "write", run_tests: "run_tests" },
+          inherits_loop: edge,
+          inherits_state_hash: stateHash
+        },
+        sidecar: { goal_summary: "fix checkout bug" }
+      }
+    });
+    const onlyClose: ProofReceipt[] = [terminalReceipt("close", null as unknown as string, 0)];
+    const continuation = buildContinuationCapsule({
+      scope_history: [sealed],
+      scope_events: [],
+      loop: { loop_id: LOOP_ID, goal_hash: GOAL_HASH, sealed: true, action_count: 0 },
+      mode: "verified_context",
+      reduced: reduceJudgmentLedger({ loop_id: LOOP_ID, scope_ref: sealed.scope_ref, turns: [], mode: "verified_context" })
+    });
+    expect(() =>
+      buildLoopProofBundle({
+        receipts: onlyClose,
+        source_env: "test",
+        capsule: {
+          mode: "verified_context",
+          sealed_scope: sealed,
+          scope_history: [sealed],
+          continuation,
+          scope_events: [],
+          judgment_turns: [],
+          inherited_state: seed,
+          prior_continuation: priorContinuation,
+          prior_judgment_turns: priorTurns
+        }
+      })
+    ).toThrow(/no signed in-loop receipt stamps|anchored to no signature/);
+  });
+
   it("fails closed: a prior continuation supplied with NO sealed edge", () => {
     expect(() => buildSeeded({ prior: priorContinuation, priorTurns })).toThrow(/seals no inherits_loop edge/);
   });
