@@ -274,6 +274,76 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
     }
   });
 
+  it("fails closed: no in-loop receipt OF THIS LOOP stamps the commitment-bearing scope_ref", () => {
+    // The real in-loop receipts' stamps point at a different scope version: a stateful lineage
+    // claim with no presented stamp of the commitment-bearing scope must not pass.
+    withTamperedFile(
+      currentDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: string } } }>) => {
+        for (const r of receipts) {
+          if (r.constraints?.loop && !r.constraints?.loop_close && r.constraints.scope) {
+            r.constraints.scope.scope_ref = "scope_v1:" + "f".repeat(64);
+          }
+        }
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        expect(report.checks.find((c) => !c.ok)!.name).toBe("commitment_scope_ref_stamped");
+      }
+    );
+  });
+
+  it("fails closed: an injected loop-less stamp record cannot satisfy the binding (structural check rejects it)", () => {
+    // A record with no constraints.loop carrying only a matching scope stamp: the loop-aware stamp
+    // count would not count it, and the structural chain check independently rejects the stray
+    // record — the injection vector is closed at both layers.
+    withTamperedFile(
+      currentDir,
+      "receipts.json",
+      (receipts: Array<{ constraints?: { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: string } } }>) => {
+        const finalRef = receipts.find((r) => r.constraints?.loop && !r.constraints?.loop_close)!.constraints!.scope!.scope_ref!;
+        for (const r of receipts) {
+          if (r.constraints?.loop && !r.constraints?.loop_close && r.constraints.scope) {
+            r.constraints.scope.scope_ref = "scope_v1:" + "f".repeat(64); // real stamp points elsewhere
+          }
+        }
+        receipts.push({ constraints: { scope: { scope_ref: finalRef } } }); // injected, loop-less
+        return receipts;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(["current_chain_structural", "commitment_scope_ref_stamped"]).toContain(failed.name);
+      }
+    );
+  });
+
+  it("fails closed: prior receipts.json swapped for another valid sealed chain the ledger never cited", () => {
+    // Same loop_id/goal_hash, structurally valid and sealed — but its receipt IDs are not the ones
+    // the prior ledger's bind turns cite, so the fold's authority does not come from this chain.
+    withTamperedFile(
+      currentDir,
+      "scope-capsule.json",
+      (s: never) => s, // no-op on current; tamper target is the prior pack below
+      () => {
+        const goal_hash = deriveGoalHash("design the gate");
+        const swapped = [
+          inLoopReceipt("loop-1", goal_hash, "rX", null, prior.scope.scope_ref),
+          terminalReceipt("loop-1", goal_hash, "closeX", "rX", 1)
+        ];
+        withTamperedFile(priorDir, "receipts.json", () => swapped as never, () => {
+          const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+          expect(report.ok).toBe(false);
+          expect(report.checks.find((c) => !c.ok)!.name).toBe("prior_ledger_receipts_bind");
+        });
+      }
+    );
+  });
+
   it("fails closed: a non-inheriting current pack has no linkage to verify", () => {
     const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: priorDir });
     expect(report.ok).toBe(false);

@@ -224,25 +224,37 @@ export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_
 
   // --- 7) The commitment-bearing scope_ref is stamped by a signed in-loop receipt ---------------
   // (Signature VALIDITY is out of scope here; presence of the stamp in the chain is what links the
-  // sealed commitment to the material lyhna-verify then proves was signed.)
+  // sealed commitment to the material lyhna-verify then proves was signed.) The stamp must come
+  // from an in-loop receipt OF THIS LOOP — a record without `constraints.loop` (or for a foreign
+  // loop/goal) is ignored by the structural chain check, so counting it here would let an injected
+  // stamp satisfy the binding while the real chain never stamped the commitment-bearing scope.
   const stampCount = curReceiptsR.value.filter((r) => {
-    const rec = r as { constraints?: { loop?: unknown; loop_close?: unknown; scope?: { scope_ref?: unknown } } };
+    const rec = r as {
+      constraints?: { loop?: { loop_id?: unknown; goal_hash?: unknown }; loop_close?: unknown; scope?: { scope_ref?: unknown } };
+    };
     const isTerminal = typeof rec.constraints?.loop_close === "object" && rec.constraints?.loop_close !== null;
-    return !isTerminal && rec.constraints?.scope?.scope_ref === curScope.scope_ref;
+    const loop = rec.constraints?.loop;
+    const isCurrentInLoop =
+      !isTerminal &&
+      typeof loop === "object" &&
+      loop !== null &&
+      loop.loop_id === curCont.loop_id &&
+      loop.goal_hash === curCont.goal_hash;
+    return isCurrentInLoop && rec.constraints?.scope?.scope_ref === curScope.scope_ref;
   }).length;
   const stateHash = curScope.structural.inherits_state_hash;
   if (stateHash !== undefined && stampCount === 0) {
     return fail(
       "commitment_scope_ref_stamped",
-      "the sealed inherits_state_hash claims signed-chain binding, but no in-loop receipt in this pack stamps " +
-        "the commitment-bearing scope_ref (note: stamps citing amendment versions not shipped in the pack are " +
-        "not visible to this check) — the commitment is anchored to no presented signature (fail closed)."
+      "the sealed inherits_state_hash claims signed-chain binding, but no in-loop receipt OF THIS LOOP in this " +
+        "pack stamps the commitment-bearing scope_ref (note: stamps citing amendment versions not shipped in " +
+        "the pack are not visible to this check) — the commitment is anchored to no presented signature (fail closed)."
     );
   }
   pass(
     "commitment_scope_ref_stamped",
     stampCount > 0
-      ? `${stampCount} in-loop receipt(s) stamp the final scope_ref`
+      ? `${stampCount} in-loop receipt(s) of this loop stamp the final scope_ref`
       : "no final-scope stamp required (identity-only inheritance)"
   );
 
@@ -283,6 +295,66 @@ export function verifyCrossLoopLinkage(input: { prior_pack_dir: string; current_
     );
   }
   pass("prior_ledger_refolds", "prior judgment ledger chain-validates and re-folds to the edge-pinned final turn");
+
+  // --- 8b) The prior ledger's bind turns must cite receipts the PRIOR CHAIN actually carries -----
+  // A ledger can be internally consistent (turn_refs recompute, fold matches) while citing receipt
+  // IDs the supplied receipts.json never contained — e.g. the chain swapped for another valid sealed
+  // chain of the same loop_id. The exporter cross-checks receipts<->judgment before accepting the
+  // fold; the offline checker mirrors it read-side: every bind-verdict turn must map to a receipt
+  // present in the prior chain, in the prior loop, with agreeing outcome and scope stamp.
+  const priorReceiptById = new Map<string, { outcome?: unknown; loop_id?: unknown; scope_ref?: unknown }>();
+  for (const r of priorReceiptsR.value) {
+    const rec = r as {
+      receipt_id?: unknown;
+      outcome?: unknown;
+      constraints?: { loop?: { loop_id?: unknown }; scope?: { scope_ref?: unknown } };
+    };
+    if (typeof rec.receipt_id === "string") {
+      priorReceiptById.set(rec.receipt_id, {
+        outcome: rec.outcome,
+        loop_id: rec.constraints?.loop?.loop_id,
+        scope_ref: rec.constraints?.scope?.scope_ref
+      });
+    }
+  }
+  for (const t of priorLedgerR.value.turns) {
+    const turn = t as { turn_index?: number; scope_ref?: string; verdict?: { kind?: string; source?: string; receipt_id?: string } };
+    const v = turn.verdict;
+    if (v?.source !== "bind" || typeof v.receipt_id !== "string") continue;
+    const r = priorReceiptById.get(v.receipt_id);
+    if (!r) {
+      return fail(
+        "prior_ledger_receipts_bind",
+        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which is not present in the prior ` +
+          `pack's receipts.json — the ledger does not belong to the presented chain (fail closed).`
+      );
+    }
+    if (r.loop_id !== priorCont.loop_id) {
+      return fail(
+        "prior_ledger_receipts_bind",
+        `prior ledger turn ${turn.turn_index} cites receipt ${v.receipt_id}, which belongs to loop ` +
+          `${JSON.stringify(r.loop_id)} rather than ${priorCont.loop_id} (fail closed).`
+      );
+    }
+    if (v.kind === "APPROVED" && r.outcome !== "APPROVED") {
+      return fail(
+        "prior_ledger_receipts_bind",
+        `prior ledger turn ${turn.turn_index} records an APPROVED bind on receipt ${v.receipt_id}, but the chain ` +
+          `receipt's outcome is ${JSON.stringify(r.outcome)} (fail closed).`
+      );
+    }
+    if (r.scope_ref !== undefined && r.scope_ref !== turn.scope_ref) {
+      return fail(
+        "prior_ledger_receipts_bind",
+        `prior ledger turn ${turn.turn_index} ran under scope_ref ${turn.scope_ref} but receipt ${v.receipt_id} ` +
+          `stamps ${JSON.stringify(r.scope_ref)} (fail closed).`
+      );
+    }
+  }
+  pass(
+    "prior_ledger_receipts_bind",
+    "every bind-verdict turn in the prior ledger cites a receipt present in the prior chain (loop / outcome / scope agree)"
+  );
   const foldState = canonicalScopeJson(plainState(priorFold));
   if (canonicalScopeJson(plainState(priorCont)) !== foldState) {
     return fail(
