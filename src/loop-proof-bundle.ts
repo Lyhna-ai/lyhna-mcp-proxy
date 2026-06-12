@@ -912,6 +912,21 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
 
     // Capsule Gate 2 (ADDITIVE): when the judgment ledger was dumped, validate it against the
     // receipts + scope events, fold it, and emit judgment-ledger.json/.md + memory-injection.json.
+    // FAIL CLOSED (no unverified lineage claim): a sealed inherits_state_hash claims committed
+    // inherited state, which only the judgment path can verify (prior pack + ledger re-fold +
+    // commitment hash, inside buildJudgmentArtifacts). A Verified Context Gate 1 export (no
+    // judgment_turns) would skip that binding entirely while still publishing the commitment as if
+    // verified. Refuse the contradictory shape. (A Proof Mode Gate 1 export remains valid: it
+    // publishes no state and its verify instructions claim no state verification — the commitment
+    // is sealed, content-blind, and checked by VC exports / the Stage E two-pack check.)
+    if (mode === "verified_context" && original.structural.inherits_state_hash !== undefined && !input.capsule.judgment_turns) {
+      throw new Error(
+        `Verified Context export: the sealed scope commits inherited state (inherits_state_hash) but no ` +
+          `judgment ledger was supplied, so the lineage binding cannot run; refusing to emit a pack that ` +
+          `claims verified inherited state it never verified (fail closed).`
+      );
+    }
+
     if (input.capsule.judgment_turns) {
       const built = buildJudgmentArtifacts({
         loop_id: loop.loop_id,
@@ -1755,10 +1770,21 @@ export function renderVerifyInstructionsMarkdown(bundle: LoopProofBundle, scope_
           ? [
               `- The inherited settled/open/next/changed state is committed by the sealed`,
               `  \`inherits_state_hash\` (\`${scope_capsule.structural.inherits_state_hash}\`): sha256 over the`,
-              `  prior continuation's canonical state, sealed into \`scope_ref\` at open. The export verifies`,
-              `  the supplied prior state hashes to this commitment, re-folds the prior judgment ledger, and`,
-              `  requires re-fold == prior continuation plaintext == seed — so forging inherited memory`,
-              `  requires forging the signed receipt chain.`,
+              `  prior continuation's canonical state, sealed into \`scope_ref\` at open.`,
+              // The verification CLAIM must match what this export actually ran: only the Verified
+              // Context judgment path executes the lineage binding. A Proof Mode pack publishes no
+              // state and must not claim a verification it never performed.
+              ...(bundle.capsule?.mode === "verified_context"
+                ? [
+                    `- THIS export verified it: the supplied prior state hashes to the sealed commitment, the`,
+                    `  prior judgment ledger re-folds (chain-validated), and re-fold == prior continuation`,
+                    `  plaintext == seed — so forging inherited memory requires forging the signed receipt chain.`
+                  ]
+                : [
+                    `- This Proof Mode export publishes NO state and performed NO state verification; the`,
+                    `  commitment is sealed (content-blind) and is verified by a Verified Context export of`,
+                    `  this loop and by the Stage E two-pack check.`
+                  ]),
               `- What remains OUTSIDE the proof: supervisor honesty at open (the supervisor read the genuine`,
               `  prior pack when sealing the commitment) — the system's trust root by design.`
             ]
