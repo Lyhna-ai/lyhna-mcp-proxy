@@ -13,6 +13,7 @@ import {
   deriveContinuationRef,
   deriveGoalHash,
   deriveInheritsStateHash,
+  deriveScopeRef,
   reduceJudgmentLedger,
   sealScopeCapsule,
   verifyCrossLoopLinkage,
@@ -564,6 +565,28 @@ describe("Stage E — offline two-pack cross-loop linkage checker", () => {
       expect(failed.name).toBe("prior_ledger_events_bind");
       expect(failed.detail).toContain("tampered");
     });
+  });
+
+  it("fails closed: a scope-capsule sealed for a DIFFERENT loop, hash-consistently re-sealed", () => {
+    // Change the sealed structural loop_id to another loop and recompute scope_ref so the capsule is
+    // internally consistent (recompute rung passes). The scope is now sealed for a loop the
+    // continuation/chain are not — the identity binding refuses before the opaque scope_ref is trusted.
+    withTamperedFile(
+      currentDir,
+      "scope-capsule.json",
+      (s: { scope_ref?: string; structural: { loop_id?: string } }) => {
+        s.structural.loop_id = "loop-someone-else";
+        s.scope_ref = deriveScopeRef(s.structural as never);
+        return s;
+      },
+      () => {
+        const report = verifyCrossLoopLinkage({ prior_pack_dir: priorDir, current_pack_dir: currentDir });
+        expect(report.ok).toBe(false);
+        const failed = report.checks.find((c) => !c.ok)!;
+        expect(failed.name).toBe("current_scope_loop_binds");
+        expect(failed.detail).toContain("not sealed for this loop");
+      }
+    );
   });
 
   it("fails closed: a bind turn's PROPOSED descriptor edited away from the signed receipt stamp", () => {

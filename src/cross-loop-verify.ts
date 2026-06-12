@@ -498,6 +498,29 @@ function verifyCrossLoopLinkageChecks(
   }
   pass("current_scope_ref_recomputes", `scope_ref ${curScope.scope_ref} recomputes from the structural projection`);
 
+  // --- 2a) Sealed identity binding: the scope must be sealed FOR THIS loop/goal -------------------
+  // scope_ref recomputing only proves the capsule is self-consistent — it does NOT prove the opaque
+  // scope_ref belongs to THIS loop. The sealed structural carries its own loop_id/goal_hash; a
+  // capsule hash-consistently sealed for a DIFFERENT loop could otherwise ride beside this
+  // continuation/chain (stampCount only proves some receipt of curCont's loop stamped the opaque
+  // scope_ref; signatures, out of scope here, would not prove the scope was sealed for this loop).
+  // Mirror the exporter, which binds structural.loop_id/goal_hash to the loop it packages.
+  if (curScope.structural.loop_id !== curCont.loop_id) {
+    return fail(
+      "current_scope_loop_binds",
+      `scope-capsule.json is sealed for loop_id ${JSON.stringify(curScope.structural.loop_id)} but the current ` +
+        `continuation is loop ${JSON.stringify(curCont.loop_id)}; this scope was not sealed for this loop (fail closed).`
+    );
+  }
+  if (curScope.structural.goal_hash !== curCont.goal_hash) {
+    return fail(
+      "current_scope_loop_binds",
+      `scope-capsule.json is sealed for goal_hash ${JSON.stringify(curScope.structural.goal_hash)} but the current ` +
+        `continuation's goal_hash is ${JSON.stringify(curCont.goal_hash)}; this scope was not sealed for this goal (fail closed).`
+    );
+  }
+  pass("current_scope_loop_binds", "the sealed scope's structural loop_id / goal_hash match the current continuation");
+
   // --- 2b) Mode honesty: the top-level privacy_mode is the EXPORT mode and is NOT covered by ----
   // scope_ref, so it can be edited freely. Two contradictions are forged shapes (mirroring the
   // exporter's mode contract — downgrading a VC-sealed scope to a proof EXPORT remains legitimate):
