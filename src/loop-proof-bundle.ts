@@ -237,6 +237,15 @@ export type BuildLoopProofBundleInput = {
      * trusted bare.
      */
     prior_continuation?: ContinuationCapsule;
+    /**
+     * The PRIOR loop's ordered judgment turns (its pack's judgment-ledger.json `turns`). REQUIRED
+     * for a state-bearing Verified Context seed: the prior ledger is chain-validated and RE-FOLDED
+     * with the same reducer semantics, and BOTH the seed AND the prior continuation's plaintext must
+     * equal that re-fold — so the value binding is never the continuation sidecar compared to itself
+     * (fail closed on any mismatch). The re-folded chain's final_turn_ref must also equal the sealed
+     * edge's final_turn_ref.
+     */
+    prior_judgment_turns?: JudgmentTurn[];
   };
 };
 
@@ -910,7 +919,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         // Lineage passthrough: the prior loop's inherited state, folded before this loop's deltas.
         inherited_state: input.capsule.inherited_state,
         // The prior loop's continuation, identity-bound to the sealed edge before any state folds.
-        prior_continuation: input.capsule.prior_continuation
+        prior_continuation: input.capsule.prior_continuation,
+        // The prior loop's ledger turns: the seed's value binding re-folds these (never sidecar-vs-itself).
+        prior_judgment_turns: input.capsule.prior_judgment_turns
       });
       judgment_ledger = built.ledger;
       judgment_ledger_markdown = built.markdown;
@@ -993,6 +1004,8 @@ function buildJudgmentArtifacts(input: {
   inherited_state?: JudgmentDelta;
   /** The prior loop's continuation capsule — identity-bound to the sealed edge (fail closed). */
   prior_continuation?: ContinuationCapsule;
+  /** The prior loop's judgment turns — re-folded to bind the seed's VALUES (fail closed). */
+  prior_judgment_turns?: JudgmentTurn[];
 }): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
   const { loop_id, scope_ref, mode, turns, continuation } = input;
 
@@ -1247,6 +1260,13 @@ function buildJudgmentArtifacts(input: {
           `supply the prior pack's continuation-capsule.json (fail closed).`
       );
     }
+    if (!input.prior_judgment_turns) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but no prior judgment ledger to re-fold; ` +
+          `the seed's VALUES bind to the prior ledger's re-folded reduction, never to the continuation sidecar ` +
+          `compared to itself — supply the prior pack's judgment-ledger.json (fail closed).`
+      );
+    }
   }
   if (input.prior_continuation) {
     const edge = input.inherits_loop;
@@ -1271,35 +1291,61 @@ function buildJudgmentArtifacts(input: {
     if ((input.prior_continuation.final_turn_ref ?? null) !== edge.final_turn_ref) {
       throw new Error(`Prior continuation final_turn_ref does not match the sealed inherits_loop.final_turn_ref (fail closed).`);
     }
-    // Value binding (Verified Context, state-bearing seed only): the seed must EQUAL the prior
-    // capsule's verified state — never a bare, caller-asserted delta.
+    // Value binding (Verified Context, state-bearing seed only): NON-CIRCULAR by construction. The
+    // prior pack's judgment-ledger.json turns are chain-validated (every turn_ref recomputes) and
+    // RE-FOLDED with the same reducer semantics; then THREE things must agree exactly:
+    //   re-fold(prior turns)  ==  prior continuation plaintext  ==  the seed.
+    // Comparing the seed only to the continuation that supplied it would let an edit of that one
+    // file's plaintext pass (capsule_ref is content-blind); binding both to the ledger re-fold means
+    // forging inherited memory requires consistently rewriting the prior ledger's supervisor deltas
+    // AND its continuation — exactly the multi-artifact consistency the prior pack's own export
+    // enforced fail-closed when it was written. The re-folded chain's final_turn_ref must also equal
+    // the sealed edge's final_turn_ref, so the supplied ledger IS the chain the edge pinned.
     //
-    // HONESTY NOTE (what this binds, precisely): capsule_ref commits the prior capsule's
-    // CONTENT-BLIND structural projection (deriveContinuationRef projects the plaintext away), so
-    // the identity binding above pins WHICH capsule — not its plaintext bytes. The plaintext chain
-    // is: the prior pack's OWN export bound its continuation plaintext fail-closed to its verified
-    // reduced fold (the plaintext-sidecar binding below, in that loop's export); this check binds
-    // the seed to that same document; and the Stage E two-pack check reads the actual prior pack,
-    // closing the loop offline. A forged prior plaintext therefore requires forging the prior
-    // pack itself, which its own digest/verdict surfaces.
+    // HONESTY NOTE (residual, by frozen design): supervisor-declared deltas are additive and
+    // deliberately excluded from turn_ref, so no single hash commits VC plaintext. This binding
+    // makes the check non-circular and multi-artifact; the Stage E two-pack check re-verifies the
+    // actual prior pack offline (digest + cold verify) to complete the chain.
+    //
+    // CHAINED-PRIOR LIMITATION (fail closed, not silent): a prior loop that ITSELF inherited state
+    // folded its own seed before its deltas, so re-folding its ledger ALONE cannot reproduce its
+    // continuation plaintext. Verifying such a prior would require ITS prior pack too; until a
+    // pack-chain input exists, a multi-hop inheritance export refuses here rather than publish a
+    // prefix nothing supplied can verify.
     if (mode === "verified_context" && seedHasState) {
       const p = input.prior_continuation;
-      const priorState = {
-        settled: p.settled ?? [],
-        open_questions: p.open_questions ?? [],
-        next_actions: p.next_actions ?? [],
-        changed: p.changed ?? []
-      };
-      const seedState = {
-        settled: seed!.settled ?? [],
-        open_questions: seed!.open_questions ?? [],
-        next_actions: seed!.next_actions ?? [],
-        changed: seed!.changed ?? []
-      };
-      if (canonicalScopeJson(seedState) !== canonicalScopeJson(priorState)) {
+      const priorTurns = input.prior_judgment_turns!;
+      // Re-fold the prior ledger (validates the chain fail-closed: contiguity, hash links, anchors).
+      const priorFold = reduceJudgmentLedger({
+        loop_id: p.loop_id,
+        scope_ref: p.scope_ref,
+        turns: priorTurns,
+        mode: "verified_context"
+      });
+      if ((priorFold.final_turn_ref ?? null) !== edge.final_turn_ref) {
         throw new Error(
-          `Inherited state does not equal the prior capsule's verified settled/open/next/changed; the seed ` +
-            `must be exactly the referenced prior capsule's state (fail closed).`
+          `Prior judgment ledger re-folds to final_turn_ref ${priorFold.final_turn_ref ?? "null"} but the sealed ` +
+            `inherits_loop.final_turn_ref is ${edge.final_turn_ref}; the supplied ledger is not the chain the ` +
+            `edge pinned (fail closed).`
+        );
+      }
+      const plainState = (s: { settled?: string[]; open_questions?: string[]; next_actions?: string[]; changed?: string[] }) => ({
+        settled: s.settled ?? [],
+        open_questions: s.open_questions ?? [],
+        next_actions: s.next_actions ?? [],
+        changed: s.changed ?? []
+      });
+      const foldState = canonicalScopeJson(plainState(priorFold));
+      if (canonicalScopeJson(plainState(p)) !== foldState) {
+        throw new Error(
+          `Prior continuation plaintext does not equal the re-fold of the prior judgment ledger; the prior ` +
+            `pack's continuation-capsule.json and judgment-ledger.json disagree (tampered or stale — fail closed).`
+        );
+      }
+      if (canonicalScopeJson(plainState(seed!)) !== foldState) {
+        throw new Error(
+          `Inherited state does not equal the prior capsule's verified state (the re-folded prior judgment ` +
+            `ledger); the seed must be exactly the referenced prior capsule's state (fail closed).`
         );
       }
     }

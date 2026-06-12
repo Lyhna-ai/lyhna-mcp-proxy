@@ -756,9 +756,22 @@ describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", (
 describe("lineage passthrough (inherited_state) — prior loop's state folded before this loop's", () => {
   const seed = { settled: ["loop1: chose Ed25519"], next_actions: ["loop1: wire export"] };
 
-  // A realistic PRIOR loop continuation (the prior pack's continuation-capsule.json). The sealed
-  // edge is DERIVED from it — capsule_ref recomputed, scope_ref / final_turn_ref copied — exactly
-  // how a genuine Loop 2 open would pin it.
+  // A realistic PRIOR pack: a judgment ledger whose supervisor deltas fold to the prior state, and
+  // a continuation carrying that same state. The sealed edge is DERIVED from them — capsule_ref
+  // recomputed, final_turn_ref from the ledger's last turn — exactly how a genuine Loop 2 open pins it.
+  const priorRec = createJudgmentRecorder();
+  const priorTurn = priorRec.append({
+    loop_id: "loop-prior",
+    scope_ref: "scope_v1:" + "2".repeat(64),
+    prior_receipt_id: null,
+    proposed: { action_class: "write", tool_name: "write_file", target_descriptor: null },
+    verdict: { kind: "APPROVED", source: "bind", receipt_id: "p1" }
+  });
+  priorRec.attachDelta("loop-prior", priorTurn.turn_ref, {
+    settled: ["loop1: chose Ed25519"],
+    next_actions: ["loop1: wire export"]
+  });
+  const priorTurns = priorRec.judgmentLedgerForLoop("loop-prior");
   const priorContinuation: ContinuationCapsule = {
     capsule_type: "continuation_capsule",
     capsule_version: "continuation-capsule/v1",
@@ -767,23 +780,24 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     scope_ref: "scope_v1:" + "2".repeat(64),
     inherits_from: { scope_ref: "scope_v1:" + "2".repeat(64) },
     sealed: true,
-    action_count: 3,
+    action_count: 1,
     closed_at: "2026-06-10T00:00:00.000Z",
     what_changed: [],
     scope_events: [],
-    final_turn_ref: "turn_v1:" + "3".repeat(64),
+    final_turn_ref: priorTurn.turn_ref,
     settled: ["loop1: chose Ed25519"],
     next_actions: ["loop1: wire export"]
   };
   const edge: ScopeInheritsLoop = {
     capsule_ref: deriveContinuationRef(priorContinuation),
     scope_ref: priorContinuation.scope_ref,
-    final_turn_ref: priorContinuation.final_turn_ref!
+    final_turn_ref: priorTurn.turn_ref
   };
 
   function buildSeeded(overrides: {
     seed?: typeof seed | { settled: string[] };
     prior?: ContinuationCapsule;
+    priorTurns?: JudgmentTurn[];
     edge?: ScopeInheritsLoop;
   }) {
     const f = fixture("verified_context", overrides.edge, overrides.seed as never);
@@ -798,13 +812,14 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
         scope_events: [f.event],
         judgment_turns: f.turns,
         inherited_state: overrides.seed,
-        prior_continuation: overrides.prior
+        prior_continuation: overrides.prior,
+        prior_judgment_turns: overrides.priorTurns
       }
     });
   }
 
-  it("Verified Context: a BOUND prior pack seeds continuation + memory-injection BEFORE this loop's deltas", () => {
-    const built = buildSeeded({ seed, prior: priorContinuation, edge });
+  it("Verified Context: a fold-BOUND prior pack seeds continuation + memory-injection BEFORE this loop's deltas", () => {
+    const built = buildSeeded({ seed, prior: priorContinuation, priorTurns, edge });
     // Seed first (lineage order), then this loop's own folded delta ("wrote cart.ts").
     expect(built.memory_injection!.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
     expect(built.memory_injection!.next_actions).toEqual(["loop1: wire export"]);
@@ -821,22 +836,52 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     expect(() => buildSeeded({ seed, edge })).toThrow(/supply the prior pack|prior_continuation/);
   });
 
-  it("fails closed: prior continuation whose recomputed capsule_ref does not match the sealed edge", () => {
-    const forgedPrior = { ...priorContinuation, action_count: 99 }; // structural change -> different capsule_ref
-    expect(() => buildSeeded({ seed, prior: forgedPrior, edge })).toThrow(/capsule_ref/);
+  it("fails closed: inherited_state WITHOUT the prior judgment ledger (no re-fold to bind values)", () => {
+    expect(() => buildSeeded({ seed, prior: priorContinuation, edge })).toThrow(/judgment-ledger\.json|re-fold/);
   });
 
-  it("fails closed: seed that does not equal the prior capsule's verified state (forged values)", () => {
-    // Even with a continuation folded over the forged seed, the prior capsule's real state wins:
-    // the supplied prior binds by capsule_ref, and the forged seed != its state. (Forging the prior
-    // DOCUMENT's plaintext instead is caught by the prior pack's own export-time plaintext binding
-    // and the Stage E two-pack check.)
+  it("fails closed: prior continuation whose recomputed capsule_ref does not match the sealed edge", () => {
+    const forgedPrior = { ...priorContinuation, action_count: 99 }; // structural change -> different capsule_ref
+    expect(() => buildSeeded({ seed, prior: forgedPrior, priorTurns, edge })).toThrow(/capsule_ref/);
+  });
+
+  it("fails closed: the Codex attack — prior continuation plaintext edited, structural fields intact", () => {
+    // capsule_ref is content-blind, so editing ONLY the prior continuation's plaintext preserves the
+    // sealed edge. The ledger re-fold catches it: the edited sidecar no longer equals the fold.
+    const editedPrior = { ...priorContinuation, settled: ["loop1: FORGED memory"] };
+    const editedSeed = { settled: ["loop1: FORGED memory"], next_actions: ["loop1: wire export"] };
+    expect(() => buildSeeded({ seed: editedSeed, prior: editedPrior, priorTurns, edge })).toThrow(
+      /continuation-capsule\.json and judgment-ledger\.json disagree/
+    );
+  });
+
+  it("fails closed: seed that does not equal the prior ledger's re-fold (forged values)", () => {
     const forgedSeed = { settled: ["loop1: FORGED memory"] };
-    expect(() => buildSeeded({ seed: forgedSeed, prior: priorContinuation, edge })).toThrow(/does not equal the prior capsule/);
+    expect(() => buildSeeded({ seed: forgedSeed, prior: priorContinuation, priorTurns, edge })).toThrow(
+      /does not equal the prior capsule/
+    );
+  });
+
+  it("fails closed: a prior ledger that is not the chain the sealed edge pinned", () => {
+    const otherRec = createJudgmentRecorder();
+    const otherTurn = otherRec.append({
+      loop_id: "loop-prior",
+      scope_ref: "scope_v1:" + "2".repeat(64),
+      prior_receipt_id: null,
+      proposed: { action_class: "write", tool_name: "other_tool", target_descriptor: null },
+      verdict: { kind: "APPROVED", source: "bind", receipt_id: "p9" }
+    });
+    otherRec.attachDelta("loop-prior", otherTurn.turn_ref, {
+      settled: ["loop1: chose Ed25519"],
+      next_actions: ["loop1: wire export"]
+    });
+    expect(() =>
+      buildSeeded({ seed, prior: priorContinuation, priorTurns: otherRec.judgmentLedgerForLoop("loop-prior"), edge })
+    ).toThrow(/not the chain the edge pinned/);
   });
 
   it("fails closed: a prior continuation supplied with NO sealed edge", () => {
-    expect(() => buildSeeded({ prior: priorContinuation })).toThrow(/seals no inherits_loop edge/);
+    expect(() => buildSeeded({ prior: priorContinuation, priorTurns })).toThrow(/seals no inherits_loop edge/);
   });
 
   it("Proof Mode: inherited_state is ignored — pack stays content-blind", () => {

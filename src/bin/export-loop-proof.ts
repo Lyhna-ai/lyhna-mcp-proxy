@@ -35,7 +35,7 @@
 // Additive packaging only: receipts are never reshaped. The standalone verifier consumes
 // <out>/receipts.json with zero adaptation.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { buildLoopProofBundle, type ProofReceipt } from "../loop-proof-bundle.js";
@@ -126,15 +126,21 @@ function main(): void {
     const judgment_turns = args.judgmentPath ? readJson<JudgmentTurn[]>(args.judgmentPath) : undefined;
     capsule = { mode: args.mode, sealed_scope, scope_history, continuation, scope_events, judgment_turns };
 
-    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json and derive
-    // the inherited seed FROM it (never from a bare caller-supplied delta). The builder fail-closes
-    // unless the prior capsule binds to the sealed inherits_loop edge (capsule_ref / scope_ref /
-    // final_turn_ref) and — in Verified Context — the seed equals the prior capsule's verified state.
+    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json AND
+    // judgment-ledger.json. The seed is derived FROM the prior continuation (never a bare
+    // caller-supplied delta); the builder fail-closes unless the prior capsule binds to the sealed
+    // inherits_loop edge (capsule_ref / scope_ref / final_turn_ref) and — in Verified Context — the
+    // seed AND the prior continuation plaintext both equal the RE-FOLD of the prior judgment ledger
+    // (non-circular value binding; never the sidecar compared to itself).
     if (args.priorPackDir) {
       const prior_continuation = readJson<ContinuationCapsule>(
         path.join(args.priorPackDir, "continuation-capsule.json")
       );
       capsule.prior_continuation = prior_continuation;
+      const priorLedgerPath = path.join(args.priorPackDir, "judgment-ledger.json");
+      if (existsSync(priorLedgerPath)) {
+        capsule.prior_judgment_turns = readJson<{ turns: JudgmentTurn[] }>(priorLedgerPath).turns;
+      }
       const inherited_state = {
         ...(prior_continuation.settled?.length ? { settled: prior_continuation.settled } : {}),
         ...(prior_continuation.open_questions?.length ? { open_questions: prior_continuation.open_questions } : {}),

@@ -15,7 +15,7 @@
 // reshaped; the bytes written to receipts.json are the bytes digested.
 
 import { connect as netConnect, type Socket } from "node:net";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CliIo } from "./capsule-cli.js";
@@ -383,16 +383,22 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // judgment-less loop (no in-loop receipts) still validates green with the empty ledger.
   let files: string[];
   try {
-    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json and derive
-    // the inherited seed FROM it (never a bare caller-supplied delta). buildLoopProofBundle fail-closes
-    // unless the prior capsule binds to this loop's sealed inherits_loop edge and — in verified-context
-    // mode — the seed equals the prior capsule's verified state.
+    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json AND
+    // judgment-ledger.json. The seed is derived FROM the prior continuation (never a bare
+    // caller-supplied delta); buildLoopProofBundle fail-closes unless the prior capsule binds to this
+    // loop's sealed inherits_loop edge and — in verified-context mode — the seed AND the prior
+    // continuation plaintext both equal the RE-FOLD of the prior judgment ledger (non-circular).
     let prior_continuation: ContinuationCapsule | undefined;
+    let prior_judgment_turns: JudgmentTurn[] | undefined;
     let inherited_state: JudgmentDelta | undefined;
     if (priorPackDir) {
       prior_continuation = JSON.parse(
         readFileSync(join(priorPackDir, "continuation-capsule.json"), "utf8")
       ) as ContinuationCapsule;
+      const priorLedgerPath = join(priorPackDir, "judgment-ledger.json");
+      if (existsSync(priorLedgerPath)) {
+        prior_judgment_turns = (JSON.parse(readFileSync(priorLedgerPath, "utf8")) as { turns: JudgmentTurn[] }).turns;
+      }
       const seed: JudgmentDelta = {
         ...(prior_continuation.settled?.length ? { settled: prior_continuation.settled } : {}),
         ...(prior_continuation.open_questions?.length ? { open_questions: prior_continuation.open_questions } : {}),
@@ -434,7 +440,8 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
         scope_events: scopeEvents,
         judgment_turns: judgmentTurns,
         inherited_state,
-        prior_continuation
+        prior_continuation,
+        prior_judgment_turns
       }
     });
 
