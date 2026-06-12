@@ -221,10 +221,22 @@ export type BuildLoopProofBundleInput = {
      * settled/open/next/changed, folded into the reduced state BEFORE this loop's turn deltas so the
      * continuation / memory seed carry the inherited state extended by this loop. The supplied
      * continuation MUST already be folded over the same seed (the export re-folds and binds the
-     * continuation's plaintext to it). Proof Mode ignores it (content-blind). Omit for a non-inheriting
-     * loop — output is then byte-for-byte unchanged.
+     * continuation's plaintext to it). Proof Mode ignores it (content-blind).
+     *
+     * BINDING REQUIRED: a state-bearing seed is published ONLY when `prior_continuation` is also
+     * supplied and binds — the prior capsule's recomputed capsule_ref must equal the sealed
+     * inherits_loop.capsule_ref and the seed must equal the prior capsule's verified state (fail
+     * closed otherwise). Omit both for a non-inheriting loop — output is then byte-for-byte unchanged.
      */
     inherited_state?: JudgmentDelta;
+    /**
+     * The PRIOR loop's continuation capsule (its pack's continuation-capsule.json). Identity-bound
+     * to the sealed inherits_loop edge: recomputed capsule_ref, scope_ref, and final_turn_ref must
+     * all equal the sealed triple (fail closed). In Verified Context Mode a state-bearing
+     * inherited_state must equal this capsule's settled/open/next/changed — the seed is never
+     * trusted bare.
+     */
+    prior_continuation?: ContinuationCapsule;
   };
 };
 
@@ -896,7 +908,9 @@ export function buildLoopProofBundle(input: BuildLoopProofBundleInput): BuiltLoo
         // unsigned continuation — the memory seed carries only verified refs.
         inherits_loop: original.structural.inherits_loop,
         // Lineage passthrough: the prior loop's inherited state, folded before this loop's deltas.
-        inherited_state: input.capsule.inherited_state
+        inherited_state: input.capsule.inherited_state,
+        // The prior loop's continuation, identity-bound to the sealed edge before any state folds.
+        prior_continuation: input.capsule.prior_continuation
       });
       judgment_ledger = built.ledger;
       judgment_ledger_markdown = built.markdown;
@@ -977,6 +991,8 @@ function buildJudgmentArtifacts(input: {
   inherits_loop?: ScopeInheritsLoop;
   /** Lineage passthrough seed (Verified Context only): the prior loop's settled/open/next/changed. */
   inherited_state?: JudgmentDelta;
+  /** The prior loop's continuation capsule — identity-bound to the sealed edge (fail closed). */
+  prior_continuation?: ContinuationCapsule;
 }): { ledger: JudgmentLedgerExport; markdown: string; memory: MemoryInjection } {
   const { loop_id, scope_ref, mode, turns, continuation } = input;
 
@@ -1206,20 +1222,87 @@ function buildJudgmentArtifacts(input: {
     }
   }
 
-  // FAIL CLOSED (anchored lineage): inherited lineage state may be folded ONLY when this pack carries
-  // a sealed `inherits_loop` edge proving WHICH prior capsule it came from. Without the edge, a
-  // Verified Context export could publish prior-loop plaintext (settled/open/next/changed) into
-  // continuation-capsule.json / memory-injection.json as "verified memory" whose lineage nothing in
-  // the pack anchors. Proof Mode folds no seed at all (content-blind), so this only bites the mode
-  // that would actually publish the state.
+  // FAIL CLOSED (anchored + BOUND lineage): inherited lineage state may be folded ONLY when
+  //   (a) this pack carries a sealed `inherits_loop` edge proving WHICH prior capsule it came from, AND
+  //   (b) the PRIOR loop's continuation capsule is supplied and binds to that edge, AND
+  //   (c) the seed EQUALS the prior capsule's verified settled/open/next/changed.
+  // The edge alone proves only which capsule was referenced — not that the inherited VALUES came from
+  // it. Without (b)+(c), a caller could pass arbitrary "prior" plaintext plus a continuation folded
+  // over the same forged seed and the export would publish it as verified memory. Proof Mode folds no
+  // seed at all (content-blind), so the state checks bite only the mode that publishes the state.
   const seed = input.inherited_state;
   const seedHasState =
     !!seed && [seed.settled, seed.open_questions, seed.next_actions, seed.changed].some((a) => Array.isArray(a) && a.length > 0);
-  if (mode === "verified_context" && seedHasState && !input.inherits_loop) {
-    throw new Error(
-      `Verified Context export supplies inherited lineage state but the verified original scope carries ` +
-        `no sealed inherits_loop edge; refusing to publish prior-loop state with unanchored lineage (fail closed).`
-    );
+  if (mode === "verified_context" && seedHasState) {
+    if (!input.inherits_loop) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but the verified original scope carries ` +
+          `no sealed inherits_loop edge; refusing to publish prior-loop state with unanchored lineage (fail closed).`
+      );
+    }
+    if (!input.prior_continuation) {
+      throw new Error(
+        `Verified Context export supplies inherited lineage state but no prior_continuation to bind it to; ` +
+          `the sealed edge proves which capsule was referenced, not that the inherited values came from it — ` +
+          `supply the prior pack's continuation-capsule.json (fail closed).`
+      );
+    }
+  }
+  if (input.prior_continuation) {
+    const edge = input.inherits_loop;
+    if (!edge) {
+      throw new Error(
+        `A prior_continuation was supplied but the verified original scope seals no inherits_loop edge; ` +
+          `nothing anchors which prior capsule this loop opened from (fail closed).`
+      );
+    }
+    // Identity binding: the prior capsule's content-blind identity (recomputed, mode-independent),
+    // final scope_ref, and final judgment turn must all equal the SEALED edge triple.
+    const recomputedRef = deriveContinuationRef(input.prior_continuation);
+    if (recomputedRef !== edge.capsule_ref) {
+      throw new Error(
+        `Prior continuation capsule_ref ${recomputedRef} does not match the sealed inherits_loop.capsule_ref ` +
+          `${edge.capsule_ref}; the supplied prior capsule is not the one this loop opened from (fail closed).`
+      );
+    }
+    if (input.prior_continuation.scope_ref !== edge.scope_ref) {
+      throw new Error(`Prior continuation scope_ref does not match the sealed inherits_loop.scope_ref (fail closed).`);
+    }
+    if ((input.prior_continuation.final_turn_ref ?? null) !== edge.final_turn_ref) {
+      throw new Error(`Prior continuation final_turn_ref does not match the sealed inherits_loop.final_turn_ref (fail closed).`);
+    }
+    // Value binding (Verified Context, state-bearing seed only): the seed must EQUAL the prior
+    // capsule's verified state — never a bare, caller-asserted delta.
+    //
+    // HONESTY NOTE (what this binds, precisely): capsule_ref commits the prior capsule's
+    // CONTENT-BLIND structural projection (deriveContinuationRef projects the plaintext away), so
+    // the identity binding above pins WHICH capsule — not its plaintext bytes. The plaintext chain
+    // is: the prior pack's OWN export bound its continuation plaintext fail-closed to its verified
+    // reduced fold (the plaintext-sidecar binding below, in that loop's export); this check binds
+    // the seed to that same document; and the Stage E two-pack check reads the actual prior pack,
+    // closing the loop offline. A forged prior plaintext therefore requires forging the prior
+    // pack itself, which its own digest/verdict surfaces.
+    if (mode === "verified_context" && seedHasState) {
+      const p = input.prior_continuation;
+      const priorState = {
+        settled: p.settled ?? [],
+        open_questions: p.open_questions ?? [],
+        next_actions: p.next_actions ?? [],
+        changed: p.changed ?? []
+      };
+      const seedState = {
+        settled: seed!.settled ?? [],
+        open_questions: seed!.open_questions ?? [],
+        next_actions: seed!.next_actions ?? [],
+        changed: seed!.changed ?? []
+      };
+      if (canonicalScopeJson(seedState) !== canonicalScopeJson(priorState)) {
+        throw new Error(
+          `Inherited state does not equal the prior capsule's verified settled/open/next/changed; the seed ` +
+            `must be exactly the referenced prior capsule's state (fail closed).`
+        );
+      }
+    }
   }
 
   // 5) Fold + project under the privacy mode. The lineage seed (prior loop's inherited state) is
@@ -1319,7 +1402,7 @@ function buildJudgmentArtifacts(input: {
 }
 
 /** Content-blind, mode-independent identity of a continuation capsule (over its structural projection). */
-function deriveContinuationRef(continuation: ContinuationCapsule): string {
+export function deriveContinuationRef(continuation: ContinuationCapsule): string {
   return `cap_v1:${sha256Hex(canonicalScopeJson(projectContinuationProofMode(continuation)))}`;
 }
 

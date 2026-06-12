@@ -171,6 +171,7 @@ export {
   assertNoDuplicateKeys,
   buildGraphNode,
   buildLoopProofBundle,
+  deriveContinuationRef,
   deriveKeyId,
   deriveLoopSummary,
   pinTrustRoot,

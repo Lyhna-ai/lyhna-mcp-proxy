@@ -29,6 +29,8 @@
 //                     [--verdict <lyhna-verify-json>] [--exported-at <iso>]
 //                     [--scope-capsule <sealed-scope.json>] [--continuation <continuation.json>]
 //                     [--scope-events <events.json>] [--mode proof|verified-context]
+//                     [--prior-pack <dir>]   (cross-loop lineage: the PRIOR loop's exported pack;
+//                                             binds the sealed inherits_loop edge + seeds VC state)
 //
 // Additive packaging only: receipts are never reshaped. The standalone verifier consumes
 // <out>/receipts.json with zero adaptation.
@@ -54,6 +56,7 @@ type Args = {
   continuationPath?: string;
   scopeEventsPath?: string;
   judgmentPath?: string;
+  priorPackDir?: string;
   mode: ScopePrivacyMode;
 };
 
@@ -70,6 +73,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--continuation") args.continuationPath = argv[++i];
     else if (a === "--scope-events") args.scopeEventsPath = argv[++i];
     else if (a === "--judgment") args.judgmentPath = argv[++i];
+    else if (a === "--prior-pack") args.priorPackDir = argv[++i];
     else if (a === "--mode") args.mode = normalizeMode(argv[++i]);
     else if (a && !a.startsWith("-")) args.receiptsPath = a;
   }
@@ -92,7 +96,7 @@ function main(): void {
     process.stderr.write(
       "usage: export-loop-proof <receipts.json> --out <dir> [--source-env <env>] [--verdict <json>] " +
         "[--exported-at <iso>] [--scope-capsule <json>] [--continuation <json>] [--scope-events <json>] " +
-        "[--judgment <judgment-turns.json>] [--mode proof|verified-context]\n"
+        "[--judgment <judgment-turns.json>] [--prior-pack <dir>] [--mode proof|verified-context]\n"
     );
     process.exit(1);
   }
@@ -121,6 +125,24 @@ function main(): void {
     const scope_events = args.scopeEventsPath ? readJson<ScopeEvent[]>(args.scopeEventsPath) : [];
     const judgment_turns = args.judgmentPath ? readJson<JudgmentTurn[]>(args.judgmentPath) : undefined;
     capsule = { mode: args.mode, sealed_scope, scope_history, continuation, scope_events, judgment_turns };
+
+    // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json and derive
+    // the inherited seed FROM it (never from a bare caller-supplied delta). The builder fail-closes
+    // unless the prior capsule binds to the sealed inherits_loop edge (capsule_ref / scope_ref /
+    // final_turn_ref) and — in Verified Context — the seed equals the prior capsule's verified state.
+    if (args.priorPackDir) {
+      const prior_continuation = readJson<ContinuationCapsule>(
+        path.join(args.priorPackDir, "continuation-capsule.json")
+      );
+      capsule.prior_continuation = prior_continuation;
+      const inherited_state = {
+        ...(prior_continuation.settled?.length ? { settled: prior_continuation.settled } : {}),
+        ...(prior_continuation.open_questions?.length ? { open_questions: prior_continuation.open_questions } : {}),
+        ...(prior_continuation.next_actions?.length ? { next_actions: prior_continuation.next_actions } : {}),
+        ...(prior_continuation.changed?.length ? { changed: prior_continuation.changed } : {})
+      };
+      if (Object.keys(inherited_state).length > 0) capsule.inherited_state = inherited_state;
+    }
   }
 
   const built = buildLoopProofBundle({

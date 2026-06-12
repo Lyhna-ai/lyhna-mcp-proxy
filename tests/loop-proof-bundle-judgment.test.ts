@@ -4,10 +4,12 @@ import {
   buildContinuationCapsule,
   buildLoopProofBundle,
   createJudgmentRecorder,
+  deriveContinuationRef,
   createScopeEventRecorder,
   deriveGoalHash,
   reduceJudgmentLedger,
   sealScopeCapsule,
+  type ContinuationCapsule,
   type JudgmentTurn,
   type ProofReceipt,
   type ScopeEvent,
@@ -753,16 +755,39 @@ describe("cross-loop edge (inherits_loop) — surfaced and bound in the pack", (
 
 describe("lineage passthrough (inherited_state) — prior loop's state folded before this loop's", () => {
   const seed = { settled: ["loop1: chose Ed25519"], next_actions: ["loop1: wire export"] };
-  // Inherited lineage state is anchored ONLY when the pack carries a sealed inherits_loop edge.
-  const edge: ScopeInheritsLoop = {
-    capsule_ref: "cap_v1:" + "1".repeat(64),
+
+  // A realistic PRIOR loop continuation (the prior pack's continuation-capsule.json). The sealed
+  // edge is DERIVED from it — capsule_ref recomputed, scope_ref / final_turn_ref copied — exactly
+  // how a genuine Loop 2 open would pin it.
+  const priorContinuation: ContinuationCapsule = {
+    capsule_type: "continuation_capsule",
+    capsule_version: "continuation-capsule/v1",
+    loop_id: "loop-prior",
+    goal_hash: "b".repeat(64),
     scope_ref: "scope_v1:" + "2".repeat(64),
-    final_turn_ref: "turn_v1:" + "3".repeat(64)
+    inherits_from: { scope_ref: "scope_v1:" + "2".repeat(64) },
+    sealed: true,
+    action_count: 3,
+    closed_at: "2026-06-10T00:00:00.000Z",
+    what_changed: [],
+    scope_events: [],
+    final_turn_ref: "turn_v1:" + "3".repeat(64),
+    settled: ["loop1: chose Ed25519"],
+    next_actions: ["loop1: wire export"]
+  };
+  const edge: ScopeInheritsLoop = {
+    capsule_ref: deriveContinuationRef(priorContinuation),
+    scope_ref: priorContinuation.scope_ref,
+    final_turn_ref: priorContinuation.final_turn_ref!
   };
 
-  it("Verified Context: seeds continuation + memory-injection BEFORE this loop's deltas", () => {
-    const f = fixture("verified_context", edge, seed);
-    const built = buildLoopProofBundle({
+  function buildSeeded(overrides: {
+    seed?: typeof seed | { settled: string[] };
+    prior?: ContinuationCapsule;
+    edge?: ScopeInheritsLoop;
+  }) {
+    const f = fixture("verified_context", overrides.edge, overrides.seed as never);
+    return buildLoopProofBundle({
       receipts: f.receipts,
       source_env: "test",
       capsule: {
@@ -772,9 +797,14 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
         continuation: f.continuation,
         scope_events: [f.event],
         judgment_turns: f.turns,
-        inherited_state: seed
+        inherited_state: overrides.seed,
+        prior_continuation: overrides.prior
       }
     });
+  }
+
+  it("Verified Context: a BOUND prior pack seeds continuation + memory-injection BEFORE this loop's deltas", () => {
+    const built = buildSeeded({ seed, prior: priorContinuation, edge });
     // Seed first (lineage order), then this loop's own folded delta ("wrote cart.ts").
     expect(built.memory_injection!.settled).toEqual(["loop1: chose Ed25519", "wrote cart.ts"]);
     expect(built.memory_injection!.next_actions).toEqual(["loop1: wire export"]);
@@ -782,17 +812,31 @@ describe("lineage passthrough (inherited_state) — prior loop's state folded be
     expect(built.continuation_capsule!.next_actions).toEqual(["loop1: wire export"]);
   });
 
-  it("fails closed: Verified Context inherited_state WITHOUT a sealed inherits_loop edge (unanchored lineage)", () => {
-    // No edge on the scope, but a seed with real state -> the pack would publish prior-loop plaintext
-    // as 'verified memory' with nothing anchoring its lineage. Refuse.
-    const f = fixture("verified_context", undefined, seed);
-    expect(() =>
-      buildLoopProofBundle({
-        receipts: f.receipts,
-        source_env: "test",
-        capsule: { mode: "verified_context", sealed_scope: f.sealed, scope_history: [f.sealed], continuation: f.continuation, scope_events: [f.event], judgment_turns: f.turns, inherited_state: seed }
-      })
-    ).toThrow(/unanchored lineage|inherits_loop edge/);
+  it("fails closed: inherited_state WITHOUT a sealed inherits_loop edge (unanchored lineage)", () => {
+    expect(() => buildSeeded({ seed })).toThrow(/unanchored lineage|inherits_loop edge/);
+  });
+
+  it("fails closed: inherited_state with an edge but WITHOUT the prior pack's continuation", () => {
+    // The edge proves WHICH capsule was referenced, not that the values came from it.
+    expect(() => buildSeeded({ seed, edge })).toThrow(/supply the prior pack|prior_continuation/);
+  });
+
+  it("fails closed: prior continuation whose recomputed capsule_ref does not match the sealed edge", () => {
+    const forgedPrior = { ...priorContinuation, action_count: 99 }; // structural change -> different capsule_ref
+    expect(() => buildSeeded({ seed, prior: forgedPrior, edge })).toThrow(/capsule_ref/);
+  });
+
+  it("fails closed: seed that does not equal the prior capsule's verified state (forged values)", () => {
+    // Even with a continuation folded over the forged seed, the prior capsule's real state wins:
+    // the supplied prior binds by capsule_ref, and the forged seed != its state. (Forging the prior
+    // DOCUMENT's plaintext instead is caught by the prior pack's own export-time plaintext binding
+    // and the Stage E two-pack check.)
+    const forgedSeed = { settled: ["loop1: FORGED memory"] };
+    expect(() => buildSeeded({ seed: forgedSeed, prior: priorContinuation, edge })).toThrow(/does not equal the prior capsule/);
+  });
+
+  it("fails closed: a prior continuation supplied with NO sealed edge", () => {
+    expect(() => buildSeeded({ prior: priorContinuation })).toThrow(/seals no inherits_loop edge/);
   });
 
   it("Proof Mode: inherited_state is ignored — pack stays content-blind", () => {
