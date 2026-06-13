@@ -93,7 +93,7 @@ async function rig(
   const claims = createClaimRecorder();
   const bindClient = recorder.wrap(createSyntheticDemoBindClient());
   const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 1000, retryDelayMs: 25 }, scopeEvents, judgment);
-  const standing = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, host: "127.0.0.1", port: 0, path: "/mcp" });
+  const standing = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, claims, host: "127.0.0.1", port: 0, path: "/mcp" });
   const control = await serveControlChannel({
     transport: "tcp",
     host: "127.0.0.1",
@@ -302,5 +302,28 @@ describe("Capsule Gate 2 — supervisor-only dump_claims", () => {
     } finally {
       await agent.close().catch(() => undefined);
     }
+  });
+});
+
+describe("end-to-end claimed-vs-actual capture (agent path → dump_claims)", () => {
+  it("the agent records a claim via the wired record_claim tool, and dump_claims returns it", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const names = (await agent.client.listTools()).map((t) => t.name);
+      expect(names).toContain("record_claim"); // injected on the live agent surface
+      const result = (await agent.client.callTool({
+        toolName: "record_claim",
+        arguments: { system: "google_drive", action: "create_file", result: "created the doc", user_facing: true }
+      })) as { isError?: boolean };
+      expect(result.isError).toBeUndefined();
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    const dump = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(dump.ok).toBe(true);
+    // The rig seeds one claim; the agent added a second through the wired record_claim tool.
+    expect(dump.count).toBe(2);
+    expect((dump.claims as Array<Record<string, unknown>>).map((c) => c.system)).toContain("google_drive");
   });
 });

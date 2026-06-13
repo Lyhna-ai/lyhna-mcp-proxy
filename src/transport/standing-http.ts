@@ -31,7 +31,8 @@ import type { LoopSession } from "../loop.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "../mcp.js";
 import { BindGateError, createProxyCore } from "../proxy-core.js";
 import type { LoopSessionRegistry } from "../session-registry.js";
-import { createMcpProxyServer } from "./mcp-sdk.js";
+import { createMcpProxyServer, type ClaimCapture } from "./mcp-sdk.js";
+import type { AgentClaimRecorder } from "../claim-recorder.js";
 
 const DEFAULT_SERVER_INFO: Implementation = {
   name: "lyhna-mcp-proxy-standing",
@@ -46,6 +47,12 @@ export type StandingHttpProxyOptions = {
   port?: number;
   path?: string;
   serverInfo?: Implementation;
+  /**
+   * Optional per-loop claim recorder. When provided, each session's MCP surface exposes the
+   * record_claim tool and records the agent's claims against that session's loop_id (resolved from
+   * the registry per request). Omitted ⇒ no record_claim tool (claimed-vs-actual capture disabled).
+   */
+  claims?: AgentClaimRecorder;
 };
 
 export type StandingHttpProxy = {
@@ -121,7 +128,13 @@ export async function serveStandingHttpProxy(
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    const mcpServer = createMcpProxyServer(core, serverInfo);
+    // Claim capture is per session: the record_claim tool records against THIS session's loop_id,
+    // resolved from the registry per request. resolveLoopId returns undefined when the session has no
+    // open loop, in which case record_claim fails closed (no claim is recorded).
+    const claimCapture: ClaimCapture | undefined = options.claims
+      ? { claims: options.claims, resolveLoopId: () => options.registry.loopIdForSession(sessionId) }
+      : undefined;
+    const mcpServer = createMcpProxyServer(core, serverInfo, claimCapture);
 
     try {
       await mcpServer.connect(transport);
