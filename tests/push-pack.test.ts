@@ -189,7 +189,7 @@ function memoryClient(initial: Array<Record<string, unknown>> = []) {
 function supabaseMock(opts: { table?: string; insertStatus?: number } = {}) {
   const table = opts.table ?? "lyhna_loop_artifacts";
   const rows: Array<Record<string, unknown>> = [];
-  const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
+  const calls: Array<{ method: string; url: string; headers: Record<string, string>; redirect: string | undefined }> = [];
   let nextId = 1;
   const normalize = (r: Record<string, unknown>): Record<string, unknown> => ({
     ...r,
@@ -199,7 +199,12 @@ function supabaseMock(opts: { table?: string; insertStatus?: number } = {}) {
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    calls.push({ method, url: url.toString(), headers: { ...((init?.headers ?? {}) as Record<string, string>) } });
+    calls.push({
+      method,
+      url: url.toString(),
+      headers: { ...((init?.headers ?? {}) as Record<string, string>) },
+      redirect: init?.redirect
+    });
     if (!url.pathname.endsWith(`/rest/v1/${table}`)) {
       return new Response(JSON.stringify({ code: "404", message: "relation not found" }), { status: 404 });
     }
@@ -762,6 +767,10 @@ describe("push-pack — Supabase Destination Contract v1", () => {
     expect(mock.calls.every((c) => c.headers.apikey === ENV.LYHNA_SUPABASE_SERVICE_ROLE_KEY)).toBe(true);
     // POST + the SEPARATE read-back GET both happened.
     expect(mock.calls.map((c) => c.method)).toEqual(["GET", "POST", "GET"]);
+    // EVERY request refuses redirects: fetch retains the apikey header across cross-origin
+    // redirects, so redirect: "error" is what keeps the key from being re-sent off-host
+    // (including from a loopback http: endpoint that 3xxes outward).
+    expect(mock.calls.every((c) => c.redirect === "error")).toBe(true);
   });
 
   it("CLI end-to-end: re-push reports already_persisted, exits 0, still one row", async () => {

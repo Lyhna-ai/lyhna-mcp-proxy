@@ -86,8 +86,13 @@ export function createSupabaseLoopArtifactClient(
     "content-type": "application/json"
   };
 
+  // REDIRECT HARDENING (Codex review on 5474025): fetch follows redirects by default and custom
+  // headers (apikey) survive cross-origin redirects, so ANY endpoint — including the loopback
+  // http: exception — could 3xx the service-role key off-host. PostgREST never redirects in
+  // normal operation, so every redirect is unexpected: redirect: "error" makes fetch reject and
+  // the caller fail closed before the key is re-sent anywhere.
   async function selectRows(query: string, what: string): Promise<Array<Record<string, unknown>>> {
-    const response = await fetchImpl(`${endpoint}?${query}&select=*`, { method: "GET", headers });
+    const response = await fetchImpl(`${endpoint}?${query}&select=*`, { method: "GET", headers, redirect: "error" });
     const bodyText = await response.text();
     if (!response.ok) throw new Error(`${what} failed: ${httpDetail(response.status, bodyText)}`);
     let body: unknown;
@@ -111,7 +116,8 @@ export function createSupabaseLoopArtifactClient(
       const response = await fetchImpl(endpoint, {
         method: "POST",
         headers: { ...headers, prefer: "return=representation" },
-        body: JSON.stringify(row)
+        body: JSON.stringify(row),
+        redirect: "error"
       });
       const bodyText = await response.text();
       // 409 = unique-constraint violation (unique(capsule_ref)) — the caller's race branch.
