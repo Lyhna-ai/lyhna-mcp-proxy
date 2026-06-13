@@ -20,10 +20,24 @@ import { createServer, type Server as HttpServer } from "node:http";
 import type { Json } from "../json.js";
 import type { McpToolCall, UpstreamMcpClient } from "../mcp.js";
 import { BindGateError, ScopeGateError } from "../proxy-core.js";
+import type { AgentClaimRecorder } from "../claim-recorder.js";
+import { RECORD_CLAIM_TOOL, RECORD_CLAIM_TOOL_NAME, handleRecordClaim } from "../record-claim-tool.js";
 
 export type McpProxyRequestHandlers = {
   listTools(): Promise<ListToolsResult>;
   callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<CallToolResult>;
+};
+
+/**
+ * Optional agent-facing claim capture. When supplied, the proxy injects the `record_claim` tool into
+ * the agent's tool list and handles it ITSELF — recording the agent's claim against the active loop
+ * and returning, never forwarding it upstream or through the bind gate. The agent can write a claim
+ * but can never read or alter the witnessed ledger; that asymmetry is the claimed-vs-actual trust
+ * model. `resolveLoopId` resolves the loop_id for the current call's session (undefined ⇒ no loop).
+ */
+export type ClaimCapture = {
+  claims: AgentClaimRecorder;
+  resolveLoopId: () => string | undefined;
 };
 
 export type StdioUpstream = {
@@ -56,6 +70,7 @@ export type StreamableHttpProxyOptions = {
   port?: number;
   path?: string;
   serverInfo?: Implementation;
+  claimCapture?: ClaimCapture;
 };
 
 export type StreamableHttpProxy = {
@@ -122,14 +137,44 @@ export function renderGateVerdict(error: unknown): CallToolResult | null {
   return null;
 }
 
-export function createMcpRequestHandlers(core: UpstreamMcpClient): McpProxyRequestHandlers {
+// Whether the upstream itself advertises a tool by the record_claim name. Recomputed against the
+// CURRENT tool list every time (no sticky cache) so that if a long-lived upstream starts or stops
+// advertising its own record_claim, the proxy stops/starts shadowing accordingly.
+const upstreamOwnsRecordClaim = (tools: Tool[]): boolean =>
+  tools.some((t) => t.name === RECORD_CLAIM_TOOL_NAME);
+
+export function createMcpRequestHandlers(
+  core: UpstreamMcpClient,
+  claimCapture?: ClaimCapture
+): McpProxyRequestHandlers {
   return {
     async listTools() {
-      const tools = await core.listTools();
-      return { tools: tools as Tool[] };
+      const tools = (await core.listTools()) as Tool[];
+      // Expose record_claim alongside the upstream tools so the agent declares its claims through the
+      // same MCP surface it calls tools on. Off by default, and skipped when the (current) upstream
+      // list already advertises that name — never list a duplicate or shadow an upstream tool.
+      const inject = Boolean(claimCapture) && !upstreamOwnsRecordClaim(tools);
+      return { tools: inject ? [...tools, RECORD_CLAIM_TOOL] : tools };
     },
 
     async callTool(params) {
+      // record_claim is the proxy's own tool: record the agent's claim and return. It is NEVER built
+      // into an McpToolCall, never forwarded upstream, and never reaches the bind/scope gate — UNLESS
+      // the upstream owns the name, in which case the call mirrors through to upstream unchanged. The
+      // ownership is re-checked against the current tool list per call (record_claim is infrequent),
+      // so it can never go stale against a changing upstream.
+      if (
+        claimCapture &&
+        params.name === RECORD_CLAIM_TOOL_NAME &&
+        !upstreamOwnsRecordClaim((await core.listTools()) as Tool[])
+      ) {
+        return handleRecordClaim({
+          claims: claimCapture.claims,
+          loopId: claimCapture.resolveLoopId(),
+          arguments: params.arguments
+        });
+      }
+
       const call: McpToolCall = {
         toolName: params.name,
         arguments: toJson(params.arguments ?? {})
@@ -150,9 +195,10 @@ export function createMcpRequestHandlers(core: UpstreamMcpClient): McpProxyReque
 
 export function createMcpProxyServer(
   core: UpstreamMcpClient,
-  serverInfo: Implementation = DEFAULT_SERVER_INFO
+  serverInfo: Implementation = DEFAULT_SERVER_INFO,
+  claimCapture?: ClaimCapture
 ): Server {
-  const handlers = createMcpRequestHandlers(core);
+  const handlers = createMcpRequestHandlers(core, claimCapture);
   const server = new Server(serverInfo, {
     capabilities: {
       tools: {}
@@ -169,9 +215,10 @@ export function createMcpProxyServer(
 
 export async function serveStdioProxy(
   core: UpstreamMcpClient,
-  serverInfo: Implementation = DEFAULT_SERVER_INFO
+  serverInfo: Implementation = DEFAULT_SERVER_INFO,
+  claimCapture?: ClaimCapture
 ): Promise<Server> {
-  const server = createMcpProxyServer(core, serverInfo);
+  const server = createMcpProxyServer(core, serverInfo, claimCapture);
   await server.connect(new StdioServerTransport());
   return server;
 }
@@ -216,7 +263,7 @@ export async function serveStreamableHttpProxy(
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    const mcpServer = createMcpProxyServer(core, serverInfo);
+    const mcpServer = createMcpProxyServer(core, serverInfo, options.claimCapture);
 
     try {
       await mcpServer.connect(transport);
