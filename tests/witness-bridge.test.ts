@@ -92,6 +92,25 @@ describe("witness-bridge", () => {
     expect(input.steps.some((s) => s.claim === null && s.event!.call.toolName === "first.tool")).toBe(true);
   });
 
+  it("never falls back from an unresolved explicit turn_ref to an unrelated ordinal turn", () => {
+    const jr = createJudgmentRecorder();
+    jr.append(approved("L1", "unrelated.tool", "rcpt_1")); // exists at ordinal 0
+    const cr = createClaimRecorder();
+    // The claim explicitly references a turn that is NOT in the ledger. It must NOT be paired with
+    // the ordinal-0 unrelated turn — it must stay unmatched (event: null), exposing the mismatch.
+    cr.record({ loop_id: "L1", system: "gmail", action: "send", turn_ref: "turn:does-not-exist" });
+
+    const input = assembleWitnessInput({
+      objective: "o",
+      claims: cr.claimsForLoop("L1"),
+      turns: jr.judgmentLedgerForLoop("L1")
+    });
+    const claimed = input.steps.find((s) => s.claim?.system === "gmail");
+    expect(claimed!.event).toBeNull();
+    // the unrelated turn still appears as its own observed (claim: null) step
+    expect(input.steps.some((s) => s.claim === null && s.event!.call.toolName === "unrelated.tool")).toBe(true);
+  });
+
   it("passes through continuation state and proof refs", () => {
     const input = assembleWitnessInput({
       objective: "o",

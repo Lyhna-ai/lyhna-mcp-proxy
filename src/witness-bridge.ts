@@ -97,8 +97,12 @@ export function assembleWitnessInput(params: AssembleWitnessInputParams): Witnes
 
   claims.forEach((c, i) => {
     let turn: JudgmentTurn | undefined;
-    if (c.turn_ref !== undefined && byRef.has(c.turn_ref) && !matchedRefs.has(c.turn_ref)) {
-      turn = byRef.get(c.turn_ref);
+    if (c.turn_ref !== undefined) {
+      // An explicit turn_ref is a HARD binding. If it is missing from the ledger or already matched,
+      // leave the claim unmatched (event: null) — never fall back to an unrelated ordinal turn, or a
+      // claim could read as supported by a turn it never referenced, hiding the very mismatch this
+      // bridge exists to expose.
+      if (byRef.has(c.turn_ref) && !matchedRefs.has(c.turn_ref)) turn = byRef.get(c.turn_ref);
     } else {
       const ordinal = turns[i];
       if (ordinal !== undefined && !matchedRefs.has(ordinal.turn_ref)) turn = ordinal;
