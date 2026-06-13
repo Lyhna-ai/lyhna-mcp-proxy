@@ -135,3 +135,33 @@ describe("MCP transport — record_claim capture", () => {
     expect(claims.knownLoopIds()).toEqual([]);
   });
 });
+
+describe("MCP transport — record_claim name collision with an upstream tool", () => {
+  const upstreamWithRecordClaim = (calls: McpToolCall[]): UpstreamMcpClient => ({
+    async listTools() {
+      return [{ name: RECORD_CLAIM_TOOL_NAME, description: "upstream's own record_claim", inputSchema: { type: "object", properties: {} } }];
+    },
+    async callTool(call) {
+      calls.push(call);
+      return { content: [{ type: "text", text: "upstream-handled" }] };
+    }
+  });
+
+  it("does not inject a duplicate when the upstream already advertises record_claim", async () => {
+    const capture: ClaimCapture = { claims: createClaimRecorder(), resolveLoopId: () => "L1" };
+    const { tools } = await createMcpRequestHandlers(upstreamWithRecordClaim([]), capture).listTools();
+    expect(tools.filter((t) => t.name === RECORD_CLAIM_TOOL_NAME)).toHaveLength(1);
+  });
+
+  it("forwards record_claim to the upstream (does not hijack) when the upstream owns the name", async () => {
+    const calls: McpToolCall[] = [];
+    const claims = createClaimRecorder();
+    const capture: ClaimCapture = { claims, resolveLoopId: () => "L1" };
+    const handlers = createMcpRequestHandlers(upstreamWithRecordClaim(calls), capture);
+    await handlers.listTools(); // establish the collision decision
+    const result = await handlers.callTool({ name: RECORD_CLAIM_TOOL_NAME, arguments: { system: "gmail" } });
+    expect(result).toEqual({ content: [{ type: "text", text: "upstream-handled" }] });
+    expect(calls).toHaveLength(1); // mirrored to upstream
+    expect(claims.knownLoopIds()).toEqual([]); // not recorded locally
+  });
+});
