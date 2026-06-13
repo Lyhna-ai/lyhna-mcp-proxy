@@ -33,10 +33,20 @@ export function resolveSupabaseEnv(env: NodeJS.ProcessEnv): { ok: true; config: 
   try {
     parsed = new URL(url);
   } catch {
-    return { ok: false, detail: `LYHNA_SUPABASE_URL ${JSON.stringify(url)} is not a valid URL (fail closed).` };
+    // Never echo the value: a malformed paste could embed the key.
+    return { ok: false, detail: "LYHNA_SUPABASE_URL is not a valid URL (value not echoed; fail closed)." };
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { ok: false, detail: `LYHNA_SUPABASE_URL must be an http(s) URL, not ${JSON.stringify(parsed.protocol)} (fail closed).` };
+  // TRANSPORT HARDENING (adjudicated, P2): the service-role key rides in headers on every request,
+  // so plaintext http: is refused except to loopback (local Supabase stacks). Neither the key nor
+  // the full URL is ever printed.
+  const isLoopbackHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1" || parsed.hostname === "[::1]";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost)) {
+    return {
+      ok: false,
+      detail:
+        "LYHNA_SUPABASE_URL must be an https: URL — http: is permitted only for loopback hosts " +
+        "(localhost, 127.0.0.1, ::1); the service-role key is never sent over plaintext (fail closed)."
+    };
   }
   const key = env.LYHNA_SUPABASE_SERVICE_ROLE_KEY?.trim();
   if (!key) {

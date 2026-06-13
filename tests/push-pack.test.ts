@@ -391,6 +391,38 @@ describe("push-pack — Supabase Destination Contract v1", () => {
     expect(checks[0]!.name).toBe("capsule_ref_recomputes");
   });
 
+  it("fails closed when ANY Proof Mode markdown surface is tampered post-export (re-render byte check)", () => {
+    for (const file of ["proof-card.md", "HANDOFF.md", "verify-instructions.md"]) {
+      const dir = copyOf(proofDir);
+      writeFileSync(join(dir, file), readFileSync(join(dir, file), "utf8") + `\nINJECTED-${SETTLED_SENTINEL}\n`);
+      const checks = failing(buildLoopArtifactRow(dir));
+      expect(checks[0]!.name).toBe("proof_markdown_rerenders");
+      expect(checks[0]!.detail).toContain(file);
+      // The fail detail names the file but NEVER echoes the tampered content.
+      expect(checks[0]!.detail).not.toContain(SETTLED_SENTINEL);
+    }
+  });
+
+  it("untampered Proof Mode pack passes the re-render check on the re-render path for all three surfaces", () => {
+    const result = buildLoopArtifactRow(proofDir);
+    expect(result.ok).toBe(true);
+    const check = result.checks.find((c) => c.name === "proof_markdown_rerenders")!;
+    expect(check.ok).toBe(true);
+    expect(check.detail).toContain("re-render path used for all three surfaces");
+  });
+
+  it("Verified Context markdown is NOT re-render-checked (rich/edited markdown passes untouched)", () => {
+    const dir = copyOf(vcDir);
+    for (const file of ["proof-card.md", "HANDOFF.md", "verify-instructions.md"]) {
+      writeFileSync(join(dir, file), readFileSync(join(dir, file), "utf8") + "\n## Operator notes\nrich plaintext annotations are legitimate here.\n");
+    }
+    const result = buildLoopArtifactRow(dir);
+    expect(result.ok).toBe(true);
+    const check = result.checks.find((c) => c.name === "proof_markdown_rerenders")!;
+    expect(check.ok).toBe(true);
+    expect(check.detail).toContain("not applicable");
+  });
+
   it("fails closed when a proof-claiming pack publishes plaintext state (mode honesty)", () => {
     const dir = copyOf(proofDir);
     const continuation = JSON.parse(readFileSync(join(dir, "continuation-capsule.json"), "utf8"));
@@ -618,6 +650,44 @@ describe("push-pack — Supabase Destination Contract v1", () => {
     }
     const custom = resolveSupabaseEnv({ ...ENV, LYHNA_SUPABASE_TABLE: "my_artifacts" });
     expect(custom.ok && custom.config.table === "my_artifacts").toBe(true);
+  });
+
+  it("refuses plaintext http: for non-loopback hosts (key never rides plaintext) and never echoes the URL or key", () => {
+    for (const url of ["http://example.supabase.co", "http://10.0.0.5:8000", "http://supabase.internal"]) {
+      const result = resolveSupabaseEnv({ ...ENV, LYHNA_SUPABASE_URL: url });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.detail).toContain("https:");
+        expect(result.detail).not.toContain(url);
+        expect(result.detail).not.toContain(ENV.LYHNA_SUPABASE_SERVICE_ROLE_KEY);
+      }
+    }
+    // Invalid-URL branch must not echo the value either (a malformed paste could embed the key).
+    const invalid = resolveSupabaseEnv({ ...ENV, LYHNA_SUPABASE_URL: `not a url ${ENV.LYHNA_SUPABASE_SERVICE_ROLE_KEY}` });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.detail).not.toContain(ENV.LYHNA_SUPABASE_SERVICE_ROLE_KEY);
+  });
+
+  it("permits http: for loopback hosts (local Supabase stacks); https: unchanged", () => {
+    for (const url of ["http://localhost:54321", "http://127.0.0.1:54321", "http://[::1]:54321"]) {
+      const result = resolveSupabaseEnv({ ...ENV, LYHNA_SUPABASE_URL: url });
+      expect(result.ok).toBe(true);
+    }
+    expect(resolveSupabaseEnv(ENV).ok).toBe(true);
+  });
+
+  it("CLI: http: non-loopback URL fails closed with zero network calls", async () => {
+    const mock = supabaseMock();
+    const { io, err } = captureIo();
+    const code = await runPushPack(
+      ["--pack", vcDir, "--destination", "supabase"],
+      io,
+      { ...ENV, LYHNA_SUPABASE_URL: "http://example.supabase.co" },
+      mock.fetchImpl
+    );
+    expect(code).toBe(1);
+    expect(err()).toContain("https:");
+    expect(mock.calls).toHaveLength(0);
   });
 
   it("supabase client maps a unique-constraint 409 to a conflict (never a throw)", async () => {

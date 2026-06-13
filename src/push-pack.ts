@@ -23,8 +23,20 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ContinuationCapsule } from "./continuation-capsule.js";
-import { deriveContinuationRef, sha256Hex } from "./loop-proof-bundle.js";
-import { canonicalScopeJson, deriveScopeRef, type ScopeStructuralProjection } from "./scope-capsule.js";
+import { renderHandoffMarkdown } from "./handoff.js";
+import {
+  deriveContinuationRef,
+  renderProofCardMarkdown,
+  renderVerifyInstructionsMarkdown,
+  sha256Hex,
+  type LoopProofBundle
+} from "./loop-proof-bundle.js";
+import {
+  canonicalScopeJson,
+  deriveScopeRef,
+  type ScopeCapsuleExport,
+  type ScopeStructuralProjection
+} from "./scope-capsule.js";
 
 /**
  * The ten required pack inputs (strict Gate-2 contract): legacy 4-artifact packs and
@@ -419,6 +431,51 @@ function buildRowChecked(pack_dir: string, now: () => Date, checks: PushPackChec
     }
   }
   pass("mode_honesty", "export mode is consistent with the sealed structural privacy_mode and the published artifacts");
+
+  // --- 6b) Proof Mode markdown surfaces re-render byte-equal (adjudicated hardening, P1) --------
+  // The three persisted Markdown faces are stored verbatim in the row, so a post-export tamper
+  // could persist plaintext in a content-blind pack while the JSON-level mode_honesty check still
+  // passes. All three renderers are PURE functions of the already-validated pack JSON (bundle /
+  // continuation / scope capsule), so in Proof Mode each on-disk file must byte-equal its
+  // re-render — the re-render path is used for all three surfaces (no sentinel fallback needed).
+  // A mismatch names the file and NEVER echoes its content. Verified Context mode is not checked:
+  // its markdown legitimately carries plaintext.
+  if (mode === "proof") {
+    const surfaces: Array<[file: string, render: () => string]> = [
+      ["proof-card.md", () => renderProofCardMarkdown(bundle as unknown as LoopProofBundle, continuation as unknown as ContinuationCapsule)],
+      ["HANDOFF.md", () => renderHandoffMarkdown(continuation as unknown as ContinuationCapsule)],
+      [
+        "verify-instructions.md",
+        () => renderVerifyInstructionsMarkdown(bundle as unknown as LoopProofBundle, scopeCapsule as unknown as ScopeCapsuleExport)
+      ]
+    ];
+    for (const [file, render] of surfaces) {
+      let rendered: string;
+      try {
+        rendered = render();
+      } catch (error) {
+        return fail(
+          "proof_markdown_rerenders",
+          `${file} cannot be re-rendered from the validated pack JSON (${(error as Error).message}); a content-blind ` +
+            `pack whose markdown cannot be re-derived is unverifiable (fail closed).`
+        );
+      }
+      if (rendered !== texts.get(file)) {
+        return fail(
+          "proof_markdown_rerenders",
+          `${file} does not byte-match its re-render from the validated pack JSON — a post-export edit could be ` +
+            `persisting plaintext in a content-blind (proof) pack (fail closed; file content not echoed).`
+        );
+      }
+    }
+    pass(
+      "proof_markdown_rerenders",
+      "proof mode: proof-card.md, HANDOFF.md, verify-instructions.md each byte-match their re-render from the " +
+        "validated pack JSON (re-render path used for all three surfaces)"
+    );
+  } else {
+    pass("proof_markdown_rerenders", "verified_context export: markdown surfaces legitimately carry plaintext; re-render check not applicable");
+  }
 
   // --- 7) Inheritance fields: captured from the SEALED edge only, null when absent — never -------
   // invented, never read from the unsigned sidecars alone.
