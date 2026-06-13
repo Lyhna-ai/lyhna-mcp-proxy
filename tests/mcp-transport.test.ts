@@ -165,3 +165,36 @@ describe("MCP transport — record_claim name collision with an upstream tool", 
     expect(claims.knownLoopIds()).toEqual([]); // not recorded locally
   });
 });
+
+describe("MCP transport — record_claim ownership is re-checked, never stale", () => {
+  it("stops shadowing once a long-lived upstream starts advertising its own record_claim", async () => {
+    let upstreamOwns = false;
+    const calls: McpToolCall[] = [];
+    const claims = createClaimRecorder();
+    const core: UpstreamMcpClient = {
+      async listTools() {
+        return upstreamOwns
+          ? [{ name: RECORD_CLAIM_TOOL_NAME, description: "upstream", inputSchema: { type: "object", properties: {} } }]
+          : [{ name: "repo.search", description: "", inputSchema: { type: "object", properties: {} } }];
+      },
+      async callTool(call) {
+        calls.push(call);
+        return { content: [{ type: "text", text: "upstream-handled" }] };
+      }
+    };
+    const handlers = createMcpRequestHandlers(core, { claims, resolveLoopId: () => "L1" });
+
+    // Initially the upstream has no record_claim → injected + handled locally.
+    expect((await handlers.listTools()).tools.map((t) => t.name)).toContain(RECORD_CLAIM_TOOL_NAME);
+    await handlers.callTool({ name: RECORD_CLAIM_TOOL_NAME, arguments: { system: "gmail" } });
+    expect(claims.claimsForLoop("L1")).toHaveLength(1);
+    expect(calls).toHaveLength(0);
+
+    // The upstream now advertises its own record_claim → proxy must stop injecting/shadowing.
+    upstreamOwns = true;
+    expect((await handlers.listTools()).tools.filter((t) => t.name === RECORD_CLAIM_TOOL_NAME)).toHaveLength(1);
+    await handlers.callTool({ name: RECORD_CLAIM_TOOL_NAME, arguments: { system: "gmail" } });
+    expect(calls).toHaveLength(1); // now forwarded to upstream
+    expect(claims.claimsForLoop("L1")).toHaveLength(1); // not recorded again locally
+  });
+});

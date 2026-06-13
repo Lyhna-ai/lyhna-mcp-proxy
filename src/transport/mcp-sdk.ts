@@ -137,38 +137,37 @@ export function renderGateVerdict(error: unknown): CallToolResult | null {
   return null;
 }
 
+// Whether the upstream itself advertises a tool by the record_claim name. Recomputed against the
+// CURRENT tool list every time (no sticky cache) so that if a long-lived upstream starts or stops
+// advertising its own record_claim, the proxy stops/starts shadowing accordingly.
+const upstreamOwnsRecordClaim = (tools: Tool[]): boolean =>
+  tools.some((t) => t.name === RECORD_CLAIM_TOOL_NAME);
+
 export function createMcpRequestHandlers(
   core: UpstreamMcpClient,
   claimCapture?: ClaimCapture
 ): McpProxyRequestHandlers {
-  // Inject/intercept record_claim ONLY when capture is on AND the upstream does not already advertise
-  // a tool by that name — never shadow an upstream tool or list a duplicate name (that would break
-  // MCP mirroring: a call meant for the upstream implementation would be consumed locally). The
-  // collision check is memoized so it costs at most one extra listTools, and listTools passes its
-  // already-fetched list in to avoid a second round trip.
-  let injects: boolean | undefined;
-  const injectsRecordClaim = async (fetched?: Tool[]): Promise<boolean> => {
-    if (!claimCapture) return false;
-    if (injects === undefined) {
-      const tools = fetched ?? ((await core.listTools()) as Tool[]);
-      injects = !tools.some((t) => t.name === RECORD_CLAIM_TOOL_NAME);
-    }
-    return injects;
-  };
-
   return {
     async listTools() {
       const tools = (await core.listTools()) as Tool[];
       // Expose record_claim alongside the upstream tools so the agent declares its claims through the
-      // same MCP surface it calls tools on. Off by default and skipped on an upstream name collision.
-      return { tools: (await injectsRecordClaim(tools)) ? [...tools, RECORD_CLAIM_TOOL] : tools };
+      // same MCP surface it calls tools on. Off by default, and skipped when the (current) upstream
+      // list already advertises that name — never list a duplicate or shadow an upstream tool.
+      const inject = Boolean(claimCapture) && !upstreamOwnsRecordClaim(tools);
+      return { tools: inject ? [...tools, RECORD_CLAIM_TOOL] : tools };
     },
 
     async callTool(params) {
       // record_claim is the proxy's own tool: record the agent's claim and return. It is NEVER built
       // into an McpToolCall, never forwarded upstream, and never reaches the bind/scope gate — UNLESS
-      // the upstream owns the name, in which case the call mirrors through to upstream unchanged.
-      if (claimCapture && params.name === RECORD_CLAIM_TOOL_NAME && (await injectsRecordClaim())) {
+      // the upstream owns the name, in which case the call mirrors through to upstream unchanged. The
+      // ownership is re-checked against the current tool list per call (record_claim is infrequent),
+      // so it can never go stale against a changing upstream.
+      if (
+        claimCapture &&
+        params.name === RECORD_CLAIM_TOOL_NAME &&
+        !upstreamOwnsRecordClaim((await core.listTools()) as Tool[])
+      ) {
         return handleRecordClaim({
           claims: claimCapture.claims,
           loopId: claimCapture.resolveLoopId(),
