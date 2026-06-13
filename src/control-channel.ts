@@ -40,6 +40,7 @@ import type { ScopeCapsule, ScopePrivacyMode } from "./scope-capsule.js";
 import type { ScopeEventSource } from "./scope-event-recorder.js";
 import { projectTurn } from "./judgment-ledger.js";
 import type { JudgmentLedgerRecorder } from "./judgment-recorder.js";
+import type { AgentClaimSource } from "./claim-recorder.js";
 
 export type ControlChannelLogger = (line: string) => void;
 
@@ -64,6 +65,13 @@ export type ControlChannelOptions =
        * the control channel, which the agent's MCP path never reaches.
        */
       judgmentRecorder?: JudgmentLedgerRecorder;
+      /**
+       * Optional read-only claim source backing the supervisor `dump_claims` verb — the agent's own
+       * recorded claims, the net-new half of claimed-vs-actual. When omitted, `dump_claims` fails
+       * closed. Supervisor-only: it lives on the control channel, which the agent's MCP path never
+       * reaches (the agent can write a claim through the proxy tool but can never read them back).
+       */
+      claimSource?: AgentClaimSource;
       logger?: ControlChannelLogger;
     }
   | {
@@ -74,6 +82,7 @@ export type ControlChannelOptions =
       receiptSource?: ReceiptSource;
       scopeEventSource?: ScopeEventSource;
       judgmentRecorder?: JudgmentLedgerRecorder;
+      claimSource?: AgentClaimSource;
       logger?: ControlChannelLogger;
     };
 
@@ -93,7 +102,7 @@ export async function serveControlChannel(
   const log = options.logger ?? (() => undefined);
 
   const server = createServer((socket) => {
-    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, options.judgmentRecorder, log);
+    handleConnection(socket, options.registry, options.receiptSource, options.scopeEventSource, options.judgmentRecorder, options.claimSource, log);
   });
 
   if (options.transport === "unix") {
@@ -148,6 +157,7 @@ function handleConnection(
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
   judgmentRecorder: JudgmentLedgerRecorder | undefined,
+  claimSource: AgentClaimSource | undefined,
   log: ControlChannelLogger
 ): void {
   socket.setEncoding("utf8");
@@ -169,7 +179,7 @@ function handleConnection(
       buffer = buffer.slice(newlineIndex + 1);
       if (line.length > 0) {
         queue = queue.then(async () => {
-          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, judgmentRecorder, log);
+          const response = await dispatchLine(line, registry, receiptSource, scopeEventSource, judgmentRecorder, claimSource, log);
           if (!socket.destroyed) {
             socket.write(JSON.stringify(response) + "\n");
           }
@@ -193,6 +203,7 @@ async function dispatchLine(
   receiptSource: ReceiptSource | undefined,
   scopeEventSource: ScopeEventSource | undefined,
   judgmentRecorder: JudgmentLedgerRecorder | undefined,
+  claimSource: AgentClaimSource | undefined,
   log: ControlChannelLogger
 ): Promise<ControlResponse> {
   let command: unknown;
@@ -326,6 +337,33 @@ async function dispatchLine(
           requested === "verified_context" && sealedMode === "verified_context" ? "verified_context" : "proof";
         const turns = judgmentRecorder.judgmentLedgerForLoop(loop_id).map((t) => projectTurn(t, mode));
         return { ok: true, loop_id, mode, count: turns.length, turns };
+      }
+
+      case "dump_claims": {
+        // Read-only supervisor verb: hand back the agent's recorded CLAIMS for a loop so the
+        // supervisor can build the claimed-vs-actual handoff at loop close. Supervisor-only by
+        // construction — this verb lives on the control channel, which the agent's MCP path never
+        // reaches. Addressable by loop_id OR session_id (the loop survives close, like dump_judgment).
+        //
+        // VERIFIED CONTEXT ONLY: a claim is the agent's free-text/plaintext self-report. A proof-mode
+        // (content-blind) loop fails closed — plaintext claims do not belong in a content-blind loop,
+        // exactly as record_delta's Verified-Context sidecar does not.
+        if (!claimSource) {
+          return { ok: false, error: "Claim dump is not enabled on this control channel." };
+        }
+        const loop_id = resolveJudgmentLoopId(command, registry);
+        if (!loop_id) {
+          return { ok: false, error: "dump_claims requires a `loop_id`, or a `session_id` for a known loop." };
+        }
+        const sealedMode = registry.privacyModeForLoop(loop_id);
+        if (sealedMode !== "verified_context") {
+          return {
+            ok: false,
+            error: `dump_claims is Verified Context Mode only; loop ${loop_id} is ${JSON.stringify(sealedMode ?? null)} (fail closed).`
+          };
+        }
+        const claims = claimSource.claimsForLoop(loop_id);
+        return { ok: true, loop_id, count: claims.length, claims };
       }
 
       case "record_delta": {

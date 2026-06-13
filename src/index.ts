@@ -123,6 +123,8 @@ export type {
 } from "./judgment-ledger.js";
 export { createJudgmentRecorder } from "./judgment-recorder.js";
 export type { JudgmentLedgerRecorder, JudgmentLedgerSource } from "./judgment-recorder.js";
+export { createClaimRecorder } from "./claim-recorder.js";
+export type { AgentClaim, AgentClaimInput, AgentClaimRecorder, AgentClaimSource } from "./claim-recorder.js";
 export { reduceJudgmentLedger } from "./judgment-reducer.js";
 export {
   CROSS_LOOP_SUCCESS_WORDING,
