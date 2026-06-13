@@ -73,3 +73,65 @@ describe("MCP SDK transport handlers", () => {
     expect(observed).toEqual({ toolName: "no_args", arguments: {} });
   });
 });
+
+import { createClaimRecorder } from "../src/claim-recorder.js";
+import { RECORD_CLAIM_TOOL_NAME } from "../src/record-claim-tool.js";
+import type { ClaimCapture } from "../src/transport/mcp-sdk.js";
+
+describe("MCP transport — record_claim capture", () => {
+  const baseCore = (calls: McpToolCall[]): UpstreamMcpClient => ({
+    async listTools() {
+      return [{ name: "repo.search", description: "Search the repo", inputSchema: { type: "object", properties: {} } }];
+    },
+    async callTool(call) {
+      calls.push(call);
+      return { content: [{ type: "text", text: "forwarded" }] };
+    }
+  });
+
+  it("does not expose record_claim when capture is off (identical to before)", async () => {
+    const handlers = createMcpRequestHandlers(baseCore([]));
+    const { tools } = await handlers.listTools();
+    expect(tools.some((t) => t.name === RECORD_CLAIM_TOOL_NAME)).toBe(false);
+  });
+
+  it("injects record_claim alongside upstream tools when capture is on", async () => {
+    const capture: ClaimCapture = { claims: createClaimRecorder(), resolveLoopId: () => "L1" };
+    const { tools } = await createMcpRequestHandlers(baseCore([]), capture).listTools();
+    const names = tools.map((t) => t.name);
+    expect(names).toContain(RECORD_CLAIM_TOOL_NAME);
+    expect(names).toContain("repo.search");
+  });
+
+  it("records a record_claim call against the active loop and never forwards it upstream", async () => {
+    const calls: McpToolCall[] = [];
+    const claims = createClaimRecorder();
+    const capture: ClaimCapture = { claims, resolveLoopId: () => "L1" };
+    const result = await createMcpRequestHandlers(baseCore(calls), capture).callTool({
+      name: RECORD_CLAIM_TOOL_NAME,
+      arguments: { system: "gmail", action: "send", user_facing: true }
+    });
+    expect(result.isError).toBeUndefined();
+    expect(calls).toHaveLength(0); // record_claim is handled by the proxy, never forwarded
+    expect(claims.claimsForLoop("L1")).toHaveLength(1);
+    expect(claims.claimsForLoop("L1")[0]).toMatchObject({ system: "gmail", action: "send" });
+  });
+
+  it("still forwards ordinary tool calls when capture is on", async () => {
+    const calls: McpToolCall[] = [];
+    const capture: ClaimCapture = { claims: createClaimRecorder(), resolveLoopId: () => "L1" };
+    const result = await createMcpRequestHandlers(baseCore(calls), capture).callTool({ name: "repo.search", arguments: { q: "x" } });
+    expect(result).toEqual({ content: [{ type: "text", text: "forwarded" }] });
+    expect(calls).toEqual([{ toolName: "repo.search", arguments: { q: "x" } }]);
+  });
+
+  it("fails closed (isError) when record_claim is called with no open loop", async () => {
+    const calls: McpToolCall[] = [];
+    const claims = createClaimRecorder();
+    const capture: ClaimCapture = { claims, resolveLoopId: () => undefined };
+    const result = await createMcpRequestHandlers(baseCore(calls), capture).callTool({ name: RECORD_CLAIM_TOOL_NAME, arguments: { system: "gmail" } });
+    expect(result.isError).toBe(true);
+    expect(calls).toHaveLength(0);
+    expect(claims.knownLoopIds()).toEqual([]);
+  });
+});
