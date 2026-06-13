@@ -73,6 +73,17 @@ function optionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+// user_facing drives the DO_NOT_SEND category, so it must be an ACTUAL boolean — never coerced.
+// Coercion from untyped MCP/tool JSON would silently mis-audit a claim (e.g. "false"/"0" → true,
+// null → false). Absent stays absent; any non-boolean value fails closed like the string fields.
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error("record_claim: 'user_facing' must be a boolean when present (fail closed).");
+  }
+  return value;
+}
+
 export function createClaimRecorder(): AgentClaimRecorder {
   const byLoop = new Map<string, AgentClaim[]>();
 
@@ -91,11 +102,12 @@ export function createClaimRecorder(): AgentClaimRecorder {
       const result = optionalString(input.result);
       const via = optionalString(input.via);
       const turn_ref = optionalString(input.turn_ref);
+      const user_facing = optionalBoolean(input.user_facing);
       if (action !== undefined) claim.action = action;
       if (result !== undefined) claim.result = result;
       if (via !== undefined) claim.via = via;
       if (turn_ref !== undefined) claim.turn_ref = turn_ref;
-      if (input.user_facing !== undefined) claim.user_facing = Boolean(input.user_facing);
+      if (user_facing !== undefined) claim.user_facing = user_facing;
 
       if (list.length === 0) {
         byLoop.set(loop_id, [claim]);

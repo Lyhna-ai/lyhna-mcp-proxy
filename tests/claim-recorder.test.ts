@@ -23,14 +23,25 @@ describe("claim-recorder", () => {
     expect(new Set(rec.knownLoopIds())).toEqual(new Set(["L1", "L2"]));
   });
 
-  it("trims fields and drops blanks; keeps user_facing as a boolean", () => {
+  it("trims fields and drops blanks; preserves a real boolean user_facing", () => {
     const rec = createClaimRecorder();
-    const c = rec.record({ loop_id: "L1", system: "  gmail  ", action: " send ", result: "  ", via: "", user_facing: 1 as unknown as boolean });
+    const c = rec.record({ loop_id: "L1", system: "  gmail  ", action: " send ", result: "  ", via: "", user_facing: true });
     expect(c.system).toBe("gmail");
     expect(c.action).toBe("send");
     expect(c.result).toBeUndefined();
     expect(c.via).toBeUndefined();
     expect(c.user_facing).toBe(true);
+  });
+
+  it("fails closed on a non-boolean user_facing instead of coercing it", () => {
+    const rec = createClaimRecorder();
+    // Untyped MCP/tool JSON: these must NOT be silently coerced (e.g. "false" → true).
+    for (const bad of ["false", "0", 1, 0, {}]) {
+      expect(() => rec.record({ loop_id: "L1", system: "gmail", user_facing: bad as unknown as boolean })).toThrow(/user_facing/);
+    }
+    // absent/null is allowed and recorded as unset (not false).
+    expect(rec.record({ loop_id: "L1", system: "gmail" }).user_facing).toBeUndefined();
+    expect(rec.record({ loop_id: "L1", system: "gmail", user_facing: null as unknown as boolean }).user_facing).toBeUndefined();
   });
 
   it("preserves an explicit turn_ref for correlation", () => {
