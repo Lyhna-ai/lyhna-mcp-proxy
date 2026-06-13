@@ -91,6 +91,17 @@ function toWitnessEvent(turn: JudgmentTurn): WitnessEvent {
  */
 export function assembleWitnessInput(params: AssembleWitnessInputParams): WitnessInput {
   const { objective, claims, turns } = params;
+
+  // Fail closed on mixed loops: claims and turns must all belong to ONE loop_id. Pairing is by
+  // ordinal/turn_ref and drops loop identity from the witness payload, so claims from one loop and
+  // turns from another would let a claim be reported as supported by an unrelated loop's event.
+  const loopIds = new Set<string>([...claims.map((c) => c.loop_id), ...turns.map((t) => t.loop_id)]);
+  if (loopIds.size > 1) {
+    throw new Error(
+      `assembleWitnessInput: claims and turns must belong to a single loop_id (got: ${[...loopIds].join(", ")}). Fail closed.`
+    );
+  }
+
   const byRef = new Map(turns.map((t) => [t.turn_ref, t]));
   const matchedRefs = new Set<string>();
   const steps: WitnessStep[] = [];

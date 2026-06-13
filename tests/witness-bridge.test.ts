@@ -111,6 +111,16 @@ describe("witness-bridge", () => {
     expect(input.steps.some((s) => s.claim === null && s.event!.call.toolName === "unrelated.tool")).toBe(true);
   });
 
+  it("fails closed when claims and turns come from different loops", () => {
+    const jr = createJudgmentRecorder();
+    jr.append(approved("L2", "x.tool", "rcpt_1")); // turn from loop L2
+    const cr = createClaimRecorder();
+    cr.record({ loop_id: "L1", system: "gmail" }); // claim from loop L1
+    expect(() =>
+      assembleWitnessInput({ objective: "o", claims: cr.claimsForLoop("L1"), turns: jr.judgmentLedgerForLoop("L2") })
+    ).toThrow(/single loop_id/);
+  });
+
   it("passes through continuation state and proof refs", () => {
     const input = assembleWitnessInput({
       objective: "o",
