@@ -33,10 +33,20 @@ export function resolveSupabaseEnv(env: NodeJS.ProcessEnv): { ok: true; config: 
   try {
     parsed = new URL(url);
   } catch {
-    return { ok: false, detail: `LYHNA_SUPABASE_URL ${JSON.stringify(url)} is not a valid URL (fail closed).` };
+    // Never echo the value: a malformed paste could embed the key.
+    return { ok: false, detail: "LYHNA_SUPABASE_URL is not a valid URL (value not echoed; fail closed)." };
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { ok: false, detail: `LYHNA_SUPABASE_URL must be an http(s) URL, not ${JSON.stringify(parsed.protocol)} (fail closed).` };
+  // TRANSPORT HARDENING (adjudicated, P2): the service-role key rides in headers on every request,
+  // so plaintext http: is refused except to loopback (local Supabase stacks). Neither the key nor
+  // the full URL is ever printed.
+  const isLoopbackHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1" || parsed.hostname === "[::1]";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost)) {
+    return {
+      ok: false,
+      detail:
+        "LYHNA_SUPABASE_URL must be an https: URL — http: is permitted only for loopback hosts " +
+        "(localhost, 127.0.0.1, ::1); the service-role key is never sent over plaintext (fail closed)."
+    };
   }
   const key = env.LYHNA_SUPABASE_SERVICE_ROLE_KEY?.trim();
   if (!key) {
@@ -76,8 +86,13 @@ export function createSupabaseLoopArtifactClient(
     "content-type": "application/json"
   };
 
+  // REDIRECT HARDENING (Codex review on 5474025): fetch follows redirects by default and custom
+  // headers (apikey) survive cross-origin redirects, so ANY endpoint — including the loopback
+  // http: exception — could 3xx the service-role key off-host. PostgREST never redirects in
+  // normal operation, so every redirect is unexpected: redirect: "error" makes fetch reject and
+  // the caller fail closed before the key is re-sent anywhere.
   async function selectRows(query: string, what: string): Promise<Array<Record<string, unknown>>> {
-    const response = await fetchImpl(`${endpoint}?${query}&select=*`, { method: "GET", headers });
+    const response = await fetchImpl(`${endpoint}?${query}&select=*`, { method: "GET", headers, redirect: "error" });
     const bodyText = await response.text();
     if (!response.ok) throw new Error(`${what} failed: ${httpDetail(response.status, bodyText)}`);
     let body: unknown;
@@ -101,7 +116,8 @@ export function createSupabaseLoopArtifactClient(
       const response = await fetchImpl(endpoint, {
         method: "POST",
         headers: { ...headers, prefer: "return=representation" },
-        body: JSON.stringify(row)
+        body: JSON.stringify(row),
+        redirect: "error"
       });
       const bodyText = await response.text();
       // 409 = unique-constraint violation (unique(capsule_ref)) — the caller's race branch.
