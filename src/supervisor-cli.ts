@@ -325,6 +325,10 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   if (scopeHistory.length === 0) {
     const bare = buildLoopProofBundle({ receipts, receipts_text: receiptsText, source_env: sourceEnv });
     const files = writeProofPackFiles(outDir, bare);
+    // A bare (no-scope) export emits no witness sidecar — clear any stale witness-input.json from a
+    // prior verified-context export to this same --out dir, so old plaintext claims are not left
+    // beside the new bare bundle. (The scoped-trio path below does the same before deciding to emit.)
+    rmSync(join(outDir, "witness-input.json"), { force: true });
     io.stderr(
       `[lyhna] loop ${loopId} has no sealed scope capsule, so this is a bare bundle (no proof card / ` +
         `handoff / judgment artifacts). Open loops with a scope_capsule to export the full capsule trio.\n`

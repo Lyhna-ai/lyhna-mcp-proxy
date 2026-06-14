@@ -6,7 +6,7 @@
 // demo flow; nothing live.
 
 import { connect as netConnect } from "node:net";
-import { existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,6 +240,40 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
 
     return { socketPath };
   }
+
+  async function runBareLoop(): Promise<{ socketPath: string }> {
+    const recorder = createReceiptRecorder();
+    const scopeEvents = createScopeEventRecorder();
+    const judgment = createJudgmentRecorder();
+    const bindClient = recorder.wrap(createSyntheticDemoBindClient());
+    const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 2000, retryDelayMs: 50 }, scopeEvents, judgment);
+    const standing: StandingHttpProxy = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, host: "127.0.0.1", port: 0, path: "/mcp" });
+    cleanups.push(() => standing.close());
+    const socketPath = join(tmpdir(), `lyhna-supervisor-cli-bare-${process.pid}-${Date.now()}.sock`);
+    const control: ControlChannelHandle = await serveControlChannel({ transport: "unix", socketPath, registry, receiptSource: recorder, scopeEventSource: scopeEvents, judgmentRecorder: judgment });
+    cleanups.push(() => control.close());
+    // Open WITHOUT a scope_capsule → a baseline, no-scope loop (the bare-bundle export path).
+    expect((await sendControl(socketPath, { cmd: "open", session_id: "bare-s", loop_id: "loop-bare", goal: GOAL })).ok).toBe(true);
+    const agent = await connectStreamableHttpUpstream(standing.sessionUrl("bare-s"));
+    try {
+      await agent.client.callTool({ toolName: "write_file", arguments: { path: TARGET, contents: "x" } }).catch(() => undefined);
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    expect((await sendControl(socketPath, { cmd: "close", session_id: "bare-s", outcome: "COMPLETED", reason: "done" })).ok).toBe(true);
+    return { socketPath };
+  }
+
+  it("a bare (no-scope) export clears a stale witness-input.json from a prior export to the same dir", async () => {
+    const { socketPath } = await runBareLoop();
+    const outDir = mkdtempSync(join(tmpdir(), "lyhna-export-bare-"));
+    cleanups.push(() => rmSync(outDir, { recursive: true, force: true }));
+    // Plant a stale plaintext witness file as if a prior verified-context export wrote it here.
+    writeFileSync(join(outDir, "witness-input.json"), JSON.stringify({ steps: [{ claim: { system: "stale" }, event: null }] }) + "\n");
+
+    expect(await runExportPack(["--loop", "loop-bare", "--out", outDir, "--socket", socketPath], io().cli, {})).toBe(0);
+    expect(existsSync(join(outDir, "witness-input.json"))).toBe(false); // stale sidecar removed
+  });
 
   it("export-pack also emits witness-input.json pairing the agent's claim with the witnessed turn", async () => {
     const { socketPath } = await runScopedLoop();
