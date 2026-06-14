@@ -29,6 +29,7 @@
     "adapter": "npm run build && node dist/src/bin/http-proxy.js",
     "demo": "node scripts/demo-golden-path.mjs",
     "demo:capsule": "node scripts/demo-capsule-gate.mjs",
+    "demo:live-loop": "node scripts/live-loop-receipt.mjs",
     "capture:live": "node scripts/live-bind-capture.mjs",
     "test": "vitest run",
     "verify:legs": "node scripts/verify-legs.mjs"
