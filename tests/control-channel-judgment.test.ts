@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   connectStreamableHttpUpstream,
+  createClaimRecorder,
   createJudgmentRecorder,
   createReceiptRecorder,
   createScopeEventRecorder,
@@ -72,6 +73,7 @@ type Rig = {
   standing: StandingHttpProxy;
   control: ControlChannelHandle;
   judgment: ReturnType<typeof createJudgmentRecorder>;
+  claims: ReturnType<typeof createClaimRecorder>;
 };
 
 const rigs: Rig[] = [];
@@ -82,15 +84,16 @@ afterEach(async () => {
   }
 });
 
-async function rig(opts: { privacy: "proof" | "verified_context"; withJudgmentVerbs?: boolean } = { privacy: "verified_context" }): Promise<
-  Rig & { address: string; sessionId: string; loopId: string }
-> {
+async function rig(
+  opts: { privacy: "proof" | "verified_context"; withJudgmentVerbs?: boolean; withClaimVerbs?: boolean } = { privacy: "verified_context" }
+): Promise<Rig & { address: string; sessionId: string; loopId: string }> {
   const recorder = createReceiptRecorder();
   const scopeEvents = createScopeEventRecorder();
   const judgment = createJudgmentRecorder();
+  const claims = createClaimRecorder();
   const bindClient = recorder.wrap(createSyntheticDemoBindClient());
   const registry = new LoopSessionRegistry((r) => bindClient.bind(r), { graceMs: 1000, retryDelayMs: 25 }, scopeEvents, judgment);
-  const standing = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, host: "127.0.0.1", port: 0, path: "/mcp" });
+  const standing = await serveStandingHttpProxy({ upstream: syntheticUpstream(), bindClient, registry, claims, host: "127.0.0.1", port: 0, path: "/mcp" });
   const control = await serveControlChannel({
     transport: "tcp",
     host: "127.0.0.1",
@@ -98,9 +101,10 @@ async function rig(opts: { privacy: "proof" | "verified_context"; withJudgmentVe
     registry,
     receiptSource: recorder,
     scopeEventSource: scopeEvents,
-    judgmentRecorder: opts.withJudgmentVerbs === false ? undefined : judgment
+    judgmentRecorder: opts.withJudgmentVerbs === false ? undefined : judgment,
+    claimSource: opts.withClaimVerbs === false ? undefined : claims
   });
-  const out = { standing, control, judgment, address: control.address, sessionId: "s1", loopId: "loop-cc-judgment" };
+  const out = { standing, control, judgment, claims, address: control.address, sessionId: "s1", loopId: "loop-cc-judgment" };
   rigs.push(out);
 
   const opened = await sendControl(control.address, {
@@ -112,6 +116,10 @@ async function rig(opts: { privacy: "proof" | "verified_context"; withJudgmentVe
     scope_class_map: SCOPE_CLASS_MAP
   });
   expect(opened.ok).toBe(true);
+
+  // Record an agent claim for the loop. In production this arrives via the record_claim proxy tool;
+  // here it is recorded directly so the dump_claims verb has data to hand back.
+  claims.record({ loop_id: out.loopId, system: "gmail", action: "send", result: "sent the follow-up", user_facing: true });
 
   // Drive the AGENT path to generate judgment turns: one in-lane approved, one out-of-lane refused.
   const agent = await connectStreamableHttpUpstream(standing.sessionUrl(out.sessionId));
@@ -248,5 +256,119 @@ describe("Capsule Gate 2 — supervisor-only dump_judgment / record_delta", () =
     // The ledger is reachable only via the control channel.
     const dump = await sendControl(r.address, { cmd: "dump_judgment", loop_id: r.loopId });
     expect(dump.ok).toBe(true);
+  });
+});
+
+describe("Capsule Gate 2 — supervisor-only dump_claims", () => {
+  it("returns the agent's recorded claims (by loop_id and by session_id) in VC mode", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const byLoop = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(byLoop.ok).toBe(true);
+    expect(byLoop.count).toBe(1);
+    expect((byLoop.claims as Array<Record<string, unknown>>)[0]).toMatchObject({ system: "gmail", action: "send", user_facing: true });
+
+    const bySession = await sendControl(r.address, { cmd: "dump_claims", session_id: r.sessionId });
+    expect(bySession.ok).toBe(true);
+    expect(bySession.count).toBe(1);
+  });
+
+  it("fails closed for a proof-mode loop (plaintext claims are Verified-Context only)", async () => {
+    const r = await rig({ privacy: "proof" });
+    const dump = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(dump.ok).toBe(false);
+    expect(String(dump.error)).toMatch(/Verified Context Mode only/);
+  });
+
+  it("fails closed when no claim source is configured", async () => {
+    const r = await rig({ privacy: "verified_context", withClaimVerbs: false });
+    const dump = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(dump.ok).toBe(false);
+    expect(String(dump.error)).toMatch(/not enabled/);
+  });
+
+  it("requires a loop_id or a known session_id", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const dump = await sendControl(r.address, { cmd: "dump_claims" });
+    expect(dump.ok).toBe(false);
+    expect(String(dump.error)).toMatch(/requires a `loop_id`/);
+  });
+
+  it("is a control-channel verb only — the agent MCP path never exposes it", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const names = (await agent.client.listTools()).map((t) => t.name);
+      expect(names).not.toContain("dump_claims");
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+  });
+});
+
+describe("end-to-end claimed-vs-actual capture (agent path → dump_claims)", () => {
+  it("the agent records a claim via the wired record_claim tool, and dump_claims returns it", async () => {
+    const r = await rig({ privacy: "verified_context" });
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const names = (await agent.client.listTools()).map((t) => t.name);
+      expect(names).toContain("record_claim"); // injected on the live agent surface
+      const result = (await agent.client.callTool({
+        toolName: "record_claim",
+        arguments: { system: "google_drive", action: "create_file", result: "created the doc", user_facing: true }
+      })) as { isError?: boolean };
+      expect(result.isError).toBeUndefined();
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    const dump = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(dump.ok).toBe(true);
+    // The rig seeds one claim; the agent added a second through the wired record_claim tool.
+    expect(dump.count).toBe(2);
+    expect((dump.claims as Array<Record<string, unknown>>).map((c) => c.system)).toContain("google_drive");
+  });
+});
+
+describe("record_claim is during-run only (no post-close claim injection)", () => {
+  it("an agent retaining the URL cannot append claims after the supervisor closes the loop", async () => {
+    const r = await rig({ privacy: "verified_context" });
+
+    // Agent records a claim while the loop is OPEN.
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      await agent.client.callTool({ toolName: "record_claim", arguments: { system: "google_drive", action: "create_file" } });
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    const before = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    const countBefore = before.count as number; // rig seed (1) + agent (1)
+
+    // Supervisor closes/seals the loop.
+    const closed = await sendControl(r.address, { cmd: "close", session_id: r.sessionId, outcome: "COMPLETED", reason: "done" });
+    expect(closed).toMatchObject({ ok: true, sealed: true });
+
+    // Agent retains the old URL and tries to record again — it must NOT append a post-close claim.
+    const stale = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      await stale.client.callTool({ toolName: "record_claim", arguments: { system: "POST_CLOSE", action: "x" } }).catch(() => undefined);
+    } finally {
+      await stale.close().catch(() => undefined);
+    }
+
+    const after = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(after.count).toBe(countBefore); // unchanged across the close boundary
+    expect(JSON.stringify(after.claims)).not.toContain("POST_CLOSE");
+  });
+});
+
+describe("claim capture is Verified-Context only on the agent surface", () => {
+  it("does not expose record_claim on a proof-mode loop (claims would be plaintext in a content-blind loop)", async () => {
+    const r = await rig({ privacy: "proof" });
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const names = (await agent.client.listTools()).map((t) => t.name);
+      expect(names).not.toContain("record_claim");
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
   });
 });

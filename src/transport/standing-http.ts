@@ -31,7 +31,8 @@ import type { LoopSession } from "../loop.js";
 import type { McpToolCall, McpToolResult, UpstreamMcpClient } from "../mcp.js";
 import { BindGateError, createProxyCore } from "../proxy-core.js";
 import type { LoopSessionRegistry } from "../session-registry.js";
-import { createMcpProxyServer } from "./mcp-sdk.js";
+import { createMcpProxyServer, type ClaimCapture } from "./mcp-sdk.js";
+import type { AgentClaimRecorder } from "../claim-recorder.js";
 
 const DEFAULT_SERVER_INFO: Implementation = {
   name: "lyhna-mcp-proxy-standing",
@@ -46,6 +47,12 @@ export type StandingHttpProxyOptions = {
   port?: number;
   path?: string;
   serverInfo?: Implementation;
+  /**
+   * Optional per-loop claim recorder. When provided, each session's MCP surface exposes the
+   * record_claim tool and records the agent's claims against that session's loop_id (resolved from
+   * the registry per request). Omitted ⇒ no record_claim tool (claimed-vs-actual capture disabled).
+   */
+  claims?: AgentClaimRecorder;
 };
 
 export type StandingHttpProxy = {
@@ -121,7 +128,27 @@ export async function serveStandingHttpProxy(
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    const mcpServer = createMcpProxyServer(core, serverInfo);
+    // Claim capture is per session, VERIFIED-CONTEXT ONLY, and DURING-RUN ONLY:
+    //  - VC only: a claim is the agent's plaintext self-report. A proof-mode (content-blind) loop must
+    //    never accumulate plaintext claims in the sidecar — matching the dump_claims contract, which
+    //    refuses to hand them back. So record_claim is not even exposed on a proof-mode loop.
+    //  - During-run only: resolve from the OPEN session (the registry removes the session on close)
+    //    and re-check open+mode at call time, so an agent retaining the old MCP URL cannot append a
+    //    claim after the supervisor sealed the loop (post-close mutation, cf. record_delta's gate).
+    //  - loopIdForSession is deliberately NOT used: it resolves via the retained post-close scope state.
+    const registry = options.registry;
+    const capturable = (loop_id: string): boolean =>
+      registry.isLoopOpen(loop_id) && registry.privacyModeForLoop(loop_id) === "verified_context";
+    let claimCapture: ClaimCapture | undefined;
+    if (options.claims && session && capturable(session.loopId)) {
+      const loopSession = session;
+      const claims = options.claims;
+      claimCapture = {
+        claims,
+        resolveLoopId: () => (capturable(loopSession.loopId) ? loopSession.loopId : undefined)
+      };
+    }
+    const mcpServer = createMcpProxyServer(core, serverInfo, claimCapture);
 
     try {
       await mcpServer.connect(transport);
