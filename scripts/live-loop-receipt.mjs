@@ -23,6 +23,7 @@
 // golden-path demo. What is REAL is the path the claims and events take to become a receipt.
 
 import { mkdirSync, mkdtempSync, copyFileSync, existsSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { connect as netConnect } from "node:net";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -32,6 +33,23 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DIST_INDEX = join(ROOT, "dist", "src", "index.js");
 const DEFAULT_OUT = join(ROOT, "examples", "live-loop");
+const TSCONFIG = join(ROOT, "tsconfig.json");
+const SRC_ENTRY = join(ROOT, "src", "index.ts");
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
+
+// Keep this runnable from a clean checkout. `npm test` runs vitest WITHOUT `npm run build`, and the
+// standalone demo may also run before a build — so if the built library is missing but the TS sources
+// are present, build it once here; fail clearly if neither dist nor sources exist (e.g. a packed
+// install). Mirrors scripts/demo-golden-path.mjs's ensureDist. A present dist makes this a no-op.
+function ensureDist(log) {
+  if (existsSync(DIST_INDEX)) return;
+  if (!(existsSync(TSCONFIG) && existsSync(SRC_ENTRY))) {
+    throw new Error(`built library not found at ${DIST_INDEX} and no TS sources to build — run \`npm run build\`.`);
+  }
+  log("dist not found — building from source (tsc -p tsconfig.json)...");
+  execFileSync(process.execPath, [TSC, "-p", TSCONFIG], { stdio: "inherit" });
+  if (!existsSync(DIST_INDEX)) throw new Error("build did not produce dist; run `npm run build` and retry.");
+}
 
 const SESSION_ID = "live-loop-session";
 const LOOP_ID = "loop-checkout-fix";
@@ -106,9 +124,7 @@ function sendControl(socketPath, command) {
  * `packDir` receives the full proof pack; the caller decides what to keep as the committed artifact.
  */
 export async function produceLiveLoopReceipt({ packDir, log = () => {} } = {}) {
-  if (!existsSync(DIST_INDEX)) {
-    throw new Error(`built library not found at ${DIST_INDEX} — run \`npm run build\` first.`);
-  }
+  ensureDist(log);
   const {
     LoopSessionRegistry,
     serveStandingHttpProxy,

@@ -50,12 +50,14 @@ describe("live-loop canonical receipt (Lane B)", () => {
 
     // The supervisor's settled delta folds into the handoff continuation state.
     expect(wi.settled).toContain("checkout total rounding bug patched");
-  });
+    // Generous timeout: produceLiveLoopReceipt self-builds dist on a clean checkout (npm test runs
+    // vitest without npm run build); a present dist makes that a no-op and the test is fast.
+  }, 180000);
 
   it("the committed canonical artifact is a byte-for-byte match of a fresh run (deterministic, not hand-edited)", async () => {
     const { witnessInputPath } = await produceLiveLoopReceipt({ packDir: freshPack() });
     const fresh = readFileSync(witnessInputPath, "utf8");
     const committed = readFileSync(COMMITTED, "utf8");
     expect(fresh).toBe(committed);
-  });
+  }, 180000);
 });
