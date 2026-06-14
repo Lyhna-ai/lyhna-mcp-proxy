@@ -48,7 +48,14 @@ async function runStandingService(): Promise<void> {
   const judgment = createJudgmentRecorder();
   // The net-new half of claimed-vs-actual: the agent's own claims, recorded via the record_claim tool
   // on the agent path and read back by the supervisor `dump_claims` verb on the control path.
-  const claims = createClaimRecorder();
+  //
+  // OPT-IN (LYHNA_PROXY_CLAIM_CAPTURE), OFF by default. record_claim is handled locally and does not
+  // pass through the per-loop mutex that orders judgment turns, and claims pair with witnessed turns by
+  // ORDER. That pairing assumes the agent records a claim AFTER the corresponding tool call returns
+  // (sequential use). A client that pipelines record_claim concurrently with governed calls could
+  // record the claim before the slower bind-gated turn lands and misorder the pairing — so capture is
+  // not enabled by default; the operator turns it on for sequential claimed-vs-actual workflows.
+  const claims = isClaimCaptureEnabled(process.env) ? createClaimRecorder() : undefined;
   const registry = new LoopSessionRegistry(
     (request) => recordingBind.bind(request),
     closeTuning,
@@ -199,12 +206,19 @@ function isStandingMode(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
+// Claimed-vs-actual capture is opt-in: it relies on the agent recording claims sequentially (a claim
+// after the tool call it describes returns), since claims pair with witnessed turns by order. Off
+// unless explicitly enabled by the operator.
+function isClaimCaptureEnabled(env: NodeJS.ProcessEnv): boolean {
+  return /^(1|true|yes|on)$/i.test(env.LYHNA_PROXY_CLAIM_CAPTURE?.trim() ?? "");
+}
+
 function startControlChannel(
   registry: LoopSessionRegistry,
   receiptSource: ReceiptSource,
   scopeEventSource: ScopeEventSource,
   judgmentRecorder: JudgmentLedgerRecorder,
-  claimSource: AgentClaimRecorder
+  claimSource: AgentClaimRecorder | undefined
 ): Promise<ControlChannelHandle> {
   const socketPath = process.env.LYHNA_PROXY_CONTROL_SOCKET?.trim();
   const logger = (line: string) => process.stderr.write(`${line}\n`);

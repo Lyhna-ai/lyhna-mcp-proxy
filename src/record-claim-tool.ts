@@ -21,10 +21,10 @@ export const RECORD_CLAIM_TOOL: Tool = {
   name: RECORD_CLAIM_TOOL_NAME,
   description:
     "Record what YOU, the agent, CLAIM you did for a step, so Lyhna can compare your account to what " +
-    "actually crossed the tool boundary. Call this whenever you report a step to the human (e.g. you " +
-    "say you sent an email or created a doc). It records your claim only — it does NOT perform the " +
-    "action, forwards nothing, and grants no authority. Lyhna independently witnesses the real tool " +
-    "calls; this is the other half of claimed-vs-actual.",
+    "actually crossed the tool boundary. Call this AFTER the tool call you are describing has returned " +
+    "(one claim per step, in order), so your claim lines up with what the witness observed. It records " +
+    "your claim only — it does NOT perform the action, forwards nothing, and grants no authority. " +
+    "Lyhna independently witnesses the real tool calls; this is the other half of claimed-vs-actual.",
   inputSchema: {
     type: "object",
     properties: {
