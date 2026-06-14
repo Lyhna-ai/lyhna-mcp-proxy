@@ -66,6 +66,16 @@ describe("writeProofPackFiles", () => {
     expect(readFileSync(join(dir, "receipts.json"), "utf8")).toBe(`[{"marker":"receipts"}]`);
   });
 
+  it("clears a stale witness-input.json sidecar on any pack write (every export path)", () => {
+    dir = mkdtempSync(join(tmpdir(), "lyhna-pack-io-"));
+    // A prior verified-context export-pack left the plaintext claims sidecar here. Any later pack
+    // write — export-pack OR the offline export-loop-proof — must clear it so stale claims are not
+    // presented as current beside a fresh (possibly content-blind) pack.
+    writeFileSync(join(dir, "witness-input.json"), `{"steps":[{"claim":{"system":"stale"}}]}\n`);
+    writeProofPackFiles(dir, bareBuilt());
+    expect(existsSync(join(dir, "witness-input.json"))).toBe(false);
+  });
+
   it("leaves unrelated files in the directory alone", () => {
     dir = mkdtempSync(join(tmpdir(), "lyhna-pack-io-"));
     writeFileSync(join(dir, "notes.txt"), "mine\n");

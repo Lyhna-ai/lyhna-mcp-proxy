@@ -15,7 +15,7 @@
 // reshaped; the bytes written to receipts.json are the bytes digested.
 
 import { connect as netConnect, type Socket } from "node:net";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CliIo } from "./capsule-cli.js";
@@ -325,10 +325,6 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   if (scopeHistory.length === 0) {
     const bare = buildLoopProofBundle({ receipts, receipts_text: receiptsText, source_env: sourceEnv });
     const files = writeProofPackFiles(outDir, bare);
-    // A bare (no-scope) export emits no witness sidecar — clear any stale witness-input.json from a
-    // prior verified-context export to this same --out dir, so old plaintext claims are not left
-    // beside the new bare bundle. (The scoped-trio path below does the same before deciding to emit.)
-    rmSync(join(outDir, "witness-input.json"), { force: true });
     io.stderr(
       `[lyhna] loop ${loopId} has no sealed scope capsule, so this is a bare bundle (no proof card / ` +
         `handoff / judgment artifacts). Open loops with a scope_capsule to export the full capsule trio.\n`
@@ -474,11 +470,10 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // capture was off or dump_claims fails, the proof pack already written is unaffected — we just skip
   // it. This never touches the signed bundle or the proof spine.
   //
-  // First clear any stale witness-input.json from a PRIOR export to this same --out dir, BEFORE
-  // deciding whether to emit a fresh one. A re-export in proof mode / without claim capture / after a
-  // dump failure must not leave old plaintext claims beside the new (possibly content-blind) pack.
+  // A stale witness-input.json from a prior export to this same --out dir was already cleared by
+  // writeProofPackFiles above (the shared writer owns the sidecar's cleanup so EVERY pack path —
+  // including the offline export-loop-proof — clears it). Here we only write a FRESH one when VC.
   const witnessInputPath = join(outDir, "witness-input.json");
-  rmSync(witnessInputPath, { force: true });
   if (mode === "verified_context" && continuation) {
     try {
       const dumpedClaims = await request({ cmd: "dump_claims", loop_id: loopId });
