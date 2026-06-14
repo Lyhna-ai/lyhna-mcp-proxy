@@ -11,6 +11,8 @@
     "README.md",
     "RUNNING.md",
     "AGENTS.md",
+    "CLAUDE.md",
+    "LLM-CONTEXT.md",
     "docs"
   ],
   "engines": {
