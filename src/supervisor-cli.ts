@@ -480,9 +480,13 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
       if (dumpedClaims?.ok === true && Array.isArray(dumpedClaims.claims)) {
         // Lead the rendered receipt with what the work was FOR. The human goal lives in the sealed
         // scope's plaintext sidecar (VC-only, which is the only mode that emits witness-input), so a
-        // reader sees "Fix the checkout bug" — not an internal loop id. Fall back to the loop-id
-        // phrasing when no goal summary was sealed.
-        const goalSummary = finalScope.sidecar?.goal_summary?.trim();
+        // reader sees "Fix the checkout bug" — not an internal loop id. The sidecar arrives as
+        // untrusted control-channel JSON and is NOT runtime-typed, so guard against a non-string
+        // goal_summary: a bare `.trim()` on a non-string would throw, the best-effort catch would
+        // swallow it, and the whole witness-input.json would silently drop. Fall back to the loop-id
+        // phrasing when no usable goal summary was sealed.
+        const rawGoalSummary = finalScope.sidecar?.goal_summary;
+        const goalSummary = typeof rawGoalSummary === "string" ? rawGoalSummary.trim() : "";
         const witnessInput = assembleWitnessInput({
           objective: goalSummary ? goalSummary : `Witnessed handoff for loop ${loopId}`,
           claims: dumpedClaims.claims as AgentClaim[],

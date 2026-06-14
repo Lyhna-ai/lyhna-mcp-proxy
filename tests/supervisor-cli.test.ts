@@ -165,7 +165,7 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     while (cleanups.length > 0) await cleanups.pop()!();
   });
 
-  async function runScopedLoop() {
+  async function runScopedLoop(opts: { goalSummary?: unknown } = {}) {
     const recorder = createReceiptRecorder();
     const scopeEvents = createScopeEventRecorder();
     const judgment = createJudgmentRecorder();
@@ -196,12 +196,18 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     });
     cleanups.push(() => control.close());
 
+    // Allow a test to seal a non-string goal_summary, mirroring the untrusted control-channel JSON
+    // path (the sidecar is not runtime-typed) to exercise export-pack's guard.
+    const scopeCapsule =
+      "goalSummary" in opts
+        ? { ...SCOPE_CAPSULE, sidecar: { ...SCOPE_CAPSULE.sidecar, goal_summary: opts.goalSummary } }
+        : SCOPE_CAPSULE;
     const opened = await sendControl(socketPath, {
       cmd: "open",
       session_id: SESSION_ID,
       loop_id: LOOP_ID,
       goal: GOAL,
-      scope_capsule: SCOPE_CAPSULE,
+      scope_capsule: scopeCapsule,
       scope_class_map: SCOPE_CLASS_MAP
     });
     expect(opened.ok).toBe(true);
@@ -298,6 +304,24 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     expect(claimStep!.event).not.toBeNull();
     // The supervisor's settled delta folds through into the handoff's continuation state.
     expect(witnessInput.settled).toContain("checkout fix written");
+  });
+
+  it("a non-string goal_summary does not drop witness-input.json (guards the objective polish)", async () => {
+    // The sidecar arrives as untrusted control-channel JSON and is not runtime-typed: a non-string
+    // goal_summary must NOT make export-pack's objective `.trim()` throw and silently skip the whole
+    // claimed-vs-actual artifact. It falls back to the loop-id objective and still emits the file.
+    const { socketPath } = await runScopedLoop({ goalSummary: 12345 });
+    const outDir = mkdtempSync(join(tmpdir(), "lyhna-export-witness-badgoal-"));
+    cleanups.push(() => rmSync(outDir, { recursive: true, force: true }));
+
+    const rc = await runExportPack(["--loop", LOOP_ID, "--out", outDir, "--socket", socketPath], io().cli, {});
+    expect(rc).toBe(0);
+
+    const witnessInputPath = join(outDir, "witness-input.json");
+    expect(existsSync(witnessInputPath)).toBe(true);
+    const witnessInput = JSON.parse(readFileSync(witnessInputPath, "utf8")) as { objective: string; steps: unknown[] };
+    expect(witnessInput.objective).toBe(`Witnessed handoff for loop ${LOOP_ID}`);
+    expect(witnessInput.steps.length).toBeGreaterThan(0);
   });
 
   it("re-exporting to the same dir in proof mode removes a stale witness-input.json", async () => {
