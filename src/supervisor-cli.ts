@@ -15,7 +15,7 @@
 // reshaped; the bytes written to receipts.json are the bytes digested.
 
 import { connect as netConnect, type Socket } from "node:net";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CliIo } from "./capsule-cli.js";
@@ -469,6 +469,12 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // claimed-vs-actual handoff. VERIFIED-CONTEXT only (claims are plaintext) and BEST-EFFORT: if claim
   // capture was off or dump_claims fails, the proof pack already written is unaffected — we just skip
   // it. This never touches the signed bundle or the proof spine.
+  //
+  // First clear any stale witness-input.json from a PRIOR export to this same --out dir, BEFORE
+  // deciding whether to emit a fresh one. A re-export in proof mode / without claim capture / after a
+  // dump failure must not leave old plaintext claims beside the new (possibly content-blind) pack.
+  const witnessInputPath = join(outDir, "witness-input.json");
+  rmSync(witnessInputPath, { force: true });
   if (mode === "verified_context" && continuation) {
     try {
       const dumpedClaims = await request({ cmd: "dump_claims", loop_id: loopId });
@@ -481,10 +487,10 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
           open_questions: continuation.open_questions,
           next_actions: continuation.next_actions
         });
-        writeFileSync(join(outDir, "witness-input.json"), JSON.stringify(witnessInput, null, 2) + "\n");
+        writeFileSync(witnessInputPath, JSON.stringify(witnessInput, null, 2) + "\n");
         io.stdout(
           `  witness-input.json (${(dumpedClaims.claims as unknown[]).length} claim(s); ` +
-            `render: lyhna-witness ${join(outDir, "witness-input.json")} ${outDir})\n`
+            `render: lyhna-witness ${witnessInputPath} ${outDir})\n`
         );
       }
     } catch (error) {

@@ -266,6 +266,21 @@ describe("lyhna-mcp ctl / export-pack (supervisor CLI e2e)", () => {
     expect(witnessInput.settled).toContain("checkout fix written");
   });
 
+  it("re-exporting to the same dir in proof mode removes a stale witness-input.json", async () => {
+    const { socketPath } = await runScopedLoop();
+    const outDir = mkdtempSync(join(tmpdir(), "lyhna-export-witness-stale-"));
+    cleanups.push(() => rmSync(outDir, { recursive: true, force: true }));
+
+    // VC export writes the plaintext witness file.
+    expect(await runExportPack(["--loop", LOOP_ID, "--out", outDir, "--socket", socketPath], io().cli, {})).toBe(0);
+    expect(existsSync(join(outDir, "witness-input.json"))).toBe(true);
+
+    // Re-export the SAME loop to the SAME dir in proof (content-blind) mode — the plaintext witness
+    // file must be removed, not left stale beside the content-blind pack.
+    expect(await runExportPack(["--loop", LOOP_ID, "--out", outDir, "--mode", "proof", "--socket", socketPath], io().cli, {})).toBe(0);
+    expect(existsSync(join(outDir, "witness-input.json"))).toBe(false);
+  });
+
   it("ctl sends one supervisor command and prints the JSON response", async () => {
     const { socketPath } = await runScopedLoop();
     const { cli, out } = io();
