@@ -128,19 +128,24 @@ export async function serveStandingHttpProxy(
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    // Claim capture is per session and DURING-RUN ONLY. Resolve the loop from the OPEN session (the
-    // registry removes the session on close) and re-check isLoopOpen at call time — so an agent that
-    // retained the old MCP URL cannot append claims after the supervisor sealed the loop. That would
-    // mutate the claimed-vs-actual handoff past the close boundary, exactly the post-hoc reconstruction
-    // record_delta's during-run gate forbids. NOTE: loopIdForSession is deliberately NOT used here —
-    // it resolves via the retained post-close scope state and would let a closed loop keep recording.
+    // Claim capture is per session, VERIFIED-CONTEXT ONLY, and DURING-RUN ONLY:
+    //  - VC only: a claim is the agent's plaintext self-report. A proof-mode (content-blind) loop must
+    //    never accumulate plaintext claims in the sidecar — matching the dump_claims contract, which
+    //    refuses to hand them back. So record_claim is not even exposed on a proof-mode loop.
+    //  - During-run only: resolve from the OPEN session (the registry removes the session on close)
+    //    and re-check open+mode at call time, so an agent retaining the old MCP URL cannot append a
+    //    claim after the supervisor sealed the loop (post-close mutation, cf. record_delta's gate).
+    //  - loopIdForSession is deliberately NOT used: it resolves via the retained post-close scope state.
+    const registry = options.registry;
+    const capturable = (loop_id: string): boolean =>
+      registry.isLoopOpen(loop_id) && registry.privacyModeForLoop(loop_id) === "verified_context";
     let claimCapture: ClaimCapture | undefined;
-    if (options.claims && session) {
+    if (options.claims && session && capturable(session.loopId)) {
       const loopSession = session;
-      const registry = options.registry;
+      const claims = options.claims;
       claimCapture = {
-        claims: options.claims,
-        resolveLoopId: () => (registry.isLoopOpen(loopSession.loopId) ? loopSession.loopId : undefined)
+        claims,
+        resolveLoopId: () => (capturable(loopSession.loopId) ? loopSession.loopId : undefined)
       };
     }
     const mcpServer = createMcpProxyServer(core, serverInfo, claimCapture);

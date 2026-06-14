@@ -359,3 +359,16 @@ describe("record_claim is during-run only (no post-close claim injection)", () =
     expect(JSON.stringify(after.claims)).not.toContain("POST_CLOSE");
   });
 });
+
+describe("claim capture is Verified-Context only on the agent surface", () => {
+  it("does not expose record_claim on a proof-mode loop (claims would be plaintext in a content-blind loop)", async () => {
+    const r = await rig({ privacy: "proof" });
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      const names = (await agent.client.listTools()).map((t) => t.name);
+      expect(names).not.toContain("record_claim");
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+  });
+});
