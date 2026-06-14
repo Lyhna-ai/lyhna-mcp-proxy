@@ -1,5 +1,10 @@
 # AGENTS.md
 
+> 👉 **Start here: read [`LLM-CONTEXT.md`](./LLM-CONTEXT.md) first.** It's the dated, single-page map of
+> what Lyhna is, the two-repo architecture, the claim→witness→receipt loop, current state, and the
+> honesty ceiling. This file (below) holds the proxy's hard invariants; LLM-CONTEXT.md holds the
+> orientation.
+
 ## Purpose
 
 This repository is a standalone Lyhna MCP proxy.
