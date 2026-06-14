@@ -1,5 +1,5 @@
 {
-  "objective": "Witnessed handoff for loop loop-checkout-fix",
+  "objective": "Fix the checkout total rounding bug and confirm the fix with the client",
   "steps": [
     {
       "claim": {

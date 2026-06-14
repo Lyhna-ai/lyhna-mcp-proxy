@@ -59,7 +59,7 @@ const SCOPE_CAPSULE = {
     target_descriptor_hashes: [targetHash(FIX_TARGET)],
     targetless_action_classes: ["run_tests"]
   },
-  sidecar: { goal_summary: "fix the checkout total rounding bug" }
+  sidecar: { goal_summary: "Fix the checkout total rounding bug and confirm the fix with the client" }
 };
 const SCOPE_CLASS_MAP = { [WRITE_TOOL]: "write", [TEST_TOOL]: "run_tests" };
 
