@@ -9,10 +9,16 @@ import path from "node:path";
 import type { BuiltLoopProofBundle } from "./loop-proof-bundle.js";
 
 /**
- * Every file name this writer can ever produce. Before writing, ALL of these are removed from
- * the target directory so a re-export can never leave a stale optional artifact (an old
- * proof-card.md / HANDOFF.md / scope-events.json from a previous chain) sitting next to a fresh
- * receipts.json. Only these names are touched — anything else in the directory is left alone.
+ * Every file name a proof-pack export OWNS in the target directory. Before writing, ALL of these are
+ * removed so a re-export can never leave a stale optional artifact (an old proof-card.md / HANDOFF.md /
+ * scope-events.json from a previous chain) sitting next to a fresh receipts.json. Only these names are
+ * touched — anything else in the directory is left alone.
+ *
+ * `witness-input.json` is the one entry this writer CLEARS but does not produce: it is the
+ * claimed-vs-actual sidecar the export caller (`export-pack`) writes AFTER this, a product-layer
+ * concern. It is listed here so that EVERY pack path — `export-pack` and the offline
+ * `export-loop-proof` — clears a stale one, and a later proof / bare / no-capture re-export to the same
+ * directory never leaves old plaintext claims behind.
  */
 const PACK_FILE_NAMES = [
   "receipts.json",
@@ -27,7 +33,8 @@ const PACK_FILE_NAMES = [
   "verify-instructions.md",
   "judgment-ledger.json",
   "judgment-ledger.md",
-  "memory-injection.json"
+  "memory-injection.json",
+  "witness-input.json"
 ] as const;
 
 function writeJson(outDir: string, name: string, value: unknown): void {

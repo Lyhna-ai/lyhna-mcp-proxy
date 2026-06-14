@@ -15,7 +15,7 @@
 // reshaped; the bytes written to receipts.json are the bytes digested.
 
 import { connect as netConnect, type Socket } from "node:net";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CliIo } from "./capsule-cli.js";
@@ -26,6 +26,8 @@ import { writeProofPackFiles } from "./proof-pack-io.js";
 import type { ScopePrivacyMode, SealedScope } from "./scope-capsule.js";
 import type { ScopeEvent } from "./scope-event-recorder.js";
 import type { JudgmentDelta, JudgmentTurn } from "./judgment-ledger.js";
+import { assembleWitnessInput } from "./witness-bridge.js";
+import type { AgentClaim } from "./claim-recorder.js";
 
 export const CTL_USAGE =
   "usage: lyhna-mcp ctl --file <command.json>      (recommended — shell-quoting-safe, incl. PowerShell)\n" +
@@ -382,6 +384,9 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
   // (lost/empty recorder state) fails closed instead of exporting a judgment-less pack. A truly
   // judgment-less loop (no in-loop receipts) still validates green with the empty ledger.
   let files: string[];
+  // Hoisted so the additive witness-input emission below (outside the export try/catch) can fold the
+  // same continuation state into the claimed-vs-actual handoff.
+  let continuation: ContinuationCapsule | undefined;
   try {
     // Cross-loop lineage (--prior-pack): read the PRIOR loop's continuation-capsule.json AND
     // judgment-ledger.json. The seed is derived FROM the prior continuation (never a bare
@@ -415,7 +420,7 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
       mode,
       seed: inherited_state
     });
-    const continuation = buildContinuationCapsule({
+    continuation = buildContinuationCapsule({
       scope_history: scopeHistory,
       scope_events: scopeEvents,
       loop: {
@@ -458,5 +463,39 @@ export async function runExportPack(argv: string[], io: CliIo, env: NodeJS.Proce
       `  ${files.join(", ")}\n` +
       `verify: npx -y lyhna-verify --chain ${outDir}/receipts.json\n`
   );
+
+  // Additive (Integration Option A): emit witness-input.json — the agent's recorded CLAIMS paired
+  // with the witnessed judgment turns — for the witness (`lyhna-witness`) to render the
+  // claimed-vs-actual handoff. VERIFIED-CONTEXT only (claims are plaintext) and BEST-EFFORT: if claim
+  // capture was off or dump_claims fails, the proof pack already written is unaffected — we just skip
+  // it. This never touches the signed bundle or the proof spine.
+  //
+  // A stale witness-input.json from a prior export to this same --out dir was already cleared by
+  // writeProofPackFiles above (the shared writer owns the sidecar's cleanup so EVERY pack path —
+  // including the offline export-loop-proof — clears it). Here we only write a FRESH one when VC.
+  const witnessInputPath = join(outDir, "witness-input.json");
+  if (mode === "verified_context" && continuation) {
+    try {
+      const dumpedClaims = await request({ cmd: "dump_claims", loop_id: loopId });
+      if (dumpedClaims?.ok === true && Array.isArray(dumpedClaims.claims)) {
+        const witnessInput = assembleWitnessInput({
+          objective: `Witnessed handoff for loop ${loopId}`,
+          claims: dumpedClaims.claims as AgentClaim[],
+          turns: judgmentTurns,
+          settled: continuation.settled,
+          open_questions: continuation.open_questions,
+          next_actions: continuation.next_actions
+        });
+        writeFileSync(witnessInputPath, JSON.stringify(witnessInput, null, 2) + "\n");
+        io.stdout(
+          `  witness-input.json (${(dumpedClaims.claims as unknown[]).length} claim(s); ` +
+            `render: lyhna-witness ${witnessInputPath} ${outDir})\n`
+        );
+      }
+    } catch (error) {
+      io.stderr(`witness-input emission skipped (proof pack is unaffected): ${(error as Error).message}\n`);
+    }
+  }
+
   return 0;
 }
