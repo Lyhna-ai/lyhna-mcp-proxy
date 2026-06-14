@@ -327,3 +327,35 @@ describe("end-to-end claimed-vs-actual capture (agent path → dump_claims)", ()
     expect((dump.claims as Array<Record<string, unknown>>).map((c) => c.system)).toContain("google_drive");
   });
 });
+
+describe("record_claim is during-run only (no post-close claim injection)", () => {
+  it("an agent retaining the URL cannot append claims after the supervisor closes the loop", async () => {
+    const r = await rig({ privacy: "verified_context" });
+
+    // Agent records a claim while the loop is OPEN.
+    const agent = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      await agent.client.callTool({ toolName: "record_claim", arguments: { system: "google_drive", action: "create_file" } });
+    } finally {
+      await agent.close().catch(() => undefined);
+    }
+    const before = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    const countBefore = before.count as number; // rig seed (1) + agent (1)
+
+    // Supervisor closes/seals the loop.
+    const closed = await sendControl(r.address, { cmd: "close", session_id: r.sessionId, outcome: "COMPLETED", reason: "done" });
+    expect(closed).toMatchObject({ ok: true, sealed: true });
+
+    // Agent retains the old URL and tries to record again — it must NOT append a post-close claim.
+    const stale = await connectStreamableHttpUpstream(r.standing.sessionUrl(r.sessionId));
+    try {
+      await stale.client.callTool({ toolName: "record_claim", arguments: { system: "POST_CLOSE", action: "x" } }).catch(() => undefined);
+    } finally {
+      await stale.close().catch(() => undefined);
+    }
+
+    const after = await sendControl(r.address, { cmd: "dump_claims", loop_id: r.loopId });
+    expect(after.count).toBe(countBefore); // unchanged across the close boundary
+    expect(JSON.stringify(after.claims)).not.toContain("POST_CLOSE");
+  });
+});

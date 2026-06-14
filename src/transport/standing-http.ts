@@ -128,12 +128,21 @@ export async function serveStandingHttpProxy(
       sessionIdGenerator: undefined,
       enableJsonResponse: true
     });
-    // Claim capture is per session: the record_claim tool records against THIS session's loop_id,
-    // resolved from the registry per request. resolveLoopId returns undefined when the session has no
-    // open loop, in which case record_claim fails closed (no claim is recorded).
-    const claimCapture: ClaimCapture | undefined = options.claims
-      ? { claims: options.claims, resolveLoopId: () => options.registry.loopIdForSession(sessionId) }
-      : undefined;
+    // Claim capture is per session and DURING-RUN ONLY. Resolve the loop from the OPEN session (the
+    // registry removes the session on close) and re-check isLoopOpen at call time — so an agent that
+    // retained the old MCP URL cannot append claims after the supervisor sealed the loop. That would
+    // mutate the claimed-vs-actual handoff past the close boundary, exactly the post-hoc reconstruction
+    // record_delta's during-run gate forbids. NOTE: loopIdForSession is deliberately NOT used here —
+    // it resolves via the retained post-close scope state and would let a closed loop keep recording.
+    let claimCapture: ClaimCapture | undefined;
+    if (options.claims && session) {
+      const loopSession = session;
+      const registry = options.registry;
+      claimCapture = {
+        claims: options.claims,
+        resolveLoopId: () => (registry.isLoopOpen(loopSession.loopId) ? loopSession.loopId : undefined)
+      };
+    }
     const mcpServer = createMcpProxyServer(core, serverInfo, claimCapture);
 
     try {
