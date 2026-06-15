@@ -151,6 +151,7 @@ export async function runScenario(scenario, log = () => {}) {
   const toolOutcomes = scenario.toolOutcomes ?? {};
   const failTools = new Set(scenario.failTools ?? []);
   const classMap = scenario.classMap ?? {};
+  const allowedTools = Object.keys(classMap);
   const allowedClasses = scenario.allowedActionClasses ?? [...new Set(Object.values(classMap))];
 
   const recorder = createReceiptRecorder();
@@ -198,6 +199,7 @@ export async function runScenario(scenario, log = () => {}) {
       goal_hash: "",
       privacy_mode: "verified_context",
       allowed_action_classes: allowedClasses,
+      allowed_tools: allowedTools,
       allowed_targets: [],
       forbidden_targets: [],
       target_descriptor_hashes: [],
@@ -240,6 +242,26 @@ export async function runScenario(scenario, log = () => {}) {
       await agent.close().catch(() => undefined);
     }
 
+    const delta = {};
+    if (scenario.settled) delta.settled = scenario.settled;
+    if (scenario.open_questions) delta.open_questions = scenario.open_questions;
+    if (scenario.next_actions) delta.next_actions = scenario.next_actions;
+    if (Object.keys(delta).length > 0) {
+      const preJudgment = await sendControl(socketPath, { cmd: "dump_judgment", loop_id: LOOP, mode: "verified-context" });
+      if (!preJudgment.ok || !Array.isArray(preJudgment.turns)) {
+        throw new Error(`dump_judgment failed before record_delta: ${JSON.stringify(preJudgment)}`);
+      }
+      const turn = [...preJudgment.turns].reverse().find((t) => typeof t?.turn_ref === "string");
+      if (!turn) throw new Error(`scenario ${scenario.id} declared continuation fields but produced no judgment turn`);
+      const recorded = await sendControl(socketPath, {
+        cmd: "record_delta",
+        loop_id: LOOP,
+        turn_ref: turn.turn_ref,
+        delta
+      });
+      if (!recorded.ok) throw new Error(`record_delta failed: ${JSON.stringify(recorded)}`);
+    }
+
     const closed = await sendControl(socketPath, {
       cmd: "close",
       session_id: SESSION,
@@ -258,13 +280,6 @@ export async function runScenario(scenario, log = () => {}) {
       throw new Error(`export-pack did not emit witness-input.json (rc=${exportRc}):\n${out.join("")}`);
     }
     const witnessInput = JSON.parse(readFileSync(witnessInputPath, "utf8"));
-
-    // The proxy emits a generic objective; the gauntlet's scenario objective + continuation fields are
-    // the human framing. Overlay them additively (export-pack does not take open_questions/next_actions).
-    if (scenario.objective) witnessInput.objective = scenario.objective;
-    if (scenario.settled) witnessInput.settled = scenario.settled;
-    if (scenario.open_questions) witnessInput.open_questions = scenario.open_questions;
-    if (scenario.next_actions) witnessInput.next_actions = scenario.next_actions;
 
     log(`  [${scenario.id}] sealed=${closed.sealed} exportRc=${exportRc} steps=${witnessInput.steps.length}`);
     return { witnessInput, sealed: closed.sealed === true, exportRc };

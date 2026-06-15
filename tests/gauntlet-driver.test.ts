@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { runScenario } from "../scripts/gauntlet/driver.mjs";
 
 const W = "mcp__filesystem__write_file";
+const D = "mcp__filesystem__delete_file";
 const G = "mcp__gmail__send";
 
 describe("gauntlet driver — real-loop verdict/outcome matrix", () => {
@@ -88,5 +89,36 @@ describe("gauntlet driver — real-loop verdict/outcome matrix", () => {
     const gmail = witnessInput.steps.find((s: any) => s.claim?.system === "gmail");
     expect(gmail.event).toBeNull();
     expect(gmail.claim.user_facing).toBe(true);
+  }, 180000);
+
+  it("seals declared scenario tools into allowed_tools so undeclared same-class tools are REFUSED", async () => {
+    const { witnessInput } = await runScenario({
+      id: "t-undeclared-tool",
+      objective: "undeclared same-class tool",
+      calls: [{ toolName: D, arguments: { path: "x" } }],
+      claims: [{ system: "filesystem", action: "delete_file", result: "deleted" }],
+      classMap: { [W]: "write" }
+    });
+    const ev = witnessInput.steps[0].event;
+    expect(ev.call.toolName).toBe(D);
+    expect(ev.verdict.kind).toBe("REFUSED");
+    expect(ev.runtime_report).toBeUndefined();
+  }, 180000);
+
+  it("records continuation fields through supervisor record_delta before export-pack emits witness-input", async () => {
+    const { witnessInput } = await runScenario({
+      id: "t-continuation-delta",
+      objective: "continuation state",
+      calls: [{ toolName: W, arguments: { path: "x" } }],
+      claims: [{ system: "filesystem", action: "write_file", result: "wrote" }],
+      classMap: { [W]: "write" },
+      settled: ["wrote the file"],
+      open_questions: ["does the client need a note?"],
+      next_actions: ["confirm before sending"]
+    });
+    expect(witnessInput.objective).toBe("continuation state");
+    expect(witnessInput.settled).toEqual(["wrote the file"]);
+    expect(witnessInput.open_questions).toEqual(["does the client need a note?"]);
+    expect(witnessInput.next_actions).toEqual(["confirm before sending"]);
   }, 180000);
 });
