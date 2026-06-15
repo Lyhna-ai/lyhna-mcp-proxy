@@ -70,6 +70,25 @@ To start the real standing adapter (it enters standing mode when a control chann
 configured), see [Standing Service Mode](#standing-service-mode-multi-session) and
 [`RUNNING.md`](RUNNING.md).
 
+### Want the human-readable AI Work Receipt (HANDOFF / OKF / PAM)?
+
+`npm run demo` above produces the **LoopProofBundle** (the signed/proof artifacts). The
+**AI Work Receipt** — the readable claimed-vs-actual handoff plus the OKF (knowledge) and PAM
+(memory) exports — is rendered by the sibling [`lyhna-witness`](https://github.com/Lyhna-ai/lyhna-witness)
+package from the `witness-input.json` this proxy emits at loop close:
+
+```bash
+# 1) in lyhna-mcp-proxy: drive the real loop and emit the witness input
+npm run demo:live-loop          # writes examples/live-loop/witness-input.json
+
+# 2) in a lyhna-witness checkout beside this repo: render the receipt (+ OKF + PAM)
+node src/cli.mjs ../lyhna-mcp-proxy/examples/live-loop/witness-input.json ./receipt --okf --pam
+```
+
+Note: `npm run demo:live-loop` exists in **both** repos and does different things — in
+**lyhna-mcp-proxy** it *emits* `witness-input.json`; in **lyhna-witness** it *renders* the committed
+canonical receipt (from a vendored copy of that input). Run the proxy one first.
+
 ---
 
 ## How it works (internals)

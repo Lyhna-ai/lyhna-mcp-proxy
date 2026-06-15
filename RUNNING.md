@@ -6,7 +6,8 @@
 
 > **Shell note:** the commands below use PowerShell syntax (`npm.cmd`, `$env:NAME='value'`).
 > On macOS/Linux use `npm run …` and prefix env vars inline, e.g.
-> `LYHNA_PROXY_STUB_OUTCOME=APPROVED npm run start:proxy`.
+> `LYHNA_PROXY_STUB_OUTCOME=APPROVED npm run start:proxy`. Any absolute path in the examples (e.g.
+> `C:\Users\Adam\lyhna-mcp-proxy`) is a machine-specific placeholder — substitute your own checkout path.
 
 ## Safety Rule
 
