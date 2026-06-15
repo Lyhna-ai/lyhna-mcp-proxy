@@ -30,10 +30,20 @@ real-world outcomes, or rewrite shared product positioning. Proxy invariants
 live in `AGENTS.md`; shared product direction lives in
 `lyhna-witness/LLM-CONTEXT.md` and `lyhna-witness/THESIS.md`.
 
+## Proxy-local tooling
+
+- `scripts/gauntlet/driver.mjs` — the Reliability Gauntlet's parameterized real-loop driver. Exports
+  `runScenario(scenario)`, which drives the standing service end to end (open scoped loop → agent routes
+  tool calls + records claims → close → `export-pack`) and returns the emitted `witness-input.json`. It
+  changes nothing about the proof spine, receipt shape, or export-pack — it only drives the existing loop
+  with varied, deterministic inputs (a programmable bind double for APPROVED/ESCALATED/REFUSED, a
+  configurable upstream that can fail a call). Covered by `tests/gauntlet-driver.test.ts`. The
+  witness-side gauntlet (`lyhna-witness/reliability/`) consumes it.
+
 ## Convention
 
 Whoever makes a material change to the proxy updates this file's date and any
 proxy-local note in the same PR. Everything shared changes in
 `lyhna-witness/LLM-CONTEXT.md`, never here.
 
-_Pointer last verified: 2026-06-14_
+_Pointer last verified: 2026-06-15_
