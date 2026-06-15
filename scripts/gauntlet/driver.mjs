@@ -92,11 +92,19 @@ function programmableBind(createSyntheticDemoBindClient, toolOutcomes) {
   };
 }
 
-/** Synthetic upstream: returns ok, or throws for any tool whose name is in `failTools`. */
-function configurableUpstream(failTools) {
+/**
+ * Synthetic upstream: advertises the scenario's tools through `listTools` (so the proxy's mirrored
+ * tool surface matches the calls being routed, not just the injected record_claim), and returns ok —
+ * or throws for any tool whose name is in `failTools`.
+ */
+function configurableUpstream(failTools, advertisedTools = []) {
   return {
     async listTools() {
-      return [];
+      return advertisedTools.map((name) => ({
+        name,
+        description: `gauntlet synthetic tool ${name}`,
+        inputSchema: { type: "object" }
+      }));
     },
     async callTool(call) {
       if (failTools.has(call.toolName)) {
@@ -154,6 +162,22 @@ export async function runScenario(scenario, log = () => {}) {
   const allowedTools = Object.keys(classMap);
   const allowedClasses = scenario.allowedActionClasses ?? [...new Set(Object.values(classMap))];
 
+  // FAIL CLOSED: a scenario that routes calls but declares no scope (empty classMap) would seal empty
+  // allow-lists, which checkScopeStructural treats as "no rule" — so every call would forward as
+  // APPROVED instead of the intended scope-refused behavior, silently corrupting refusal cases. Refuse
+  // to run such a scenario rather than report a misconfigured pass. (A no-call scenario — e.g. a pure
+  // claimed-but-never-witnessed loop — legitimately declares no tools.)
+  if (calls.length > 0 && allowedTools.length === 0) {
+    throw new Error(
+      `scenario ${scenario.id} routes ${calls.length} call(s) but declares no scope (empty classMap); ` +
+        `declare each called tool's action class in classMap, or the sealed scope would not restrict anything (fail closed).`
+    );
+  }
+
+  // Advertise every tool the scenario declares or routes, so the proxy's mirrored tool surface matches
+  // the calls being made (a discovery flow would otherwise see only record_claim).
+  const advertisedTools = [...new Set([...allowedTools, ...calls.map((c) => c.toolName)])];
+
   const recorder = createReceiptRecorder();
   const scopeEvents = createScopeEventRecorder();
   const judgment = createJudgmentRecorder();
@@ -167,7 +191,7 @@ export async function runScenario(scenario, log = () => {}) {
   );
 
   const standing = await serveStandingHttpProxy({
-    upstream: configurableUpstream(failTools),
+    upstream: configurableUpstream(failTools, advertisedTools),
     bindClient,
     registry,
     claims: claimRec,

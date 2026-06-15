@@ -121,4 +121,18 @@ describe("gauntlet driver — real-loop verdict/outcome matrix", () => {
     expect(witnessInput.open_questions).toEqual(["does the client need a note?"]);
     expect(witnessInput.next_actions).toEqual(["confirm before sending"]);
   }, 180000);
+
+  it("fails closed when a scenario routes calls but declares no scope (empty classMap)", async () => {
+    // An empty classMap would seal empty allow-lists, which the scope gate treats as 'no rule' — every
+    // call would forward as APPROVED instead of the intended REFUSED. The driver must refuse to run it.
+    await expect(
+      runScenario({
+        id: "t-no-scope",
+        objective: "misconfigured scenario",
+        calls: [{ toolName: W, arguments: { path: "x" } }],
+        claims: [{ system: "filesystem", action: "write_file" }],
+        classMap: {}
+      })
+    ).rejects.toThrow(/declares no scope|fail closed/i);
+  }, 180000);
 });
