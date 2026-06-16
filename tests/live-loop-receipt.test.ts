@@ -48,8 +48,10 @@ describe("live-loop canonical receipt (Lane B)", () => {
     expect(gmailStep?.event).toBeNull();
     expect(gmailStep?.claim?.user_facing).toBe(true);
 
-    // The supervisor's settled delta folds into the handoff continuation state.
-    expect(wi.settled).toContain("checkout total rounding bug patched");
+    // The supervisor's settled delta folds into the handoff continuation state. The text is
+    // witness-bounded (the write + tests were witnessed) — never an unverified correctness claim like
+    // "bug patched", which the witness cannot vouch for.
+    expect(wi.settled).toContain("checkout total rounding fix written to disk and tests run (both witnessed)");
     // Generous timeout: produceLiveLoopReceipt self-builds dist on a clean checkout (npm test runs
     // vitest without npm run build); a present dist makes that a no-op and the test is fast.
   }, 180000);

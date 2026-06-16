@@ -219,7 +219,7 @@ export async function produceLiveLoopReceipt({ packDir, log = () => {} } = {}) {
       cmd: "record_delta",
       loop_id: LOOP_ID,
       turn_ref: approved[0].turn_ref,
-      delta: { settled: ["checkout total rounding bug patched"], changed: [FIX_TARGET] }
+      delta: { settled: ["checkout total rounding fix written to disk and tests run (both witnessed)"], changed: [FIX_TARGET] }
     });
     if (!delta.ok) throw new Error(`record_delta failed: ${JSON.stringify(delta)}`);
 

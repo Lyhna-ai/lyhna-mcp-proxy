@@ -40,7 +40,8 @@ mark the run safe to send.
 ## Render the human receipt
 
 ```bash
-lyhna-witness examples/live-loop/witness-input.json <outDir>
+# The witness renderer is not published to npm yet — run it from a lyhna-witness checkout:
+node ../lyhna-witness/src/cli.mjs examples/live-loop/witness-input.json <outDir> --okf --pam
 ```
 
 The committed, rendered receipt (HANDOFF.md / handoff.json / next-ai-prompt.md) lives in the
