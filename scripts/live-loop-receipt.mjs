@@ -211,14 +211,17 @@ export async function produceLiveLoopReceipt({ packDir, log = () => {} } = {}) {
       await agent.close().catch(() => undefined);
     }
 
-    // 3) SUPERVISOR settles the file fix on its witnessed turn (folds into the handoff continuation).
+    // 3) SUPERVISOR settles the witnessed work on the LATEST witnessed (approved) turn. The settlement
+    //    references both the file write AND the test run, so it must be recorded after both turns exist
+    //    rather than back-dated onto the write turn (which would make the ledger chronology inaccurate).
     const pre = await sendControl(socketPath, { cmd: "dump_judgment", loop_id: LOOP_ID, mode: "verified-context" });
     const approved = (pre.turns ?? []).filter((t) => t.verdict.source === "bind" && t.verdict.kind === "APPROVED");
     if (approved.length === 0) throw new Error("expected at least one approved bind turn to settle");
+    const settleTurn = approved[approved.length - 1];
     const delta = await sendControl(socketPath, {
       cmd: "record_delta",
       loop_id: LOOP_ID,
-      turn_ref: approved[0].turn_ref,
+      turn_ref: settleTurn.turn_ref,
       delta: { settled: ["checkout total rounding fix written to disk and tests run (both witnessed)"], changed: [FIX_TARGET] }
     });
     if (!delta.ok) throw new Error(`record_delta failed: ${JSON.stringify(delta)}`);
@@ -265,8 +268,8 @@ async function main() {
   const dest = join(DEFAULT_OUT, "witness-input.json");
   copyFileSync(witnessInputPath, dest);
   log(`\nCanonical artifact written: ${dest}`);
-  log("Render the human receipt with the sibling package:");
-  log(`  lyhna-witness ${dest} <outDir>`);
+  log("Render the human receipt from a sibling lyhna-witness checkout (the renderer is not published to npm):");
+  log(`  node ../lyhna-witness/src/cli.mjs ${dest} <outDir> --okf --pam`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
