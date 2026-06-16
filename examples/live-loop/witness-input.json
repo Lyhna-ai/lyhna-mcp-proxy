@@ -50,6 +50,6 @@
     }
   ],
   "settled": [
-    "checkout total rounding bug patched"
+    "checkout total rounding fix written to disk and tests run (both witnessed)"
   ]
 }
