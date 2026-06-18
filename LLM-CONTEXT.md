@@ -14,6 +14,16 @@ Read the canonical file before doing anything in this repo. Do not duplicate its
 content here. Duplicated context drifts, and drift is the exact failure this
 pointer exists to prevent.
 
+## Desktop product framing (read before product-facing changes)
+
+Before product-facing adapter/install changes, read the current desktop handoff in
+`lyhna-witness/HANDOFF-DESKTOP.md`
+([raw](https://raw.githubusercontent.com/Lyhna-ai/lyhna-witness/main/HANDOFF-DESKTOP.md)). **Lyhna Desktop
+is the local product wrapper** — the full `lyhna-witness` engine plus this adapter packaged as a local app
+(not a smaller product). **This repo remains the MCP adapter / tool-path witness.** Do not reintroduce
+hosted/metered/private-beta SaaS-first framing unless explicitly approved. (This is docs/context only — no
+adapter, signing, canonicalization, or verification behavior changes here.)
+
 ## What lives here (proxy-local only)
 
 `lyhna-mcp-proxy` is the runtime MCP adapter in the agent's tool-call path. It
